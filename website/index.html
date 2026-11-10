@@ -84,15 +84,17 @@
       right: -12px;
       top: -12px;
       animation: pulse-dot 3.2s ease-in-out infinite;
-      box-shadow: 0 0 24px rgba(245, 158, 11, 0.35);
+      box-shadow: 0 0 24px rgba(255, 255, 255, 0.40);
     }
 
     @keyframes pulse-dot {
       0%, 100% {
-        box-shadow: 0 0 16px rgba(245, 158, 11, 0.20);
+        transform: scale(1.0);
+        box-shadow: 0 0 16px rgba(255, 255, 255, 0.25);
       }
       50% {
-        box-shadow: 0 0 36px rgba(245, 158, 11, 0.50);
+        transform: scale(1.035);
+        box-shadow: 0 0 32px rgba(255, 255, 255, 0.65);
       }
     }
 

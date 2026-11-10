@@ -643,9 +643,9 @@ struct DotSignalMark: View {
         let offsetX = size * (centre.x - 0.5)
         let offsetY = size * (centre.y - 0.5)
 
-        let bloomOpacity = 0.20 + (breathing * 0.25)
-        let bloomBlur = size * (0.06 + (breathing * 0.05))
-        let bloomScale = 1.0 + (breathing * 0.10)
+        let bloomOpacity = 0.15 + (breathing * 0.22)
+        let bloomBlur = size * (0.05 + (breathing * 0.04))
+        let bloomScale = 1.0 + (breathing * 0.08)
 
         ZStack {
             RoundedRectangle(cornerRadius: corner, style: .continuous)
@@ -666,16 +666,16 @@ struct DotSignalMark: View {
                     .fill(
                         RadialGradient(
                             colors: [
-                                Color.white.opacity(bloomOpacity * 0.9),
-                                DotTheme.amber.opacity(bloomOpacity * 0.5),
+                                Color.white.opacity(bloomOpacity),
+                                Color.white.opacity(bloomOpacity * 0.3),
                                 Color.clear
                             ],
                             center: .center,
-                            startRadius: disc * 0.2,
+                            startRadius: disc * 0.35,
                             endRadius: disc * 0.8
                         )
                     )
-                    .frame(width: disc * 1.4 * bloomScale, height: disc * 1.4 * bloomScale)
+                    .frame(width: disc * 1.5 * bloomScale, height: disc * 1.5 * bloomScale)
                     .blur(radius: bloomBlur)
                     .offset(x: offsetX, y: offsetY)
             }
@@ -683,13 +683,14 @@ struct DotSignalMark: View {
             Circle()
                 .fill(Color.white)
                 .frame(width: disc, height: disc)
+                .scaleEffect(animated ? (1.0 + breathing * 0.035) : 1.0, anchor: .center)
                 .offset(x: offsetX, y: offsetY)
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         .shadow(
-            color: animated ? DotTheme.markShadow.opacity(0.85 + breathing * 0.15) : DotTheme.markShadow,
-            radius: size * (0.075 + (animated ? breathing * 0.02 : 0)),
+            color: DotTheme.markShadow,
+            radius: size * 0.075,
             y: size * 0.045
         )
     }
