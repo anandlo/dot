@@ -45,7 +45,11 @@ final class HUDRenderLoopTests: XCTestCase {
         }
 
         hud.showReady(shortcut: "⌥⌘D")
-        spin(for: 0.4)
+        var elapsed = 0.0
+        while hud.debugPresence < 0.5 && elapsed < 1.0 {
+            spin(for: 0.05)
+            elapsed += 0.05
+        }
 
         XCTAssertTrue(hud.isVisible, "the HUD state is not visible")
         XCTAssertTrue(hud.debugPanelVisible, "the panel was ordered front but is not visible")
