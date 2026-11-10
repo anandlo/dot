@@ -874,7 +874,7 @@ final class HUD {
     }
 
     private func tick(now: CFTimeInterval) {
-        guard panel.isVisible else { return }
+        guard panel.isVisible || offscreen else { return }
         if !hasReportedFirstTick {
             hasReportedFirstTick = true
             Log.shared.info("hud.render.tick", [
