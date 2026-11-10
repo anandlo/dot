@@ -248,14 +248,15 @@ struct DotSelect<Value: Hashable>: View {
         .padding(6)
         .frame(width: width, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: DotTheme.cardCorner, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(DotTheme.raisedFill)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: DotTheme.cardCorner, style: .continuous)
-                .strokeBorder(DotTheme.cardBorder, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
         )
-        .shadow(color: DotTheme.cardShadow, radius: 18, x: 0, y: 10)
+        .shadow(color: Color.black.opacity(0.40), radius: 18, x: 0, y: 10)
+        .shadow(color: Color.black.opacity(0.20), radius: 4, x: 0, y: 2)
         .onHover { hovering in
             pointerInside = hovering
         }

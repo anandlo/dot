@@ -60,6 +60,7 @@ final class HUDRenderLoop {
         )
         timer.tolerance = interval / 4
         RunLoop.main.add(timer, forMode: .common)
+        RunLoop.main.add(timer, forMode: .default)
         self.timer = timer
     }
 

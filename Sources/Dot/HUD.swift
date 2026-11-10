@@ -832,7 +832,7 @@ final class HUD {
     private func scheduleRenderFallback() {
         renderFallbackTimer?.invalidate()
         let timer = Timer(timeInterval: Self.renderFallbackDelay, repeats: false) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.applyRenderFallback()
             }
         }
@@ -842,7 +842,7 @@ final class HUD {
 
     private func applyRenderFallback() {
         renderFallbackTimer = nil
-        guard model.isVisible, !hasRenderedSincePresent else { return }
+        guard model.isVisible, (!hasRenderedSincePresent || model.presence < 0.5) else { return }
         let elapsed = (CACurrentMediaTime() - presentedAt) * 1000
         presenceSpring.to(target: 1)
         presenceSpring.snap(to: 1)

@@ -446,6 +446,7 @@ struct SettingsView: View {
                     width: 210
                 )
             }
+            .dotSelectLayer()
         }
     }
 
@@ -877,6 +878,7 @@ struct SettingsView: View {
                     width: 220
                 )
             }
+            .dotSelectLayer()
         }
     }
 
@@ -1851,14 +1853,6 @@ struct SettingsView: View {
                     }
                     aboutHairline
                     aboutRow(
-                        "Support Dot",
-                        detail: DotLinks.displayBuyMeACoffee,
-                        symbol: "cup.and.saucer.fill"
-                    ) {
-                        NSWorkspace.shared.open(DotLinks.buyMeACoffee)
-                    }
-                    aboutHairline
-                    aboutRow(
                         "GitHub",
                         detail: DotLinks.displayGitHub,
                         symbol: "arrow.up.right"
@@ -1876,6 +1870,14 @@ struct SettingsView: View {
                     aboutHairline
                     aboutRow("Open log", symbol: "doc.text.magnifyingglass") {
                         SystemAction.revealLog()
+                    }
+                    aboutHairline
+                    aboutRow(
+                        "Support Dot",
+                        detail: DotLinks.displayBuyMeACoffee,
+                        symbol: "cup.and.saucer.fill"
+                    ) {
+                        NSWorkspace.shared.open(DotLinks.buyMeACoffee)
                     }
                 }
             }
@@ -2685,7 +2687,7 @@ private struct DotModernSlider: View {
     var body: some View {
         GeometryReader { proxy in
             let totalWidth = proxy.size.width
-            let thumbDiameter: CGFloat = 16
+            let thumbDiameter: CGFloat = 14
             let usableWidth = max(1, totalWidth - thumbDiameter)
             let currentValue = dragPosition ?? value
             let progress = max(0, min(1, (currentValue - range.lowerBound) / (range.upperBound - range.lowerBound)))
@@ -2693,46 +2695,28 @@ private struct DotModernSlider: View {
 
             ZStack(alignment: .leading) {
                 Capsule(style: .continuous)
-                    .fill(Color.black.opacity(0.16))
+                    .fill(Color.white.opacity(0.10))
                     .overlay(
                         Capsule(style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.8)
+                            .strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5)
                     )
-                    .frame(height: 5)
+                    .frame(height: 4)
 
                 Capsule(style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                DotTheme.accent,
-                                DotTheme.accent.opacity(0.82),
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: max(thumbDiameter / 2, thumbX + thumbDiameter / 2), height: 5)
+                    .fill(DotTheme.accent)
+                    .frame(width: max(thumbDiameter / 2, thumbX + thumbDiameter / 2), height: 4)
 
                 Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.white,
-                                Color(red: 0.94, green: 0.93, blue: 0.92),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+                    .fill(Color.white)
                     .overlay(
                         Circle()
-                            .strokeBorder(Color.white.opacity(0.85), lineWidth: 0.75)
+                            .strokeBorder(Color.white.opacity(0.9), lineWidth: 0.5)
                     )
-                    .shadow(color: Color.black.opacity(isDragging ? 0.30 : 0.16), radius: isDragging ? 3 : 1.5, y: 1)
+                    .shadow(color: Color.black.opacity(isDragging ? 0.30 : 0.18), radius: isDragging ? 2.5 : 1.5, y: 0.75)
                     .frame(width: thumbDiameter, height: thumbDiameter)
-                    .scaleEffect(isDragging ? 1.14 : (isHovering ? 1.08 : 1.0))
+                    .scaleEffect(isDragging ? 1.08 : (isHovering ? 1.04 : 1.0))
                     .offset(x: thumbX)
-                    .animation(.spring(response: 0.22, dampingFraction: 0.75), value: isDragging)
+                    .animation(.spring(response: 0.20, dampingFraction: 0.8), value: isDragging)
                     .animation(.easeOut(duration: 0.12), value: isHovering)
             }
             .frame(height: proxy.size.height)

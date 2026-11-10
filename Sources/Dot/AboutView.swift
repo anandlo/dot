@@ -144,14 +144,6 @@ struct AboutView: View {
                     }
                     hairline
                     AboutActionRow(
-                        title: "Support Dot",
-                        detail: DotLinks.displayBuyMeACoffee,
-                        symbol: "cup.and.saucer.fill"
-                    ) {
-                        NSWorkspace.shared.open(DotLinks.buyMeACoffee)
-                    }
-                    hairline
-                    AboutActionRow(
                         title: "GitHub",
                         detail: DotLinks.displayGitHub,
                         symbol: "arrow.up.right"
@@ -184,6 +176,14 @@ struct AboutView: View {
                         symbol: "doc.text.magnifyingglass",
                         action: onOpenLog
                     )
+                    hairline
+                    AboutActionRow(
+                        title: "Support Dot",
+                        detail: DotLinks.displayBuyMeACoffee,
+                        symbol: "cup.and.saucer.fill"
+                    ) {
+                        NSWorkspace.shared.open(DotLinks.buyMeACoffee)
+                    }
                 }
             }
 

@@ -258,6 +258,7 @@ struct DotCard<Content: View>: View {
                     )
             )
             .shadow(color: DotTheme.cardShadow, radius: 12, x: 0, y: 6)
+            .dotSelectLayer()
     }
 }
 
@@ -509,79 +510,44 @@ private struct DotToggleBody: View {
 
     private var track: some View {
         ZStack(alignment: configuration.isOn ? .trailing : .leading) {
-            // Track base fill
+            // Minimal modern track
             Capsule(style: .continuous)
                 .fill(
                     configuration.isOn
-                        ? AnyShapeStyle(
-                            LinearGradient(
-                                colors: [
-                                    DotTheme.accent,
-                                    DotTheme.accent.opacity(0.88),
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        : AnyShapeStyle(
-                            isHovering
-                                ? Color.black.opacity(0.24)
-                                : Color.black.opacity(0.18)
-                        )
-                )
-
-            // Signature happy-warthog-87 inset shadow: box-shadow: 0 0 10px 0 rgb(0, 0, 0, 0.25) inset
-            Capsule(style: .continuous)
-                .strokeBorder(Color.black.opacity(0.28), lineWidth: 2.5)
-                .blur(radius: 2)
-                .mask(Capsule(style: .continuous))
-
-            // Track subtle outer border
-            Capsule(style: .continuous)
-                .strokeBorder(
-                    configuration.isOn
-                        ? DotTheme.accent.opacity(0.50)
-                        : Color.white.opacity(0.12),
-                    lineWidth: 1
-                )
-
-            // Signature happy-warthog-87 sliding knob (.slider::before):
-            // Pure white/porcelain knob with rich 3D radial drop shadow (box-shadow: 0 0 10px 3px rgb(0, 0, 0, 0.25))
-            Circle()
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.white,
-                            Color(white: 0.95),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
+                        ? DotTheme.accent
+                        : (isHovering ? Color.white.opacity(0.18) : Color.white.opacity(0.12))
                 )
                 .overlay(
-                    Circle()
-                        .strokeBorder(Color.white.opacity(0.95), lineWidth: 0.75)
+                    Capsule(style: .continuous)
+                        .strokeBorder(
+                            configuration.isOn
+                                ? DotTheme.accent.opacity(0.40)
+                                : Color.white.opacity(0.08),
+                            lineWidth: 0.75
+                        )
                 )
-                .shadow(color: Color.black.opacity(0.28), radius: 3.5, x: 0, y: 1.5)
-                .shadow(color: Color.black.opacity(0.10), radius: 1, x: 0, y: 0.5)
-                .padding(2.5)
+
+            // Minimal precision porcelain knob
+            Circle()
+                .fill(
+                    configuration.isOn
+                        ? Color.white
+                        : Color.white.opacity(0.92)
+                )
+                .shadow(color: Color.black.opacity(0.24), radius: 1.5, x: 0, y: 0.75)
+                .padding(2)
         }
-        .frame(width: 48, height: 26)
-        .shadow(
-            color: configuration.isOn ? DotTheme.accent.opacity(0.35) : .clear,
-            radius: 5,
-            y: 1.5
-        )
+        .frame(width: 36, height: 20)
         .overlay(
             Capsule(style: .continuous)
-                .strokeBorder(isFocused ? DotTheme.focusRing : .clear, lineWidth: 2)
-                .padding(-3)
+                .strokeBorder(isFocused ? DotTheme.focusRing : .clear, lineWidth: 1.5)
+                .padding(-2)
         )
         .contentShape(Capsule(style: .continuous))
     }
 
     private var motion: Animation? {
-        reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.28, dampingFraction: 0.72)
+        reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.22, dampingFraction: 0.80)
     }
 }
 
@@ -591,13 +557,9 @@ private struct DotTogglePressStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            // Replicating happy-warthog-87 :active stretch and squish
-            .scaleEffect(
-                x: configuration.isPressed && !reduceMotion ? 1.08 : 1.0,
-                y: configuration.isPressed && !reduceMotion ? 0.94 : 1.0
-            )
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1.0)
             .animation(
-                reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.65),
+                reduceMotion ? nil : .spring(response: 0.18, dampingFraction: 0.8),
                 value: configuration.isPressed
             )
     }
@@ -640,9 +602,9 @@ struct DotSignalMark: View {
 
     @ViewBuilder
     private func markContent(breathing: Double) -> some View {
-        let warmGlow = Color(red: 245.0 / 255.0, green: 175.0 / 255.0, blue: 50.0 / 255.0)
+        let whiteGlow = Color.white
         let glowRadius = size * (0.16 + (breathing * 0.06))
-        let glowOpacity = 0.22 + (breathing * 0.16)
+        let glowOpacity = 0.16 + (breathing * 0.10)
 
         ZStack {
             if let icon = loadAppIcon() {
@@ -656,7 +618,7 @@ struct DotSignalMark: View {
             }
         }
         .frame(width: size, height: size)
-        .shadow(color: warmGlow.opacity(animated ? glowOpacity : 0.24), radius: glowRadius, y: size * 0.04)
+        .shadow(color: whiteGlow.opacity(animated ? glowOpacity : 0.18), radius: glowRadius, y: size * 0.02)
         .shadow(color: Color.black.opacity(0.65), radius: size * 0.12, y: size * 0.06)
         .scaleEffect(animated ? (1.0 + (breathing * 0.02)) : 1.0)
     }
