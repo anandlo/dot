@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dot — Write as fast as you can think</title>
-  <meta name="description" content="Fast, native, privacy-focused push-to-talk voice dictation utility for macOS.">
+  <meta name="description" content="Fast, native, privacy-first push-to-talk voice dictation utility for macOS.">
   <link rel="icon" type="image/png" href="assets/icon.png">
   <style>
     :root {
@@ -14,22 +14,32 @@
       --ink: #1C1917;
       --ink-2: #57534E;
       --ink-3: #8C877D;
+      --mint: #10B981;
+      --mint-soft: rgba(16, 185, 129, 0.12);
+      --coral: #EF4444;
+      --coral-soft: rgba(239, 68, 68, 0.12);
       --amber: #F59E0B;
-      --amber-soft: rgba(245, 158, 11, 0.12);
+      --amber-soft: rgba(245, 158, 11, 0.14);
+      --bmac-yellow: #FFDD00;
       --radius: 16px;
       --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
 
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #141210;
+        --bg: #121110;
         --card-bg: #1C1A17;
         --card-border: rgba(255, 255, 255, 0.08);
         --ink: #F7F5F2;
         --ink-2: #B3ADA3;
         --ink-3: #756E63;
+        --mint: #34D399;
+        --mint-soft: rgba(52, 211, 153, 0.16);
+        --coral: #F87171;
+        --coral-soft: rgba(248, 113, 113, 0.16);
         --amber: #FBBF24;
-        --amber-soft: rgba(251, 191, 36, 0.16);
+        --amber-soft: rgba(251, 191, 36, 0.18);
       }
     }
 
@@ -44,53 +54,111 @@
       flex-direction: column;
       align-items: center;
       min-height: 100vh;
-      padding: 60px 20px 80px;
+      padding: 0 20px 80px;
+    }
+
+    /* Navigation */
+    nav {
+      width: 100%;
+      max-width: 960px;
+      height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--card-border);
+      margin-bottom: 48px;
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 18px;
+      text-decoration: none;
+      color: var(--ink);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .nav-link {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--ink-2);
+      text-decoration: none;
+      transition: color 0.15s ease;
+    }
+
+    .nav-link:hover { color: var(--ink); }
+
+    .nav-bmac {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--amber-soft);
+      color: var(--ink);
+      padding: 7px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      text-decoration: none;
+      border: 1px solid rgba(245, 158, 11, 0.25);
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .nav-bmac:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(245, 158, 11, 0.2);
     }
 
     .container {
       width: 100%;
-      max-width: 680px;
+      max-width: 840px;
       display: flex;
       flex-direction: column;
       align-items: center;
       text-align: center;
     }
 
-    /* Animated Dot Mark */
+    /* Pure White Breathing Dot Mark */
     .mark-container {
       position: relative;
-      width: 96px;
-      height: 96px;
-      margin-bottom: 32px;
+      width: 88px;
+      height: 88px;
+      margin-bottom: 28px;
     }
 
     .mark-plate {
       width: 100%;
       height: 100%;
-      border-radius: 22px;
-      background: linear-gradient(180deg, #242220 0%, #171513 100%);
+      border-radius: 20px;
+      background: linear-gradient(180deg, #242220 0%, #161513 100%);
       border: 1px solid rgba(255, 255, 255, 0.12);
-      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.25);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
       position: relative;
       overflow: hidden;
     }
 
     .mark-dot {
       position: absolute;
-      width: 62px;
-      height: 62px;
+      width: 58px;
+      height: 58px;
       border-radius: 50%;
       background: #FFFFFF;
       right: -12px;
       top: -12px;
       animation: pulse-dot 3.2s ease-in-out infinite;
-      box-shadow: 0 0 24px rgba(255, 255, 255, 0.40);
+      box-shadow: 0 0 24px rgba(255, 255, 255, 0.35);
     }
 
     @keyframes pulse-dot {
       0%, 100% {
         transform: scale(1.0);
-        box-shadow: 0 0 16px rgba(255, 255, 255, 0.25);
+        box-shadow: 0 0 16px rgba(255, 255, 255, 0.20);
       }
       50% {
         transform: scale(1.035);
@@ -99,18 +167,18 @@
     }
 
     h1 {
-      font-size: 40px;
+      font-size: 46px;
       font-weight: 700;
-      letter-spacing: -0.03em;
-      margin-bottom: 12px;
-      line-height: 1.15;
+      letter-spacing: -0.035em;
+      margin-bottom: 14px;
+      line-height: 1.12;
     }
 
     p.subtitle {
-      font-size: 19px;
+      font-size: 20px;
       color: var(--ink-2);
-      margin-bottom: 36px;
-      max-width: 520px;
+      margin-bottom: 34px;
+      max-width: 580px;
       font-weight: 400;
     }
 
@@ -152,85 +220,416 @@
       border: 1px solid var(--card-border);
       padding: 11px 16px;
       border-radius: 10px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-family: var(--mono);
       font-size: 13px;
       color: var(--ink-2);
       cursor: pointer;
       user-select: all;
+      transition: all 0.15s ease;
     }
 
     .homebrew-box:hover {
       border-color: var(--ink-3);
     }
 
-    .loop-demo {
+    /* Interactive Live HUD Stage */
+    .stage-wrapper {
       width: 100%;
-      background: var(--card-bg);
+      background: linear-gradient(180deg, rgba(0, 0, 0, 0.03) 0%, rgba(0, 0, 0, 0.06) 100%);
       border: 1px solid var(--card-border);
-      border-radius: var(--radius);
-      padding: 24px;
-      margin-bottom: 48px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.04);
+      border-radius: 20px;
+      padding: 40px 24px;
+      margin-bottom: 56px;
+      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.06);
+      position: relative;
+      overflow: hidden;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .stage-wrapper {
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0.04) 100%);
+      }
+    }
+
+    .stage-controls {
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 16px;
-      font-size: 14.5px;
-      color: var(--ink-2);
-      font-weight: 500;
+      gap: 12px;
+      margin-bottom: 24px;
     }
 
-    .badge {
+    .keycap-button {
       display: inline-flex;
       align-items: center;
-      background: var(--amber-soft);
-      color: var(--amber);
+      gap: 6px;
+      padding: 8px 16px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      font-family: var(--mono);
+      font-size: 13px;
       font-weight: 600;
-      font-size: 12px;
-      padding: 4px 9px;
-      border-radius: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
+      color: var(--ink);
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+      cursor: pointer;
+      user-select: none;
+      transition: all 0.12s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
-    .features-grid {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 16px;
+    .keycap-button:active, .keycap-button.active {
+      transform: translateY(2px);
+      box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+      background: var(--ink);
+      color: var(--bg);
+    }
+
+    /* Floating Apple-grade HUD */
+    .hud-floating {
       width: 100%;
+      max-width: 440px;
+      margin: 0 auto 30px;
+      background: rgba(28, 26, 23, 0.88);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 28px;
+      padding: 14px 20px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.2);
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .hud-mark-mini {
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      background: #000000;
+      position: relative;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    .hud-mark-mini-dot {
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      background: #FFFFFF;
+      border-radius: 50%;
+      top: -4px;
+      right: -4px;
+    }
+
+    .waveform-bars {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+
+    .wave-bar {
+      width: 3px;
+      background: #FFFFFF;
+      border-radius: 2px;
+      animation: wave-anim 1.2s ease-in-out infinite alternate;
+    }
+
+    .wave-bar:nth-child(1) { height: 8px; animation-delay: 0.1s; }
+    .wave-bar:nth-child(2) { height: 16px; animation-delay: 0.3s; }
+    .wave-bar:nth-child(3) { height: 22px; animation-delay: 0.5s; }
+    .wave-bar:nth-child(4) { height: 14px; animation-delay: 0.2s; }
+    .wave-bar:nth-child(5) { height: 20px; animation-delay: 0.4s; }
+    .wave-bar:nth-child(6) { height: 10px; animation-delay: 0.15s; }
+
+    @keyframes wave-anim {
+      0% { transform: scaleY(0.4); opacity: 0.5; }
+      100% { transform: scaleY(1.0); opacity: 1.0; }
+    }
+
+    .hud-transcription {
+      flex: 1;
       text-align: left;
-      margin-bottom: 60px;
+      font-size: 14.5px;
+      font-weight: 500;
+      color: #FFFFFF;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
-    @media (max-width: 600px) {
-      .features-grid { grid-template-columns: 1fr; }
+    .hud-cursor {
+      display: inline-block;
+      width: 2px;
+      height: 16px;
+      background: var(--amber);
+      margin-left: 2px;
+      vertical-align: middle;
+      animation: blink 0.8s infinite;
     }
 
-    .feature-card {
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+    /* Simulated Note / Editor Target */
+    .mock-editor {
+      width: 100%;
+      max-width: 520px;
+      margin: 0 auto;
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: 12px;
-      padding: 20px;
+      padding: 18px 22px;
+      text-align: left;
+      font-size: 14.5px;
+      color: var(--ink-2);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+      min-height: 72px;
     }
 
-    .feature-card h3 {
-      font-size: 15px;
+    .mock-editor .pasted-text {
+      color: var(--ink);
+      font-weight: 500;
+    }
+
+    /* Settings Window Mockup */
+    .mock-window {
+      width: 100%;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      margin-bottom: 56px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.08);
+      overflow: hidden;
+      text-align: left;
+    }
+
+    .window-header {
+      height: 42px;
+      background: rgba(0, 0, 0, 0.02);
+      border-bottom: 1px solid var(--card-border);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 8px;
+    }
+
+    .traffic-dot { width: 12px; height: 12px; border-radius: 50%; }
+    .traffic-red { background: #FF5F56; }
+    .traffic-yellow { background: #FFBD2E; }
+    .traffic-green { background: #27C93F; }
+
+    .window-title {
+      flex: 1;
+      text-align: center;
+      font-size: 13px;
       font-weight: 600;
+      color: var(--ink-3);
+      margin-right: 48px;
+    }
+
+    .window-body {
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      min-height: 280px;
+    }
+
+    @media (max-width: 650px) {
+      .window-body { grid-template-columns: 1fr; }
+      .window-sidebar { display: none; }
+    }
+
+    .window-sidebar {
+      border-right: 1px solid var(--card-border);
+      padding: 16px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .sidebar-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--ink-2);
+      cursor: pointer;
+    }
+
+    .sidebar-row.active {
+      background: rgba(0, 0, 0, 0.06);
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .sidebar-row.active { background: rgba(255, 255, 255, 0.08); }
+    }
+
+    .window-content {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .provider-status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      background: rgba(0, 0, 0, 0.02);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--mint);
+    }
+
+    .delete-key-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--coral);
+      padding: 4px 10px;
+      border-radius: 6px;
+      background: var(--coral-soft);
+      cursor: pointer;
+      border: none;
+      font-family: inherit;
+    }
+
+    .keychain-note {
+      font-size: 12.5px;
+      color: var(--ink-3);
+      line-height: 1.4;
+    }
+
+    /* Comparison Table */
+    .comparison-section {
+      width: 100%;
+      margin-bottom: 56px;
+      text-align: left;
+    }
+
+    .comparison-section h2 {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+
+    .comparison-section p.section-sub {
+      font-size: 15px;
+      color: var(--ink-2);
+      text-align: center;
+      margin-bottom: 24px;
+    }
+
+    .table-wrapper {
+      width: 100%;
+      overflow-x: auto;
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      background: var(--card-bg);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+    }
+
+    th, td {
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--card-border);
+    }
+
+    th {
+      font-weight: 600;
+      color: var(--ink-2);
+      background: rgba(0, 0, 0, 0.02);
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    td.highlight {
+      font-weight: 600;
+      color: var(--mint);
+    }
+
+    /* Buy Me a Coffee Featured Card */
+    .bmac-card {
+      width: 100%;
+      background: linear-gradient(135deg, rgba(255, 221, 0, 0.12) 0%, rgba(245, 158, 11, 0.08) 100%);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      border-radius: 16px;
+      padding: 32px 28px;
+      margin-bottom: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      text-align: left;
+    }
+
+    @media (max-width: 650px) {
+      .bmac-card { flex-direction: column; text-align: center; }
+    }
+
+    .bmac-content h3 {
+      font-size: 19px;
+      font-weight: 700;
       margin-bottom: 6px;
       color: var(--ink);
     }
 
-    .feature-card p {
-      font-size: 13.5px;
+    .bmac-content p {
+      font-size: 14.5px;
       color: var(--ink-2);
+      max-width: 480px;
       line-height: 1.45;
     }
 
+    .bmac-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: #FFDD00;
+      color: #000000;
+      font-size: 15px;
+      font-weight: 700;
+      padding: 13px 22px;
+      border-radius: 12px;
+      text-decoration: none;
+      box-shadow: 0 4px 14px rgba(255, 221, 0, 0.3);
+      white-space: nowrap;
+      transition: all 0.18s ease;
+    }
+
+    .bmac-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(255, 221, 0, 0.45);
+    }
+
+    /* Footer */
     footer {
       display: flex;
       align-items: center;
-      gap: 20px;
-      font-size: 13.5px;
+      gap: 24px;
+      font-size: 14px;
       color: var(--ink-3);
     }
 
@@ -240,13 +639,29 @@
       transition: color 0.15s ease;
     }
 
-    footer a:hover {
-      color: var(--ink);
-    }
+    footer a:hover { color: var(--ink); }
   </style>
 </head>
 <body>
+  <!-- Header Navigation -->
+  <nav>
+    <a href="#" class="nav-brand">
+      <div class="hud-mark-mini">
+        <div class="hud-mark-mini-dot"></div>
+      </div>
+      <span>Dot</span>
+    </a>
+    <div class="nav-links">
+      <a href="https://github.com/anandlo/dot" class="nav-link">GitHub</a>
+      <a href="https://buymeacoffee.com/anandlo" target="_blank" rel="noopener" class="nav-bmac">
+        <span>☕</span>
+        <span>Buy Me a Coffee</span>
+      </a>
+    </div>
+  </nav>
+
   <div class="container">
+    <!-- Hero Pure White Breathing Mark -->
     <div class="mark-container">
       <div class="mark-plate">
         <div class="mark-dot"></div>
@@ -254,7 +669,7 @@
     </div>
 
     <h1>Write as fast as you can think.</h1>
-    <p class="subtitle">Fast, native, privacy-first push-to-talk voice dictation for macOS. Bring your own keys or run on-device.</p>
+    <p class="subtitle">Sub-50ms push-to-talk voice dictation for macOS. Bring your own keys or run on-device. Zero subscriptions, zero ambient recording.</p>
 
     <div class="cta-group">
       <a href="https://github.com/anandlo/dot/releases" class="btn-primary">
@@ -262,41 +677,218 @@
         Download Public Beta (macOS)
       </a>
 
-      <div class="homebrew-box" title="Click to copy" onclick="navigator.clipboard.writeText('brew install --cask dot')">
-        <span>brew install --cask dot</span>
+      <div class="homebrew-box" title="Click to copy" onclick="navigator.clipboard.writeText('brew install --cask anandlo/tap/dot')">
+        <span>brew install --cask anandlo/tap/dot</span>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
       </div>
     </div>
 
-    <div class="loop-demo">
-      <span class="badge">Push-To-Talk</span>
-      <span>Hold <strong>⌥⌘D</strong> &bull; Speak naturally &bull; Release to paste</span>
+    <!-- Live Animated Interactive Stage -->
+    <div class="stage-wrapper">
+      <div class="stage-controls">
+        <div class="keycap-button" id="triggerBtn" onclick="runDictationDemo()">
+          <span>⌥ Option</span>
+          <span>⌘ Command</span>
+          <span>D</span>
+          <span style="opacity: 0.6; font-size: 11px; margin-left: 4px;">Click to Trigger</span>
+        </div>
+      </div>
+
+      <!-- Floating HUD Pill -->
+      <div class="hud-floating" id="hudPill">
+        <div class="hud-mark-mini">
+          <div class="hud-mark-mini-dot"></div>
+        </div>
+        <div class="waveform-bars" id="hudWaves">
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+        </div>
+        <div class="hud-transcription" id="hudText">Listening…<span class="hud-cursor"></span></div>
+      </div>
+
+      <!-- Editor Landing Note -->
+      <div class="mock-editor">
+        <div style="font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); margin-bottom: 6px;">Notes — Output Target</div>
+        <div id="editorOutput">Hold <span style="font-family: var(--mono); font-weight: 600;">⌥⌘D</span> anywhere to speak. Your words will paste right at your cursor.</div>
+      </div>
     </div>
 
-    <div class="features-grid">
-      <div class="feature-card">
-        <h3>Sub-50ms Stop Latency</h3>
-        <p>Provisional trailing-silence VAD commits words instantly upon release. No sluggish dual roundtrips.</p>
+    <!-- Settings Window Preview with Keychain Management -->
+    <div class="mock-window">
+      <div class="window-header">
+        <div class="traffic-dot traffic-red"></div>
+        <div class="traffic-dot traffic-yellow"></div>
+        <div class="traffic-dot traffic-green"></div>
+        <div class="window-title">Dot Settings — Provider & Keychain</div>
       </div>
-      <div class="feature-card">
-        <h3>Provider Agnostic</h3>
-        <p>Switch between Apple On-Device Speech, OpenAI, Groq, Deepgram, ElevenLabs, Azure, or self-hosted Whisper.</p>
-      </div>
-      <div class="feature-card">
-        <h3>Zero Data Retention</h3>
-        <p>Native compliance with upstream ZDR flags. No audio or transcripts are ever stored upstream.</p>
-      </div>
-      <div class="feature-card">
-        <h3>Keychain Isolated</h3>
-        <p>API keys and credentials are stored exclusively in macOS Keychain. Zero plain-text tokens on disk.</p>
+      <div class="window-body">
+        <div class="window-sidebar">
+          <div class="sidebar-row">General</div>
+          <div class="sidebar-row active">Provider</div>
+          <div class="sidebar-row">Shortcuts</div>
+          <div class="sidebar-row">Appearance</div>
+          <div class="sidebar-row">About</div>
+        </div>
+        <div class="window-content">
+          <div class="provider-status-row">
+            <div>
+              <div style="font-weight: 600; font-size: 14px; margin-bottom: 2px;">Groq Whisper Large v3</div>
+              <div class="status-badge">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>
+                Connected · Keychain Active
+              </div>
+            </div>
+            <button class="delete-key-pill" title="Delete key from Keychain" onclick="alert('Key deleted from macOS Keychain!')">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              Delete Key
+            </button>
+          </div>
+
+          <div style="display: flex; gap: 8px;">
+            <input type="password" value="••••••••••••••••••••••••••••••••" readonly style="flex: 1; padding: 8px 12px; background: rgba(0, 0, 0, 0.04); border: 1px solid var(--card-border); border-radius: 8px; font-family: var(--mono); font-size: 12px; color: var(--ink);">
+            <button style="padding: 8px 14px; background: var(--ink); color: var(--bg); border: none; border-radius: 8px; font-weight: 600; font-size: 12px;">Replace</button>
+          </div>
+
+          <p class="keychain-note">
+            <strong>Hardware-Isolated Security:</strong> Once entered, API keys are retained in your macOS Keychain per-provider. When switching between OpenAI, Groq, or Deepgram, Dot instantly re-uses your saved credentials without retyping, and allows 1-click deletion at any time.
+          </p>
+        </div>
       </div>
     </div>
 
+    <!-- Comparison Section -->
+    <div class="comparison-section">
+      <h2>Why Dot?</h2>
+      <p class="section-sub">A pure native utility designed for speed, privacy, and zero monthly fees.</p>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Criteria</th>
+              <th>Dot</th>
+              <th>Wispr Flow</th>
+              <th>Superwhisper</th>
+              <th>MacWhisper</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Price</strong></td>
+              <td class="highlight">Free & Open Source</td>
+              <td>$144/year</td>
+              <td>$96/year</td>
+              <td>€39 one-time</td>
+            </tr>
+            <tr>
+              <td><strong>True Push-to-Talk</strong></td>
+              <td class="highlight">Yes (Hardware Dormant)</td>
+              <td>Background Active</td>
+              <td>Toggle Focus</td>
+              <td>Manual Hotkey</td>
+            </tr>
+            <tr>
+              <td><strong>Stop Latency</strong></td>
+              <td class="highlight">Sub-50ms (Zero-Wait)</td>
+              <td>~300-800ms</td>
+              <td>~400-1200ms</td>
+              <td>Local CPU Bound</td>
+            </tr>
+            <tr>
+              <td><strong>Model Choice</strong></td>
+              <td class="highlight">Any (BYOK or Local)</td>
+              <td>Proprietary Cloud</td>
+              <td>Hybrid Locked</td>
+              <td>Local Whisper Only</td>
+            </tr>
+            <tr>
+              <td><strong>Zero Data Retention</strong></td>
+              <td class="highlight">Yes (Enforced Upstream)</td>
+              <td>Cloud Logged</td>
+              <td>Cloud Logged</td>
+              <td>Local Only</td>
+            </tr>
+            <tr>
+              <td><strong>Memory Footprint</strong></td>
+              <td class="highlight">&lt; 35 MB</td>
+              <td>&gt; 250 MB</td>
+              <td>&gt; 400 MB</td>
+              <td>&gt; 600 MB</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Buy Me a Coffee Featured Section -->
+    <div class="bmac-card">
+      <div class="bmac-content">
+        <h3>Support Dot Development</h3>
+        <p>Dot is crafted by Anand as a fast, honest macOS native utility with no venture capital and no recurring subscription paywalls. If Dot makes your daily typing effortless, consider buying a coffee to keep development thriving!</p>
+      </div>
+      <a href="https://buymeacoffee.com/anandlo" target="_blank" rel="noopener" class="bmac-btn">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h1a4 4 0 1 1 0 8h-1"></path><path d="M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z"></path><line x1="6" y1="2" x2="6" y2="4"></line><line x1="10" y1="2" x2="10" y2="4"></line><line x1="14" y1="2" x2="14" y2="4"></line></svg>
+        <span>Buy Me a Coffee</span>
+      </a>
+    </div>
+
+    <!-- Footer -->
     <footer>
-      <a href="https://github.com/anandlo/dot">GitHub</a> &bull;
+      <a href="https://github.com/anandlo/dot">GitHub Repository</a> &bull;
       <a href="https://buymeacoffee.com/anandlo">Buy Me a Coffee</a> &bull;
-      <span>MIT License</span>
+      <span>MIT License</span> &bull;
+      <span>Designed for Apple Silicon</span>
     </footer>
   </div>
+
+  <script>
+    // Interactive Dictation Simulator
+    const sampleText = "Remind me to send the product roadmap before Friday afternoon.";
+    let isRunning = false;
+
+    function runDictationDemo() {
+      if (isRunning) return;
+      isRunning = true;
+
+      const triggerBtn = document.getElementById('triggerBtn');
+      const hudPill = document.getElementById('hudPill');
+      const hudText = document.getElementById('hudText');
+      const hudWaves = document.getElementById('hudWaves');
+      const editorOutput = document.getElementById('editorOutput');
+
+      triggerBtn.classList.add('active');
+      hudPill.style.transform = "scale(1.03)";
+      hudWaves.style.display = "flex";
+      hudText.innerHTML = '<span class="hud-cursor"></span>';
+
+      let charIndex = 0;
+      const interval = setInterval(() => {
+        if (charIndex < sampleText.length) {
+          hudText.innerHTML = sampleText.substring(0, charIndex + 1) + '<span class="hud-cursor"></span>';
+          charIndex++;
+        } else {
+          clearInterval(interval);
+          // Release & Paste
+          setTimeout(() => {
+            triggerBtn.classList.remove('active');
+            hudPill.style.transform = "scale(1.0)";
+            hudText.innerHTML = 'Pasted <span style="color: var(--mint);">✓</span>';
+            editorOutput.innerHTML = '<span class="pasted-text">' + sampleText + '</span>';
+            
+            setTimeout(() => {
+              hudText.innerHTML = 'Ready to dictate…';
+              isRunning = false;
+            }, 1800);
+          }, 400);
+        }
+      }, 42);
+    }
+
+    // Auto-run once after page load for instant delight
+    setTimeout(runDictationDemo, 1200);
+  </script>
 </body>
 </html>

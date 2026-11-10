@@ -1648,6 +1648,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return error.localizedDescription
                 }
             },
+            onDeleteAPIKey: { [weak self] providerID in
+                guard let self else { return "Dot is not running." }
+                do {
+                    try CredentialStore.delete(providerID: providerID)
+                    self.credentials.invalidate(providerID)
+                    self.rebuildProvider()
+                    self.refreshProviders()
+                    return nil
+                } catch {
+                    return error.localizedDescription
+                }
+            },
+            onDeleteAllAPIKeys: { [weak self] in
+                guard let self else { return "Dot is not running." }
+                do {
+                    for preset in ProviderPreset.all {
+                        try CredentialStore.delete(providerID: preset.providerID)
+                    }
+                    self.credentials.invalidateAll()
+                    self.rebuildProvider()
+                    self.refreshProviders()
+                    return nil
+                } catch {
+                    return error.localizedDescription
+                }
+            },
             onTest: { [weak self] providerID in
                 guard let self,
                       let provider = try? ProviderRegistry.makeProvider(

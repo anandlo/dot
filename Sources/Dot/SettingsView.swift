@@ -21,6 +21,10 @@ struct SettingsView: View {
     private let onChange: () -> Void
     /// Stores an API key. Returns an error message, or `nil` on success.
     private let onSetAPIKey: (String, String) -> String?
+    /// Deletes an API key for a provider. Returns an error message, or `nil` on success.
+    private let onDeleteAPIKey: (String) -> String?
+    /// Deletes all API keys for all providers from Keychain.
+    private let onDeleteAllAPIKeys: () -> String?
     /// Asks a provider whether it can transcribe right now.
     private let onTest: (String) async -> Bool
     /// Opens the shortcut recorder for the record shortcut.
@@ -61,6 +65,7 @@ struct SettingsView: View {
     @State private var availableModels: [AvailableModel] = []
     @State private var isLoadingModels = false
     @State private var isCustomModelSelected = false
+    @State private var showingDeleteAllConfirmation = false
     @FocusState private var focusedField: Field?
 
     /// Creates the settings.
@@ -72,6 +77,8 @@ struct SettingsView: View {
     ///     3 Appearance, 4 About.
     ///   - onChange: Called once for every real configuration change.
     ///   - onSetAPIKey: Writes a key and returns an error, or `nil`.
+    ///   - onDeleteAPIKey: Deletes a key and returns an error, or `nil`.
+    ///   - onDeleteAllAPIKeys: Purges all keys and returns an error, or `nil`.
     ///   - onTest: Checks whether a provider can transcribe right now.
     ///   - onChangeShortcut: Opens the record-shortcut recorder.
     ///   - onChangePasteShortcut: Opens the paste-shortcut recorder.
@@ -84,6 +91,8 @@ struct SettingsView: View {
         tab: Int = 0,
         onChange: @escaping () -> Void,
         onSetAPIKey: @escaping (String, String) -> String?,
+        onDeleteAPIKey: @escaping (String) -> String? = { _ in nil },
+        onDeleteAllAPIKeys: @escaping () -> String? = { nil },
         onTest: @escaping (String) async -> Bool,
         onChangeShortcut: @escaping () -> Void,
         onChangePasteShortcut: @escaping () -> Void = {},
@@ -96,6 +105,8 @@ struct SettingsView: View {
         _selected = State(initialValue: Page(rawValue: tab) ?? .general)
         self.onChange = onChange
         self.onSetAPIKey = onSetAPIKey
+        self.onDeleteAPIKey = onDeleteAPIKey
+        self.onDeleteAllAPIKeys = onDeleteAllAPIKeys
         self.onTest = onTest
         self.onChangeShortcut = onChangeShortcut
         self.onChangePasteShortcut = onChangePasteShortcut
@@ -582,6 +593,7 @@ struct SettingsView: View {
             languageCard
                 .dotSelectLayer()
             connectionCard
+            keychainSecurityCard
         }
     }
 
@@ -628,12 +640,30 @@ struct SettingsView: View {
                         }
                         .accessibilityLabel("API key")
                         .accessibilityHint("Paste the key for the service you chose. Dot stores it in the Keychain.")
-                    Button(connectingPrimary ? "Connecting…" : "Connect") {
+                    Button(connectingPrimary ? "Connecting…" : (hasStoredKey(selectedPreset) && trimmedPrimaryKey.isEmpty ? "Connected" : "Connect")) {
                         connect()
                     }
                     .buttonStyle(DotPrimaryButtonStyle())
                     .disabled(!canConnect)
                     .accessibilityHint("Stores the key in the macOS Keychain and selects the service.")
+
+                    if hasStoredKey(selectedPreset) && selectedPreset.key != .none {
+                        Button(role: .destructive) {
+                            deleteKey(for: selectedPreset)
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(DotTheme.coral)
+                                .frame(width: 32, height: 32)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(DotTheme.fieldFill)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .help("Delete key for \(selectedPreset.name) from Keychain")
+                        .accessibilityLabel("Delete stored key from Keychain")
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -745,7 +775,9 @@ struct SettingsView: View {
     /// Whether the Connect button can do something.
     private var canConnect: Bool {
         guard !connectingPrimary else { return false }
-        if selectedPreset.key == .required { return !trimmedPrimaryKey.isEmpty }
+        if selectedPreset.key == .required {
+            return !trimmedPrimaryKey.isEmpty || hasStoredKey(selectedPreset)
+        }
         return true
     }
 
@@ -787,6 +819,63 @@ struct SettingsView: View {
         )
         refreshModels()
         updateLanguageForModel(currentConfiguredModel)
+    }
+
+    private func deleteKey(for preset: ProviderPreset) {
+        if let error = onDeleteAPIKey(preset.providerID) {
+            keyStatus = KeyStatus(text: "Could not delete key", detail: error, tone: .bad)
+        } else {
+            savedProviders.remove(preset.providerID)
+            primaryKey = ""
+            keyStatus = KeyStatus(text: "Key deleted from Keychain", detail: nil, tone: .neutral)
+            revision += 1
+            onChange()
+        }
+    }
+
+    private func deleteAllKeys() {
+        if let error = onDeleteAllAPIKeys() {
+            keyStatus = KeyStatus(text: "Could not clear keys", detail: error, tone: .bad)
+        } else {
+            savedProviders.removeAll()
+            primaryKey = ""
+            keyStatus = KeyStatus(text: "All keys deleted from Keychain", detail: nil, tone: .neutral)
+            revision += 1
+            onChange()
+        }
+    }
+
+    private var keychainSecurityCard: some View {
+        settingsCard("Keychain & Security", symbol: "lock.shield") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("All API keys are encrypted and stored in the macOS Keychain. Switching providers retains each key so you can toggle between providers without retyping.")
+                    .font(DotTheme.smallFont)
+                    .foregroundStyle(DotTheme.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack {
+                    Button("Delete All Keys from Keychain") {
+                        showingDeleteAllConfirmation = true
+                    }
+                    .buttonStyle(DotSecondaryButtonStyle())
+                    .foregroundStyle(DotTheme.coral)
+                    .confirmationDialog(
+                        "Delete all stored API keys?",
+                        isPresented: $showingDeleteAllConfirmation,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Delete All Keys", role: .destructive) {
+                            deleteAllKeys()
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("This will permanently remove API keys for all providers from macOS Keychain.")
+                    }
+
+                    Spacer()
+                }
+            }
+        }
     }
 
     private var availableLanguages: [AvailableLanguage] {
@@ -2560,12 +2649,14 @@ struct SettingsView: View {
         case good
         case waiting
         case bad
+        case neutral
 
         var color: Color {
             switch self {
             case .good: DotTheme.mint
             case .waiting: DotTheme.amber
             case .bad: DotTheme.coral
+            case .neutral: DotTheme.ink3
             }
         }
     }
