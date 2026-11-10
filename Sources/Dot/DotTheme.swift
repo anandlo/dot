@@ -630,24 +630,22 @@ struct DotSignalMark: View {
         if animated {
             TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
-                let breathing = (sin(t * 2.4) + 1.0) * 0.5
-                let ring1 = (t * 0.75).truncatingRemainder(dividingBy: 1.0)
-                let ring2 = ((t * 0.75) + 0.5).truncatingRemainder(dividingBy: 1.0)
-                content(breathing: breathing, ring1: ring1, ring2: ring2)
+                let breathing = (sin(t * 2.0) + 1.0) * 0.5
+                content(breathing: breathing)
             }
         } else {
-            content(breathing: 0, ring1: 0, ring2: 0)
+            content(breathing: 0)
         }
     }
 
     @ViewBuilder
-    private func content(breathing: Double, ring1: Double, ring2: Double) -> some View {
-        let discScale = 1.0 + (breathing * 0.08)
-        let auraOpacity = 0.18 + (breathing * 0.28)
-        let auraBlur = size * (0.07 + (breathing * 0.06))
-
+    private func content(breathing: Double) -> some View {
         let offsetX = size * (centre.x - 0.5)
         let offsetY = size * (centre.y - 0.5)
+
+        let bloomOpacity = 0.20 + (breathing * 0.25)
+        let bloomBlur = size * (0.06 + (breathing * 0.05))
+        let bloomScale = 1.0 + (breathing * 0.10)
 
         ZStack {
             RoundedRectangle(cornerRadius: corner, style: .continuous)
@@ -665,32 +663,33 @@ struct DotSignalMark: View {
 
             if animated {
                 Circle()
-                    .strokeBorder(Color.white.opacity((1.0 - ring1) * 0.35), lineWidth: max(1, size * 0.018))
-                    .frame(width: disc * (1.0 + ring1 * 0.75), height: disc * (1.0 + ring1 * 0.75))
-                    .offset(x: offsetX, y: offsetY)
-
-                Circle()
-                    .strokeBorder(Color.white.opacity((1.0 - ring2) * 0.35), lineWidth: max(1, size * 0.018))
-                    .frame(width: disc * (1.0 + ring2 * 0.75), height: disc * (1.0 + ring2 * 0.75))
-                    .offset(x: offsetX, y: offsetY)
-
-                Circle()
-                    .fill(DotTheme.amber.opacity(auraOpacity))
-                    .frame(width: disc * 1.35, height: disc * 1.35)
-                    .blur(radius: auraBlur)
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                Color.white.opacity(bloomOpacity * 0.9),
+                                DotTheme.amber.opacity(bloomOpacity * 0.5),
+                                Color.clear
+                            ],
+                            center: .center,
+                            startRadius: disc * 0.2,
+                            endRadius: disc * 0.8
+                        )
+                    )
+                    .frame(width: disc * 1.4 * bloomScale, height: disc * 1.4 * bloomScale)
+                    .blur(radius: bloomBlur)
                     .offset(x: offsetX, y: offsetY)
             }
 
             Circle()
                 .fill(Color.white)
-                .frame(width: disc * discScale, height: disc * discScale)
+                .frame(width: disc, height: disc)
                 .offset(x: offsetX, y: offsetY)
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         .shadow(
-            color: animated ? DotTheme.amber.opacity(0.18 + breathing * 0.16) : DotTheme.markShadow,
-            radius: size * (0.075 + (animated ? breathing * 0.03 : 0)),
+            color: animated ? DotTheme.markShadow.opacity(0.85 + breathing * 0.15) : DotTheme.markShadow,
+            radius: size * (0.075 + (animated ? breathing * 0.02 : 0)),
             y: size * 0.045
         )
     }

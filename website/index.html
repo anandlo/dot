@@ -83,33 +83,17 @@
       background: #FFFFFF;
       right: -12px;
       top: -12px;
-      animation: pulse-dot 2.8s ease-in-out infinite;
-      box-shadow: 0 0 20px rgba(245, 158, 11, 0.3);
-    }
-
-    .mark-ripple {
-      position: absolute;
-      width: 62px;
-      height: 62px;
-      border-radius: 50%;
-      border: 1.5px solid rgba(255, 255, 255, 0.45);
-      right: -12px;
-      top: -12px;
-      animation: ripple 2.8s cubic-bezier(0.2, 0.8, 0.4, 1) infinite;
-    }
-
-    .mark-ripple.delay {
-      animation-delay: 1.4s;
+      animation: pulse-dot 3.2s ease-in-out infinite;
+      box-shadow: 0 0 24px rgba(245, 158, 11, 0.35);
     }
 
     @keyframes pulse-dot {
-      0%, 100% { transform: scale(1); box-shadow: 0 0 16px rgba(245, 158, 11, 0.25); }
-      50% { transform: scale(1.08); box-shadow: 0 0 28px rgba(245, 158, 11, 0.45); }
-    }
-
-    @keyframes ripple {
-      0% { transform: scale(1); opacity: 0.6; }
-      100% { transform: scale(1.75); opacity: 0; }
+      0%, 100% {
+        box-shadow: 0 0 16px rgba(245, 158, 11, 0.20);
+      }
+      50% {
+        box-shadow: 0 0 36px rgba(245, 158, 11, 0.50);
+      }
     }
 
     h1 {
@@ -263,8 +247,6 @@
   <div class="container">
     <div class="mark-container">
       <div class="mark-plate">
-        <div class="mark-ripple"></div>
-        <div class="mark-ripple delay"></div>
         <div class="mark-dot"></div>
       </div>
     </div>
