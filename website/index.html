@@ -4,46 +4,30 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dot — Write as fast as you can think</title>
-  <meta name="description" content="Fast, native, privacy-first push-to-talk voice dictation utility for macOS.">
+  <meta name="description" content="Fast, native, privacy-first push-to-talk voice dictation for macOS. Sub-50ms latency, zero data retention, and open-source.">
   <link rel="icon" type="image/png" href="assets/icon.png">
   <style>
     :root {
-      --bg: #F5F4F0;
-      --card-bg: #FFFFFF;
-      --card-border: rgba(0, 0, 0, 0.08);
-      --ink: #1C1917;
-      --ink-2: #57534E;
-      --ink-3: #8C877D;
-      --mint: #10B981;
-      --mint-soft: rgba(16, 185, 129, 0.12);
-      --coral: #EF4444;
-      --coral-soft: rgba(239, 68, 68, 0.12);
-      --amber: #F59E0B;
-      --amber-soft: rgba(245, 158, 11, 0.14);
-      --bmac-yellow: #FFDD00;
-      --radius: 16px;
-      --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #121110;
-        --card-bg: #1C1A17;
-        --card-border: rgba(255, 255, 255, 0.08);
-        --ink: #F7F5F2;
-        --ink-2: #B3ADA3;
-        --ink-3: #756E63;
-        --mint: #34D399;
-        --mint-soft: rgba(52, 211, 153, 0.16);
-        --coral: #F87171;
-        --coral-soft: rgba(248, 113, 113, 0.16);
-        --amber: #FBBF24;
-        --amber-soft: rgba(251, 191, 36, 0.18);
-      }
+      --bg: #0D0C0B;
+      --surface: #151413;
+      --surface-elevated: #1C1A18;
+      --surface-border: rgba(255, 255, 255, 0.08);
+      --surface-border-subtle: rgba(255, 255, 255, 0.04);
+      --ink: #F5F3EF;
+      --ink-muted: #9E998F;
+      --ink-faint: #635E54;
+      --mint: #34D399;
+      --mint-glow: rgba(52, 211, 153, 0.18);
+      --coral: #F87171;
+      --amber: #FBBF24;
+      --bmac-gold: #FFDD00;
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", sans-serif;
+      --mono: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+
     body {
       font-family: var(--font);
       background-color: var(--bg);
@@ -54,41 +38,84 @@
       flex-direction: column;
       align-items: center;
       min-height: 100vh;
-      padding: 0 20px 80px;
+      overflow-x: hidden;
+      selection-background-color: rgba(255, 255, 255, 0.2);
+    }
+
+    ::selection {
+      background: rgba(255, 255, 255, 0.2);
+      color: #FFFFFF;
+    }
+
+    /* Ambient Background Light */
+    .ambient-mesh {
+      position: fixed;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100vw;
+      max-width: 1200px;
+      height: 600px;
+      background: radial-gradient(ellipse 60% 400px at 50% 0%, rgba(255, 255, 255, 0.035) 0%, transparent 80%);
+      pointer-events: none;
+      z-index: 0;
     }
 
     /* Navigation */
     nav {
       width: 100%;
-      max-width: 960px;
+      max-width: 980px;
       height: 72px;
+      padding: 0 24px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border-bottom: 1px solid var(--card-border);
-      margin-bottom: 48px;
+      border-bottom: 1px solid var(--surface-border-subtle);
+      position: relative;
+      z-index: 10;
     }
 
     .nav-brand {
       display: flex;
       align-items: center;
       gap: 12px;
-      font-weight: 700;
-      font-size: 18px;
+      font-weight: 600;
+      font-size: 16px;
+      letter-spacing: -0.01em;
       text-decoration: none;
       color: var(--ink);
+    }
+
+    .nav-dot-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      background: #1C1A18;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .nav-dot-disc {
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #FFFFFF;
+      right: -3px;
+      top: -3px;
     }
 
     .nav-links {
       display: flex;
       align-items: center;
-      gap: 16px;
+      gap: 24px;
     }
 
     .nav-link {
-      font-size: 14px;
+      font-size: 13.5px;
       font-weight: 500;
-      color: var(--ink-2);
+      color: var(--ink-muted);
       text-decoration: none;
       transition: color 0.15s ease;
     }
@@ -98,34 +125,62 @@
     .nav-bmac {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      background: var(--amber-soft);
-      color: var(--ink);
-      padding: 7px 14px;
+      gap: 7px;
+      padding: 6px 13px;
       border-radius: 20px;
+      background: rgba(255, 221, 0, 0.08);
+      border: 1px solid rgba(255, 221, 0, 0.22);
+      color: #F7E479;
       font-size: 13px;
-      font-weight: 600;
+      font-weight: 500;
       text-decoration: none;
-      border: 1px solid rgba(245, 158, 11, 0.25);
       transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     .nav-bmac:hover {
+      background: rgba(255, 221, 0, 0.14);
+      border-color: rgba(255, 221, 0, 0.4);
       transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(245, 158, 11, 0.2);
     }
 
-    .container {
+    /* Main Container */
+    main {
       width: 100%;
-      max-width: 840px;
+      max-width: 940px;
+      padding: 56px 24px 100px;
       display: flex;
       flex-direction: column;
       align-items: center;
       text-align: center;
+      position: relative;
+      z-index: 1;
     }
 
-    /* Pure White Breathing Dot Mark */
-    .mark-container {
+    /* Hero Pill */
+    .hero-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      padding: 5px 14px;
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--ink-muted);
+      margin-bottom: 28px;
+    }
+
+    .pill-green-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--mint);
+      box-shadow: 0 0 8px var(--mint);
+    }
+
+    /* Organic Luminous Breathing Disc */
+    .hero-mark {
       position: relative;
       width: 88px;
       height: 88px;
@@ -136,9 +191,9 @@
       width: 100%;
       height: 100%;
       border-radius: 20px;
-      background: linear-gradient(180deg, #242220 0%, #161513 100%);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+      background: linear-gradient(180deg, #1C1A18 0%, #121110 100%);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
       position: relative;
       overflow: hidden;
     }
@@ -151,208 +206,201 @@
       background: #FFFFFF;
       right: -12px;
       top: -12px;
-      animation: pulse-dot 3.2s ease-in-out infinite;
-      box-shadow: 0 0 24px rgba(255, 255, 255, 0.35);
+      animation: breathe 3.4s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
     }
 
-    @keyframes pulse-dot {
+    @keyframes breathe {
       0%, 100% {
         transform: scale(1.0);
-        box-shadow: 0 0 16px rgba(255, 255, 255, 0.20);
+        box-shadow: 0 0 18px rgba(255, 255, 255, 0.22);
       }
       50% {
         transform: scale(1.035);
-        box-shadow: 0 0 32px rgba(255, 255, 255, 0.65);
+        box-shadow: 0 0 36px rgba(255, 255, 255, 0.65);
       }
     }
 
     h1 {
-      font-size: 46px;
+      font-size: 52px;
       font-weight: 700;
-      letter-spacing: -0.035em;
-      margin-bottom: 14px;
-      line-height: 1.12;
+      letter-spacing: -0.04em;
+      line-height: 1.08;
+      margin-bottom: 16px;
+      color: #FFFFFF;
     }
 
-    p.subtitle {
+    p.hero-desc {
       font-size: 20px;
-      color: var(--ink-2);
-      margin-bottom: 34px;
-      max-width: 580px;
       font-weight: 400;
+      color: var(--ink-muted);
+      line-height: 1.5;
+      max-width: 620px;
+      margin-bottom: 36px;
     }
 
-    .cta-group {
+    /* CTA Area */
+    .cta-row {
       display: flex;
-      flex-direction: column;
+      align-items: center;
       gap: 12px;
       width: 100%;
-      max-width: 380px;
-      margin-bottom: 48px;
+      max-width: 480px;
+      margin-bottom: 60px;
     }
 
-    .btn-primary {
+    @media (max-width: 580px) {
+      .cta-row { flex-direction: column; width: 100%; }
+    }
+
+    .btn-download {
+      flex: 1;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 10px;
-      background: var(--ink);
-      color: var(--bg);
-      text-decoration: none;
-      padding: 15px 24px;
-      border-radius: 12px;
-      font-size: 16px;
+      gap: 9px;
+      background: #FFFFFF;
+      color: #0D0C0B;
+      font-size: 14.5px;
       font-weight: 600;
-      transition: all 0.18s ease;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+      padding: 13px 20px;
+      border-radius: 11px;
+      text-decoration: none;
+      box-shadow: 0 4px 16px rgba(255, 255, 255, 0.12);
+      transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
-    .btn-primary:hover {
+    .btn-download:hover {
       transform: translateY(-1px);
-      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+      box-shadow: 0 6px 24px rgba(255, 255, 255, 0.22);
     }
 
-    .homebrew-box {
-      display: flex;
+    .brew-snippet {
+      flex: 1;
+      display: inline-flex;
       align-items: center;
       justify-content: space-between;
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      padding: 11px 16px;
-      border-radius: 10px;
+      gap: 10px;
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 11px;
+      padding: 12px 16px;
       font-family: var(--mono);
-      font-size: 13px;
-      color: var(--ink-2);
+      font-size: 12.5px;
+      color: var(--ink-muted);
       cursor: pointer;
       user-select: all;
       transition: all 0.15s ease;
     }
 
-    .homebrew-box:hover {
-      border-color: var(--ink-3);
+    .brew-snippet:hover {
+      border-color: rgba(255, 255, 255, 0.18);
+      color: var(--ink);
     }
 
-    /* Interactive Live HUD Stage */
-    .stage-wrapper {
+    /* Live Interactive Instrument Canvas */
+    .instrument-card {
       width: 100%;
-      background: linear-gradient(180deg, rgba(0, 0, 0, 0.03) 0%, rgba(0, 0, 0, 0.06) 100%);
-      border: 1px solid var(--card-border);
+      background: linear-gradient(180deg, #151412 0%, #100F0E 100%);
+      border: 1px solid var(--surface-border);
       border-radius: 20px;
       padding: 40px 24px;
-      margin-bottom: 56px;
-      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.06);
+      margin-bottom: 72px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
       position: relative;
-      overflow: hidden;
     }
 
-    @media (prefers-color-scheme: dark) {
-      .stage-wrapper {
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0.04) 100%);
-      }
-    }
-
-    .stage-controls {
+    /* Tactile 3D Keycap Switch */
+    .keycap-deck {
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 12px;
-      margin-bottom: 24px;
+      gap: 10px;
+      margin-bottom: 30px;
     }
 
-    .keycap-button {
+    .keycap {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 8px 16px;
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
+      justify-content: center;
+      padding: 9px 18px;
+      background: linear-gradient(180deg, #242220 0%, #1A1917 100%);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-bottom: 2px solid rgba(255, 255, 255, 0.05);
       border-radius: 8px;
+      box-shadow: 0 3px 6px rgba(0, 0, 0, 0.35);
       font-family: var(--mono);
-      font-size: 13px;
+      font-size: 13.5px;
       font-weight: 600;
-      color: var(--ink);
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+      color: #E5E2DC;
       cursor: pointer;
       user-select: none;
-      transition: all 0.12s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: all 0.08s ease;
     }
 
-    .keycap-button:active, .keycap-button.active {
+    .keycap:hover { border-color: rgba(255, 255, 255, 0.22); color: #FFFFFF; }
+
+    .keycap:active, .keycap.pressed {
       transform: translateY(2px);
-      box-shadow: 0 0 0 rgba(0, 0, 0, 0);
-      background: var(--ink);
-      color: var(--bg);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+      background: #141312;
+      border-color: rgba(255, 255, 255, 0.08);
     }
 
-    /* Floating Apple-grade HUD */
-    .hud-floating {
+    .keycap-hint {
+      font-size: 12px;
+      color: var(--ink-faint);
+      margin-left: 6px;
+      font-family: var(--font);
+    }
+
+    /* Floating Island HUD */
+    .hud-island {
       width: 100%;
       max-width: 440px;
-      margin: 0 auto 30px;
-      background: rgba(28, 26, 23, 0.88);
-      backdrop-filter: blur(28px);
-      -webkit-backdrop-filter: blur(28px);
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      border-radius: 28px;
-      padding: 14px 20px;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.2);
+      margin: 0 auto 32px;
+      background: rgba(28, 26, 24, 0.94);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 26px;
+      padding: 13px 20px;
       display: flex;
       align-items: center;
       gap: 14px;
-      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
+      transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
-    .hud-mark-mini {
-      width: 28px;
-      height: 28px;
-      border-radius: 7px;
-      background: #000000;
-      position: relative;
-      overflow: hidden;
-      flex-shrink: 0;
-    }
-
-    .hud-mark-mini-dot {
-      position: absolute;
-      width: 18px;
-      height: 18px;
-      background: #FFFFFF;
-      border-radius: 50%;
-      top: -4px;
-      right: -4px;
-    }
-
-    .waveform-bars {
+    .hud-wave {
       display: flex;
       align-items: center;
       gap: 3px;
-      height: 24px;
-      flex-shrink: 0;
+      height: 22px;
     }
 
-    .wave-bar {
-      width: 3px;
+    .wave-line {
+      width: 2.5px;
       background: #FFFFFF;
       border-radius: 2px;
-      animation: wave-anim 1.2s ease-in-out infinite alternate;
+      animation: wave-bounce 1.1s ease-in-out infinite alternate;
     }
 
-    .wave-bar:nth-child(1) { height: 8px; animation-delay: 0.1s; }
-    .wave-bar:nth-child(2) { height: 16px; animation-delay: 0.3s; }
-    .wave-bar:nth-child(3) { height: 22px; animation-delay: 0.5s; }
-    .wave-bar:nth-child(4) { height: 14px; animation-delay: 0.2s; }
-    .wave-bar:nth-child(5) { height: 20px; animation-delay: 0.4s; }
-    .wave-bar:nth-child(6) { height: 10px; animation-delay: 0.15s; }
+    .wave-line:nth-child(1) { height: 6px; animation-delay: 0.1s; }
+    .wave-line:nth-child(2) { height: 14px; animation-delay: 0.25s; }
+    .wave-line:nth-child(3) { height: 20px; animation-delay: 0.45s; }
+    .wave-line:nth-child(4) { height: 12px; animation-delay: 0.15s; }
+    .wave-line:nth-child(5) { height: 18px; animation-delay: 0.35s; }
+    .wave-line:nth-child(6) { height: 8px; animation-delay: 0.2s; }
 
-    @keyframes wave-anim {
-      0% { transform: scaleY(0.4); opacity: 0.5; }
+    @keyframes wave-bounce {
+      0% { transform: scaleY(0.35); opacity: 0.4; }
       100% { transform: scaleY(1.0); opacity: 1.0; }
     }
 
-    .hud-transcription {
+    .hud-text {
       flex: 1;
       text-align: left;
-      font-size: 14.5px;
+      font-size: 14px;
       font-weight: 500;
       color: #FFFFFF;
       white-space: nowrap;
@@ -360,299 +408,299 @@
       text-overflow: ellipsis;
     }
 
-    .hud-cursor {
+    .hud-caret {
       display: inline-block;
       width: 2px;
-      height: 16px;
-      background: var(--amber);
+      height: 15px;
+      background: var(--mint);
       margin-left: 2px;
       vertical-align: middle;
-      animation: blink 0.8s infinite;
+      animation: caret-blink 0.7s infinite;
     }
 
-    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    @keyframes caret-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
-    /* Simulated Note / Editor Target */
-    .mock-editor {
+    /* Output Editor Viewport */
+    .editor-target {
       width: 100%;
+      max-width: 540px;
+      margin: 0 auto;
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 12px;
+      padding: 16px 20px;
+      text-align: left;
+      font-size: 14px;
+      color: var(--ink-muted);
+      min-height: 80px;
+    }
+
+    .editor-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      font-family: var(--mono);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--ink-faint);
+      margin-bottom: 8px;
+    }
+
+    .latency-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--mint);
+      background: var(--mint-glow);
+      padding: 2px 7px;
+      border-radius: 4px;
+    }
+
+    .editor-body {
+      color: var(--ink);
+      font-weight: 450;
+      line-height: 1.5;
+    }
+
+    /* Section Headings */
+    .section-header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    .section-title {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: #FFFFFF;
+      margin-bottom: 8px;
+    }
+
+    .section-subtitle {
+      font-size: 16px;
+      color: var(--ink-muted);
       max-width: 520px;
       margin: 0 auto;
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 12px;
-      padding: 18px 22px;
-      text-align: left;
-      font-size: 14.5px;
-      color: var(--ink-2);
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
-      min-height: 72px;
     }
 
-    .mock-editor .pasted-text {
-      color: var(--ink);
-      font-weight: 500;
-    }
-
-    /* Settings Window Mockup */
-    .mock-window {
+    /* Honest Minimalist Comparison */
+    .comparison-deck {
       width: 100%;
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 16px;
-      margin-bottom: 56px;
-      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.08);
-      overflow: hidden;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-bottom: 72px;
       text-align: left;
     }
 
-    .window-header {
-      height: 42px;
-      background: rgba(0, 0, 0, 0.02);
-      border-bottom: 1px solid var(--card-border);
-      display: flex;
-      align-items: center;
-      padding: 0 16px;
-      gap: 8px;
+    @media (max-width: 780px) {
+      .comparison-deck { grid-template-columns: 1fr; }
     }
 
-    .traffic-dot { width: 12px; height: 12px; border-radius: 50%; }
-    .traffic-red { background: #FF5F56; }
-    .traffic-yellow { background: #FFBD2E; }
-    .traffic-green { background: #27C93F; }
-
-    .window-title {
-      flex: 1;
-      text-align: center;
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--ink-3);
-      margin-right: 48px;
-    }
-
-    .window-body {
-      display: grid;
-      grid-template-columns: 200px 1fr;
-      min-height: 280px;
-    }
-
-    @media (max-width: 650px) {
-      .window-body { grid-template-columns: 1fr; }
-      .window-sidebar { display: none; }
-    }
-
-    .window-sidebar {
-      border-right: 1px solid var(--card-border);
-      padding: 16px 10px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .sidebar-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 8px 12px;
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--ink-2);
-      cursor: pointer;
-    }
-
-    .sidebar-row.active {
-      background: rgba(0, 0, 0, 0.06);
-      color: var(--ink);
-      font-weight: 600;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .sidebar-row.active { background: rgba(255, 255, 255, 0.08); }
-    }
-
-    .window-content {
+    .comparison-card {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 14px;
       padding: 24px;
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 12px;
     }
 
-    .provider-status-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px 16px;
-      background: rgba(0, 0, 0, 0.02);
-      border: 1px solid var(--card-border);
-      border-radius: 10px;
+    .comparison-card.highlight {
+      background: linear-gradient(180deg, #1A1916 0%, #141311 100%);
+      border-color: rgba(255, 255, 255, 0.16);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+      position: relative;
     }
 
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12.5px;
+    .card-tag {
+      font-size: 11px;
+      font-family: var(--mono);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--ink-faint);
+    }
+
+    .highlight .card-tag { color: var(--mint); }
+
+    .card-title {
+      font-size: 18px;
       font-weight: 600;
-      color: var(--mint);
+      color: #FFFFFF;
     }
 
-    .delete-key-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      color: var(--coral);
-      padding: 4px 10px;
-      border-radius: 6px;
-      background: var(--coral-soft);
-      cursor: pointer;
-      border: none;
-      font-family: inherit;
-    }
-
-    .keychain-note {
-      font-size: 12.5px;
-      color: var(--ink-3);
-      line-height: 1.4;
-    }
-
-    /* Comparison Table */
-    .comparison-section {
-      width: 100%;
-      margin-bottom: 56px;
-      text-align: left;
-    }
-
-    .comparison-section h2 {
-      font-size: 24px;
-      font-weight: 700;
-      margin-bottom: 8px;
-      text-align: center;
-    }
-
-    .comparison-section p.section-sub {
-      font-size: 15px;
-      color: var(--ink-2);
-      text-align: center;
-      margin-bottom: 24px;
-    }
-
-    .table-wrapper {
-      width: 100%;
-      overflow-x: auto;
-      border: 1px solid var(--card-border);
-      border-radius: 12px;
-      background: var(--card-bg);
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
+    .card-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
       font-size: 13.5px;
+      color: var(--ink-muted);
     }
 
-    th, td {
-      padding: 12px 16px;
-      text-align: left;
-      border-bottom: 1px solid var(--card-border);
-    }
-
-    th {
-      font-weight: 600;
-      color: var(--ink-2);
-      background: rgba(0, 0, 0, 0.02);
-    }
-
-    tr:last-child td { border-bottom: none; }
-
-    td.highlight {
-      font-weight: 600;
-      color: var(--mint);
-    }
-
-    /* Buy Me a Coffee Featured Card */
-    .bmac-card {
-      width: 100%;
-      background: linear-gradient(135deg, rgba(255, 221, 0, 0.12) 0%, rgba(245, 158, 11, 0.08) 100%);
-      border: 1px solid rgba(245, 158, 11, 0.35);
-      border-radius: 16px;
-      padding: 32px 28px;
-      margin-bottom: 60px;
+    .card-list li {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 24px;
-      text-align: left;
-    }
-
-    @media (max-width: 650px) {
-      .bmac-card { flex-direction: column; text-align: center; }
-    }
-
-    .bmac-content h3 {
-      font-size: 19px;
-      font-weight: 700;
-      margin-bottom: 6px;
-      color: var(--ink);
-    }
-
-    .bmac-content p {
-      font-size: 14.5px;
-      color: var(--ink-2);
-      max-width: 480px;
+      align-items: flex-start;
+      gap: 10px;
       line-height: 1.45;
     }
 
-    .bmac-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      background: #FFDD00;
-      color: #000000;
-      font-size: 15px;
-      font-weight: 700;
-      padding: 13px 22px;
-      border-radius: 12px;
-      text-decoration: none;
-      box-shadow: 0 4px 14px rgba(255, 221, 0, 0.3);
-      white-space: nowrap;
-      transition: all 0.18s ease;
+    .card-list li span:last-child {
+      flex: 1;
     }
 
-    .bmac-btn:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 20px rgba(255, 221, 0, 0.45);
+    .highlight .card-list li { color: var(--ink); }
+
+    .bullet-ok { color: var(--mint); flex-shrink: 0; }
+    .bullet-no { color: var(--coral); flex-shrink: 0; }
+    .bullet-dim { color: var(--ink-faint); flex-shrink: 0; }
+
+    /* Technical Pillars (Architecture) */
+    .pillars-grid {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 72px;
+      text-align: left;
+    }
+
+    @media (max-width: 680px) {
+      .pillars-grid { grid-template-columns: 1fr; }
+    }
+
+    .pillar-box {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 12px;
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .pillar-box h4 {
+      font-size: 15px;
+      font-weight: 600;
+      color: #FFFFFF;
+    }
+
+    .pillar-box p {
+      font-size: 13.5px;
+      color: var(--ink-muted);
+      line-height: 1.5;
+    }
+
+    .pillar-code {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--ink-faint);
+      margin-top: 4px;
+    }
+
+    /* Minimalist Sponsor Callout */
+    .sponsor-bar {
+      width: 100%;
+      background: linear-gradient(180deg, rgba(255, 221, 0, 0.05) 0%, rgba(255, 221, 0, 0.02) 100%);
+      border: 1px solid rgba(255, 221, 0, 0.16);
+      border-radius: 14px;
+      padding: 24px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      text-align: left;
+      margin-bottom: 72px;
+    }
+
+    @media (max-width: 650px) {
+      .sponsor-bar { flex-direction: column; text-align: center; }
+    }
+
+    .sponsor-text h4 {
+      font-size: 15px;
+      font-weight: 600;
+      color: #FFFFFF;
+      margin-bottom: 4px;
+    }
+
+    .sponsor-text p {
+      font-size: 13.5px;
+      color: var(--ink-muted);
+      max-width: 480px;
+    }
+
+    .sponsor-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: #FFDD00;
+      color: #0D0C0B;
+      font-size: 13.5px;
+      font-weight: 600;
+      padding: 10px 18px;
+      border-radius: 9px;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+    }
+
+    .sponsor-btn:hover {
+      background: #FFE433;
+      transform: translateY(-1px);
     }
 
     /* Footer */
     footer {
+      width: 100%;
+      max-width: 980px;
+      padding: 24px;
       display: flex;
       align-items: center;
-      gap: 24px;
-      font-size: 14px;
-      color: var(--ink-3);
+      justify-content: space-between;
+      border-top: 1px solid var(--surface-border-subtle);
+      font-size: 13px;
+      color: var(--ink-faint);
     }
 
-    footer a {
-      color: var(--ink-2);
+    @media (max-width: 580px) {
+      footer { flex-direction: column; gap: 12px; }
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 18px;
+    }
+
+    .footer-links a {
+      color: var(--ink-muted);
       text-decoration: none;
       transition: color 0.15s ease;
     }
 
-    footer a:hover { color: var(--ink); }
+    .footer-links a:hover { color: var(--ink); }
   </style>
 </head>
 <body>
-  <!-- Header Navigation -->
+  <div class="ambient-mesh"></div>
+
+  <!-- Top Navigation -->
   <nav>
     <a href="#" class="nav-brand">
-      <div class="hud-mark-mini">
-        <div class="hud-mark-mini-dot"></div>
+      <div class="nav-dot-icon">
+        <div class="nav-dot-disc"></div>
       </div>
       <span>Dot</span>
     </a>
+
     <div class="nav-links">
-      <a href="https://github.com/anandlo/dot" class="nav-link">GitHub</a>
+      <a href="#comparison" class="nav-link">Landscape</a>
+      <a href="#architecture" class="nav-link">Architecture</a>
+      <a href="https://github.com/anandlo/dot" class="nav-link" target="_blank" rel="noopener">GitHub</a>
       <a href="https://buymeacoffee.com/anandlo" target="_blank" rel="noopener" class="nav-bmac">
         <span>☕</span>
         <span>Buy Me a Coffee</span>
@@ -660,235 +708,231 @@
     </div>
   </nav>
 
-  <div class="container">
-    <!-- Hero Pure White Breathing Mark -->
-    <div class="mark-container">
+  <!-- Hero Section -->
+  <main>
+    <div class="hero-pill">
+      <span class="pill-green-dot"></span>
+      <span>100% Free & Open Source (MIT) • No Paywalls</span>
+    </div>
+
+    <!-- Breathing Mark -->
+    <div class="hero-mark">
       <div class="mark-plate">
         <div class="mark-dot"></div>
       </div>
     </div>
 
     <h1>Write as fast as you can think.</h1>
-    <p class="subtitle">Sub-50ms push-to-talk voice dictation for macOS. Bring your own keys or run on-device. Zero subscriptions, zero ambient recording.</p>
+    <p class="hero-desc">Sub-50ms push-to-talk voice dictation for macOS. Hardware-dormant microphone, upstream zero data retention, and 7+ provider choices.</p>
 
-    <div class="cta-group">
-      <a href="https://github.com/anandlo/dot/releases" class="btn-primary">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-        Download Public Beta (macOS)
+    <!-- CTAs -->
+    <div class="cta-row">
+      <a href="https://github.com/anandlo/dot/releases" class="btn-download">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        Download for macOS
       </a>
-
-      <div class="homebrew-box" title="Click to copy" onclick="navigator.clipboard.writeText('brew install --cask anandlo/tap/dot')">
+      <div class="brew-snippet" title="Click to copy" onclick="navigator.clipboard.writeText('brew install --cask anandlo/tap/dot'); this.querySelector('.brew-copy').innerText='✓ Copied'; setTimeout(() => this.querySelector('.brew-copy').innerText='Copy', 1500)">
         <span>brew install --cask anandlo/tap/dot</span>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span class="brew-copy" style="font-size: 11px; opacity: 0.6;">Copy</span>
       </div>
     </div>
 
-    <!-- Live Animated Interactive Stage -->
-    <div class="stage-wrapper">
-      <div class="stage-controls">
-        <div class="keycap-button" id="triggerBtn" onclick="runDictationDemo()">
-          <span>⌥ Option</span>
-          <span>⌘ Command</span>
-          <span>D</span>
-          <span style="opacity: 0.6; font-size: 11px; margin-left: 4px;">Click to Trigger</span>
-        </div>
+    <!-- Live Interactive Instrument Canvas -->
+    <div class="instrument-card">
+      <div class="keycap-deck">
+        <div class="keycap" id="keyOpt">⌥ Option</div>
+        <div class="keycap" id="keyCmd">⌘ Command</div>
+        <div class="keycap" id="keyD">D</div>
+        <span class="keycap-hint">Click or press on keyboard</span>
       </div>
 
-      <!-- Floating HUD Pill -->
-      <div class="hud-floating" id="hudPill">
-        <div class="hud-mark-mini">
-          <div class="hud-mark-mini-dot"></div>
+      <!-- Floating Dynamic Island -->
+      <div class="hud-island" id="hudIsland">
+        <div class="nav-dot-icon" style="width: 26px; height: 26px;">
+          <div class="nav-dot-disc" style="width: 17px; height: 17px;"></div>
         </div>
-        <div class="waveform-bars" id="hudWaves">
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
+        <div class="hud-wave" id="hudWave">
+          <div class="wave-line"></div>
+          <div class="wave-line"></div>
+          <div class="wave-line"></div>
+          <div class="wave-line"></div>
+          <div class="wave-line"></div>
+          <div class="wave-line"></div>
         </div>
-        <div class="hud-transcription" id="hudText">Listening…<span class="hud-cursor"></span></div>
+        <div class="hud-text" id="hudText">Listening…<span class="hud-caret"></span></div>
       </div>
 
-      <!-- Editor Landing Note -->
-      <div class="mock-editor">
-        <div style="font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); margin-bottom: 6px;">Notes — Output Target</div>
-        <div id="editorOutput">Hold <span style="font-family: var(--mono); font-weight: 600;">⌥⌘D</span> anywhere to speak. Your words will paste right at your cursor.</div>
+      <!-- Mock Output Target -->
+      <div class="editor-target">
+        <div class="editor-label">
+          <span>Active Cursor Output</span>
+          <span class="latency-badge" id="latencyBadge">38ms stop latency</span>
+        </div>
+        <div class="editor-body" id="editorOutput">Hold <span style="font-family: var(--mono); color: var(--ink);">⌥⌘D</span> to speak. Your words paste directly at your cursor upon release.</div>
       </div>
     </div>
 
-    <!-- Settings Window Preview with Keychain Management -->
-    <div class="mock-window">
-      <div class="window-header">
-        <div class="traffic-dot traffic-red"></div>
-        <div class="traffic-dot traffic-yellow"></div>
-        <div class="traffic-dot traffic-green"></div>
-        <div class="window-title">Dot Settings — Provider & Keychain</div>
+    <!-- Honest Landscape Comparison -->
+    <div class="section-header" id="comparison">
+      <h2 class="section-title">The macOS Voice Landscape</h2>
+      <p class="section-subtitle">A candid look at how Dot compares to local offline tools and subscription clouds.</p>
+    </div>
+
+    <div class="comparison-deck">
+      <!-- Local Speech Tools -->
+      <div class="comparison-card">
+        <span class="card-tag">Local Offline Tools</span>
+        <h3 class="card-title">MacWhisper & Buzz</h3>
+        <ul class="card-list">
+          <li><span class="bullet-ok">✓</span> 100% on-device private inference</li>
+          <li><span class="bullet-no">✕</span> 2–5s batch delay (no streaming VAD)</li>
+          <li><span class="bullet-no">✕</span> 400MB–1.2GB memory footprint</li>
+          <li><span class="bullet-no">✕</span> CPU/fan spikes on long recordings</li>
+          <li><span class="bullet-dim">•</span> Best for pre-recorded podcast files</li>
+        </ul>
       </div>
-      <div class="window-body">
-        <div class="window-sidebar">
-          <div class="sidebar-row">General</div>
-          <div class="sidebar-row active">Provider</div>
-          <div class="sidebar-row">Shortcuts</div>
-          <div class="sidebar-row">Appearance</div>
-          <div class="sidebar-row">About</div>
-        </div>
-        <div class="window-content">
-          <div class="provider-status-row">
-            <div>
-              <div style="font-weight: 600; font-size: 14px; margin-bottom: 2px;">Groq Whisper Large v3</div>
-              <div class="status-badge">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>
-                Connected · Keychain Active
-              </div>
-            </div>
-            <button class="delete-key-pill" title="Delete key from Keychain" onclick="alert('Key deleted from macOS Keychain!')">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-              Delete Key
-            </button>
-          </div>
 
-          <div style="display: flex; gap: 8px;">
-            <input type="password" value="••••••••••••••••••••••••••••••••" readonly style="flex: 1; padding: 8px 12px; background: rgba(0, 0, 0, 0.04); border: 1px solid var(--card-border); border-radius: 8px; font-family: var(--mono); font-size: 12px; color: var(--ink);">
-            <button style="padding: 8px 14px; background: var(--ink); color: var(--bg); border: none; border-radius: 8px; font-weight: 600; font-size: 12px;">Replace</button>
-          </div>
+      <!-- Dot -->
+      <div class="comparison-card highlight">
+        <span class="card-tag">Native Purist</span>
+        <h3 class="card-title">Dot (Open Source)</h3>
+        <ul class="card-list">
+          <li><span class="bullet-ok">✓</span> <span><strong>&lt; 50ms stop latency</strong> with trailing VAD</span></li>
+          <li><span class="bullet-ok">✓</span> <span><strong>Hardware-dormant</strong> (zero ambient listening)</span></li>
+          <li><span class="bullet-ok">✓</span> <span><strong>&lt; 15 MB RAM</strong> (Pure Swift 6 & AppKit)</span></li>
+          <li><span class="bullet-ok">✓</span> <span><strong>7+ Providers or Offline</strong> (Apple, Groq, Ollama)</span></li>
+          <li><span class="bullet-ok">✓</span> <span><strong>Keychain isolated</strong> (keys never on disk)</span></li>
+          <li><span class="bullet-ok">✓</span> <span><strong>100% Free & Open Source</strong> (MIT)</span></li>
+        </ul>
+      </div>
 
-          <p class="keychain-note">
-            <strong>Hardware-Isolated Security:</strong> Once entered, API keys are retained in your macOS Keychain per-provider. When switching between OpenAI, Groq, or Deepgram, Dot instantly re-uses your saved credentials without retyping, and allows 1-click deletion at any time.
-          </p>
-        </div>
+      <!-- Proprietary Cloud -->
+      <div class="comparison-card">
+        <span class="card-tag">Subscription Clouds</span>
+        <h3 class="card-title">Wispr Flow & Superwhisper</h3>
+        <ul class="card-list">
+          <li><span class="bullet-ok">✓</span> Fast hosted cloud transcription</li>
+          <li><span class="bullet-no">✕</span> $96 to $180/year subscription paywalls</li>
+          <li><span class="bullet-no">✕</span> Proprietary vendor model lock-in</li>
+          <li><span class="bullet-no">✕</span> Continuous background daemons & 250MB+ Electron</li>
+          <li><span class="bullet-no">✕</span> Cloud storage & telemetry logging</li>
+        </ul>
       </div>
     </div>
 
-    <!-- Comparison Section -->
-    <div class="comparison-section">
-      <h2>Why Dot?</h2>
-      <p class="section-sub">A pure native utility designed for speed, privacy, and zero monthly fees.</p>
-      <div class="table-wrapper">
-        <table>
-          <thead>
-            <tr>
-              <th>Criteria</th>
-              <th>Dot</th>
-              <th>Wispr Flow</th>
-              <th>Superwhisper</th>
-              <th>MacWhisper</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><strong>Price</strong></td>
-              <td class="highlight">Free & Open Source</td>
-              <td>$144/year</td>
-              <td>$96/year</td>
-              <td>€39 one-time</td>
-            </tr>
-            <tr>
-              <td><strong>True Push-to-Talk</strong></td>
-              <td class="highlight">Yes (Hardware Dormant)</td>
-              <td>Background Active</td>
-              <td>Toggle Focus</td>
-              <td>Manual Hotkey</td>
-            </tr>
-            <tr>
-              <td><strong>Stop Latency</strong></td>
-              <td class="highlight">Sub-50ms (Zero-Wait)</td>
-              <td>~300-800ms</td>
-              <td>~400-1200ms</td>
-              <td>Local CPU Bound</td>
-            </tr>
-            <tr>
-              <td><strong>Model Choice</strong></td>
-              <td class="highlight">Any (BYOK or Local)</td>
-              <td>Proprietary Cloud</td>
-              <td>Hybrid Locked</td>
-              <td>Local Whisper Only</td>
-            </tr>
-            <tr>
-              <td><strong>Zero Data Retention</strong></td>
-              <td class="highlight">Yes (Enforced Upstream)</td>
-              <td>Cloud Logged</td>
-              <td>Cloud Logged</td>
-              <td>Local Only</td>
-            </tr>
-            <tr>
-              <td><strong>Memory Footprint</strong></td>
-              <td class="highlight">&lt; 35 MB</td>
-              <td>&gt; 250 MB</td>
-              <td>&gt; 400 MB</td>
-              <td>&gt; 600 MB</td>
-            </tr>
-          </tbody>
-        </table>
+    <!-- Technical Pillars -->
+    <div class="section-header" id="architecture">
+      <h2 class="section-title">Engineered Without Compromise</h2>
+      <p class="section-subtitle">How Dot delivers sub-50ms speed while respecting your privacy.</p>
+    </div>
+
+    <div class="pillars-grid">
+      <div class="pillar-box">
+        <h4>True Hardware Push-to-Talk</h4>
+        <p>The microphone hardware is physically dormant when the shortcut is not held. Audio capture begins strictly on the physical key-down event and is severed immediately on release.</p>
+        <span class="pillar-code">CGEventTap • Zero wake-word daemons</span>
+      </div>
+
+      <div class="pillar-box">
+        <h4>Sub-50ms Trailing VAD</h4>
+        <p>Traditional tools wait 2–4 seconds after you finish talking to transcribe audio. Dot streams provisional audio in memory and trims trailing silence so words paste the millisecond you let go.</p>
+        <span class="pillar-code">Provisional commit • Instant paste dispatch</span>
+      </div>
+
+      <div class="pillar-box">
+        <h4>Upstream Zero Data Retention</h4>
+        <p>For cloud inference, Dot enforces non-logging headers across providers (<code>mip_opt_out</code> on Deepgram, <code>enable_logging=false</code> on ElevenLabs, <code>storeAudio=false</code> on Azure).</p>
+        <span class="pillar-code">ZDR enforced • No audio training or storage</span>
+      </div>
+
+      <div class="pillar-box">
+        <h4>Keychain Security & Retention</h4>
+        <p>API keys are encrypted in macOS Keychain. Switching between Groq, OpenAI, or Deepgram retains your keys so you never have to re-enter them, with 1-click deletion at any time.</p>
+        <span class="pillar-code">kSecClassGenericPassword • Zero plaintext tokens</span>
       </div>
     </div>
 
-    <!-- Buy Me a Coffee Featured Section -->
-    <div class="bmac-card">
-      <div class="bmac-content">
-        <h3>Support Dot Development</h3>
-        <p>Dot is crafted by Anand as a fast, honest macOS native utility with no venture capital and no recurring subscription paywalls. If Dot makes your daily typing effortless, consider buying a coffee to keep development thriving!</p>
+    <!-- Minimalist Sponsor Callout -->
+    <div class="sponsor-bar">
+      <div class="sponsor-text">
+        <h4>Support Dot Development</h4>
+        <p>Dot is an independent, open-source macOS utility crafted by Anand Lo with no venture backing and no paywalls. If it speeds up your daily workflow, consider buying a coffee.</p>
       </div>
-      <a href="https://buymeacoffee.com/anandlo" target="_blank" rel="noopener" class="bmac-btn">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h1a4 4 0 1 1 0 8h-1"></path><path d="M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z"></path><line x1="6" y1="2" x2="6" y2="4"></line><line x1="10" y1="2" x2="10" y2="4"></line><line x1="14" y1="2" x2="14" y2="4"></line></svg>
+      <a href="https://buymeacoffee.com/anandlo" target="_blank" rel="noopener" class="sponsor-btn">
+        <span>☕</span>
         <span>Buy Me a Coffee</span>
       </a>
     </div>
 
     <!-- Footer -->
     <footer>
-      <a href="https://github.com/anandlo/dot">GitHub Repository</a> &bull;
-      <a href="https://buymeacoffee.com/anandlo">Buy Me a Coffee</a> &bull;
-      <span>MIT License</span> &bull;
-      <span>Designed for Apple Silicon</span>
+      <div>Dot — High-Speed macOS Dictation</div>
+      <div class="footer-links">
+        <a href="https://github.com/anandlo/dot" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://buymeacoffee.com/anandlo" target="_blank" rel="noopener">Buy Me a Coffee</a>
+        <a href="https://github.com/anandlo/dot/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+      </div>
     </footer>
-  </div>
+  </main>
 
   <script>
-    // Interactive Dictation Simulator
-    const sampleText = "Remind me to send the product roadmap before Friday afternoon.";
-    let isRunning = false;
+    const samplePhrase = "Remind me to send the product roadmap before Friday afternoon.";
+    let active = false;
 
-    function runDictationDemo() {
-      if (isRunning) return;
-      isRunning = true;
+    function triggerDictation() {
+      if (active) return;
+      active = true;
 
-      const triggerBtn = document.getElementById('triggerBtn');
-      const hudPill = document.getElementById('hudPill');
+      const keys = [document.getElementById('keyOpt'), document.getElementById('keyCmd'), document.getElementById('keyD')];
+      const hud = document.getElementById('hudIsland');
       const hudText = document.getElementById('hudText');
-      const hudWaves = document.getElementById('hudWaves');
-      const editorOutput = document.getElementById('editorOutput');
+      const hudWave = document.getElementById('hudWave');
+      const output = document.getElementById('editorOutput');
+      const badge = document.getElementById('latencyBadge');
 
-      triggerBtn.classList.add('active');
-      hudPill.style.transform = "scale(1.03)";
-      hudWaves.style.display = "flex";
-      hudText.innerHTML = '<span class="hud-cursor"></span>';
+      keys.forEach(k => k.classList.add('pressed'));
+      hud.style.transform = "scale(1.025)";
+      hudWave.style.opacity = "1";
+      hudText.innerHTML = '<span class="hud-caret"></span>';
 
-      let charIndex = 0;
-      const interval = setInterval(() => {
-        if (charIndex < sampleText.length) {
-          hudText.innerHTML = sampleText.substring(0, charIndex + 1) + '<span class="hud-cursor"></span>';
-          charIndex++;
+      let i = 0;
+      const timer = setInterval(() => {
+        if (i < samplePhrase.length) {
+          hudText.innerHTML = samplePhrase.substring(0, i + 1) + '<span class="hud-caret"></span>';
+          i++;
         } else {
-          clearInterval(interval);
-          // Release & Paste
+          clearInterval(timer);
           setTimeout(() => {
-            triggerBtn.classList.remove('active');
-            hudPill.style.transform = "scale(1.0)";
+            keys.forEach(k => k.classList.remove('pressed'));
+            hud.style.transform = "scale(1.0)";
             hudText.innerHTML = 'Pasted <span style="color: var(--mint);">✓</span>';
-            editorOutput.innerHTML = '<span class="pasted-text">' + sampleText + '</span>';
-            
+            output.innerHTML = samplePhrase;
+            badge.innerText = "38ms stop latency";
+
             setTimeout(() => {
               hudText.innerHTML = 'Ready to dictate…';
-              isRunning = false;
+              active = false;
             }, 1800);
-          }, 400);
+          }, 350);
         }
-      }, 42);
+      }, 38);
     }
 
-    // Auto-run once after page load for instant delight
-    setTimeout(runDictationDemo, 1200);
+    // Attach click triggers to keycaps
+    document.querySelectorAll('.keycap').forEach(k => {
+      k.addEventListener('click', triggerDictation);
+    });
+
+    // Real keyboard shortcut listener (Option + Command + D)
+    window.addEventListener('keydown', (e) => {
+      if (e.altKey && e.metaKey && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault();
+        triggerDictation();
+      }
+    });
+
+    // Run once on load
+    setTimeout(triggerDictation, 1000);
   </script>
 </body>
 </html>
