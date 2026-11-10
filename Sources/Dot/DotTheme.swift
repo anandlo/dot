@@ -332,9 +332,7 @@ extension DotWindowHeader where Trailing == EmptyView {
     }
 }
 
-/// The solid button used for the primary action, incorporating the tactile
-/// depth, inset shadow, and active squish of the happy-warthog-87 style with
-/// Dot's theme colors.
+/// The solid button used for the primary action: clean, minimal, and crisp with zero glowing bloom.
 struct DotPrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
@@ -345,39 +343,21 @@ struct DotPrimaryButtonStyle: ButtonStyle {
             .padding(.horizontal, 18)
             .padding(.vertical, 8)
             .background(
-                ZStack {
-                    // Base Fill in Dot's theme accent
-                    Capsule(style: .continuous)
-                        .fill(DotTheme.accent)
-
-                    // Inset shadow depth inspired by happy-warthog-87
-                    Capsule(style: .continuous)
-                        .strokeBorder(Color.black.opacity(configuration.isPressed ? 0.35 : 0.16), lineWidth: 2)
-                        .blur(radius: 1.5)
-                        .mask(Capsule(style: .continuous))
-
-                    // Top light reflection / border
-                    Capsule(style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-                }
-                .shadow(
-                    color: DotTheme.accent.opacity(configuration.isPressed ? 0.15 : 0.35),
-                    radius: configuration.isPressed ? 3 : 8,
-                    y: configuration.isPressed ? 1 : 4
-                )
+                Capsule(style: .continuous)
+                    .fill(DotTheme.accent)
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.75)
+                    )
             )
-            .scaleEffect(
-                x: configuration.isPressed ? 1.03 : 1.0,
-                y: configuration.isPressed ? 0.95 : 1.0
-            )
-            .offset(y: configuration.isPressed ? 1.2 : 0)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            .offset(y: configuration.isPressed ? 0.5 : 0)
             .opacity(isEnabled ? 1 : 0.55)
-            .animation(.spring(response: 0.22, dampingFraction: 0.70), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
-/// The secondary button on paper, sharing the capsule geometry, subtle
-/// recessed depth, and tactile active press of the happy-warthog-87 style.
+/// The secondary button on paper: clean minimal capsule with crisp hairline border.
 struct DotSecondaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
@@ -388,33 +368,17 @@ struct DotSecondaryButtonStyle: ButtonStyle {
             .padding(.horizontal, 15)
             .padding(.vertical, 8)
             .background(
-                ZStack {
-                    // Secondary base fill
-                    Capsule(style: .continuous)
-                        .fill(DotTheme.secondaryFill)
-
-                    // Recessed inset shadow depth
-                    Capsule(style: .continuous)
-                        .strokeBorder(Color.black.opacity(configuration.isPressed ? 0.28 : 0.12), lineWidth: 1.5)
-                        .blur(radius: 1.2)
-                        .mask(Capsule(style: .continuous))
-
-                    Capsule(style: .continuous)
-                        .strokeBorder(DotTheme.secondaryBorder, lineWidth: 1)
-                }
-                .shadow(
-                    color: Color.black.opacity(configuration.isPressed ? 0.04 : 0.10),
-                    radius: configuration.isPressed ? 1.5 : 4,
-                    y: configuration.isPressed ? 0.5 : 2
-                )
+                Capsule(style: .continuous)
+                    .fill(DotTheme.secondaryFill)
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(DotTheme.secondaryBorder, lineWidth: 1)
+                    )
             )
-            .scaleEffect(
-                x: configuration.isPressed ? 1.03 : 1.0,
-                y: configuration.isPressed ? 0.95 : 1.0
-            )
-            .offset(y: configuration.isPressed ? 1.0 : 0)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            .offset(y: configuration.isPressed ? 0.5 : 0)
             .opacity(isEnabled ? 1 : 0.62)
-            .animation(.spring(response: 0.22, dampingFraction: 0.72), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -527,11 +491,11 @@ private struct DotToggleBody: View {
                         )
                 )
 
-            // Minimal precision porcelain knob
+            // Minimal precision porcelain knob with high contrast in both states
             Circle()
                 .fill(
                     configuration.isOn
-                        ? Color.white
+                        ? Color(white: 0.12)
                         : Color.white.opacity(0.92)
                 )
                 .shadow(color: Color.black.opacity(0.24), radius: 1.5, x: 0, y: 0.75)
