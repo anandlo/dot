@@ -631,15 +631,52 @@ struct DotSignalMark: View {
             TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let breathing = (sin(t * 2.0) + 1.0) * 0.5
-                content(breathing: breathing)
+                markContent(breathing: breathing)
             }
         } else {
-            content(breathing: 0)
+            markContent(breathing: 0)
         }
     }
 
     @ViewBuilder
-    private func content(breathing: Double) -> some View {
+    private func markContent(breathing: Double) -> some View {
+        let warmGlow = Color(red: 245.0 / 255.0, green: 175.0 / 255.0, blue: 50.0 / 255.0)
+        let glowRadius = size * (0.16 + (breathing * 0.06))
+        let glowOpacity = 0.22 + (breathing * 0.16)
+
+        ZStack {
+            if let icon = loadAppIcon() {
+                Image(nsImage: icon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+            } else {
+                fallbackVectorMark(breathing: breathing)
+            }
+        }
+        .frame(width: size, height: size)
+        .shadow(color: warmGlow.opacity(animated ? glowOpacity : 0.24), radius: glowRadius, y: size * 0.04)
+        .shadow(color: Color.black.opacity(0.65), radius: size * 0.12, y: size * 0.06)
+        .scaleEffect(animated ? (1.0 + (breathing * 0.02)) : 1.0)
+    }
+
+    private func loadAppIcon() -> NSImage? {
+        if let url = Bundle.main.url(forResource: "AppIcon-1024", withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            return img
+        }
+        if let img = NSImage(named: "AppIcon") {
+            return img
+        }
+        if let appIcon = NSApp?.applicationIconImage {
+            return appIcon
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func fallbackVectorMark(breathing: Double) -> some View {
         let offsetX = size * (centre.x - 0.5)
         let offsetY = size * (centre.y - 0.5)
 
@@ -688,11 +725,6 @@ struct DotSignalMark: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-        .shadow(
-            color: DotTheme.markShadow,
-            radius: size * 0.075,
-            y: size * 0.045
-        )
     }
 }
 

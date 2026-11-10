@@ -41,17 +41,17 @@ Dot is engineered for developers, writers, and power users who want voice dictat
 
 ## Why Dot? (Comparison)
 
-| Feature | Dot | Wispr Flow | Superwhisper | MacWhisper | Apple Dictation |
+| Feature | Dot | Hex (Anomaly) | MacWhisper | Wispr Flow | Superwhisper |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **License & Price** | **100% Free & Open Source (MIT)** | $12–$15/mo subscription | $8/mo or $199 lifetime | Free / €39 Pro | Free (macOS bundled) |
-| **Stop-to-Paste Latency** | **<50ms (Instant)** | ~1.5s – 3.0s | ~1.0s – 2.5s | Manual / Batch | Variable |
-| **Microphone Activation** | **Hardware Push-to-Talk only** | Continuous background | Toggle / Hold | Manual trigger | Toggle |
-| **Ambient Listening** | **Zero (Mic hardware dormant)** | Background daemon | App dependent | Zero | Siri background |
-| **Model Freedom** | **7+ Providers or Self-Hosted** | Locked cloud vendor | Whisper / OpenAI | Local Whisper only | Apple Siri model only |
-| **Local / Offline Option** | **Apple On-Device Speech** | No (Cloud only) | Yes (Local CoreML) | Yes (Local ggml) | Yes |
-| **Upstream Zero Data Retention** | **Enforced by default** | Proprietary cloud | API key dependent | N/A (Local) | Cloud sync |
-| **Credential Storage** | **macOS Keychain isolated** | Proprietary cloud | Local disk storage | Local disk storage | System account |
-| **Memory & CPU Footprint** | **~15 MB RAM (Pure Swift 6)** | ~350+ MB (Electron) | ~120 MB | ~200+ MB | System daemon |
+| **License & Price** | **100% Free & Open Source (MIT)** | Free & Open Source (GPL) | Free / €39 Pro | $12–$15/mo subscription | $8/mo or $199 lifetime |
+| **Stop-to-Paste Latency** | **<50ms (Provisional VAD)** | Length proportional | Manual / Batch | ~1.5s – 3.0s | ~1.0s – 2.5s |
+| **Microphone Activation** | **Hardware Push-to-Talk only** | Push-to-talk | Manual trigger | Continuous background | Toggle / Hold |
+| **Ambient Listening** | **Zero (Mic hardware dormant)** | Zero (Hardware dormant) | Zero | Background daemon | App dependent |
+| **Model Freedom** | **7+ Providers or Self-Hosted** | English-only (Parakeet) | Local Whisper only | Locked cloud vendor | Whisper / OpenAI |
+| **Mandatory Model Download** | **0 MB (Instant startup)** | ~600MB–1.2GB weights | ~150MB–2.8GB weights | None (Cloud-hosted) | Local or Cloud |
+| **Upstream Zero Data Retention** | **Enforced by default** | N/A (100% on-device) | N/A (100% on-device) | Proprietary cloud | API key dependent |
+| **Credential Storage** | **macOS Keychain isolated** | N/A (Local engine) | Local disk storage | Proprietary cloud | Local disk storage |
+| **Memory & CPU Footprint** | **< 15 MB RAM (Pure Swift 6)** | ~450+ MB (Rust / ONNX) | ~200MB–2.8GB | ~350+ MB (Electron) | ~120 MB |
 
 ---
 
