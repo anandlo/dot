@@ -586,10 +586,6 @@ struct SettingsView: View {
                 elevenLabsOptionsCard
                     .dotSelectLayer()
             }
-            if config.provider == ProviderIdentifier.xiaomi {
-                xiaomiOptionsCard
-                    .dotSelectLayer()
-            }
             if isCustomOrOwnedEndpoint {
                 endpointPrivacyRetentionCard
             }
@@ -625,6 +621,7 @@ struct SettingsView: View {
                 }
 
                 serviceSelect
+                    .dotSelectLayer()
 
                 HStack(spacing: 8) {
                     SecureField(keyPlaceholder, text: $primaryKey)
@@ -642,12 +639,15 @@ struct SettingsView: View {
                         }
                         .accessibilityLabel("API key")
                         .accessibilityHint("Paste the key for the service you chose. Dot stores it in the Keychain.")
-                    Button(connectingPrimary ? "Connecting…" : (hasStoredKey(selectedPreset) && trimmedPrimaryKey.isEmpty ? "Connected" : "Connect")) {
-                        connect()
+
+                    if !hasStoredKey(selectedPreset) || !trimmedPrimaryKey.isEmpty {
+                        Button(connectingPrimary ? "Connecting…" : "Connect") {
+                            connect()
+                        }
+                        .buttonStyle(DotPrimaryButtonStyle())
+                        .disabled(!canConnect)
+                        .accessibilityHint("Stores the key in the macOS Keychain and selects the service.")
                     }
-                    .buttonStyle(DotPrimaryButtonStyle())
-                    .disabled(!canConnect)
-                    .accessibilityHint("Stores the key in the macOS Keychain and selects the service.")
 
                     if hasStoredKey(selectedPreset) && selectedPreset.key != .none {
                         Button(role: .destructive) {
@@ -778,7 +778,7 @@ struct SettingsView: View {
     private var canConnect: Bool {
         guard !connectingPrimary else { return false }
         if selectedPreset.key == .required {
-            return !trimmedPrimaryKey.isEmpty || hasStoredKey(selectedPreset)
+            return !trimmedPrimaryKey.isEmpty
         }
         return true
     }
@@ -832,56 +832,6 @@ struct SettingsView: View {
             keyStatus = KeyStatus(text: "Key deleted from Keychain", detail: nil, tone: .neutral)
             revision += 1
             onChange()
-        }
-    }
-
-    private var xiaomiOptionsCard: some View {
-        settingsCard("Service options", symbol: "waveform.badge.mic") {
-            VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Speech recognition model")
-                            .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(DotTheme.ink)
-                        Text("Hosted speech-to-text model")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(DotTheme.ink3)
-                    }
-                    Spacer(minLength: 12)
-                    DotSelect(
-                        label: "Model",
-                        options: modelOptions,
-                        selection: currentModelSelectionBinding,
-                        placeholder: selectedPreset.model ?? "Default",
-                        width: 175
-                    )
-                }
-                .padding(.vertical, 8)
-
-                cardDivider
-
-                Toggle(isOn: Binding(
-                    get: { config.settings(for: ProviderIdentifier.xiaomi).zeroDataRetention ?? true },
-                    set: { val in
-                        var settings = config.settings(for: ProviderIdentifier.xiaomi)
-                        settings.zeroDataRetention = val
-                        config.providers[ProviderIdentifier.xiaomi] = settings
-                        revision &+= 1
-                        onChange()
-                    }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Zero Data Retention (ZDR)")
-                            .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(DotTheme.ink)
-                        Text("Enforce upstream non-logging for audio payloads")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(DotTheme.ink3)
-                    }
-                }
-                .toggleStyle(DotToggleStyle())
-                .padding(.vertical, 8)
-            }
         }
     }
 
@@ -956,6 +906,7 @@ struct SettingsView: View {
                                 width: 175
                             )
                         }
+                        .dotSelectLayer()
                         VStack(alignment: .leading, spacing: 4) {
                             fieldLabel("Mode")
                             DotSelect(
@@ -972,6 +923,7 @@ struct SettingsView: View {
                                 width: 150
                             )
                         }
+                        .dotSelectLayer()
                     } else {
                         endpointField(
                             "Base URL",
@@ -1006,6 +958,7 @@ struct SettingsView: View {
                                 placeholder: modelPlaceholder,
                                 width: 250
                             )
+                            .dotSelectLayer()
                             if isCustomModelSelected {
                                 endpointField(
                                     "Custom model id",
@@ -1016,11 +969,14 @@ struct SettingsView: View {
                                 .padding(.top, 4)
                             }
                         }
+                        .dotSelectLayer()
                     }
                 }
+                .dotSelectLayer()
 
                 if ProviderRegistry.isGenericEndpoint(config: config) {
                     authStyleRow
+                        .dotSelectLayer()
                 }
 
             }
@@ -1171,6 +1127,7 @@ struct SettingsView: View {
                     )
                 }
                 .padding(.vertical, 8)
+                .dotSelectLayer()
                 cardDivider
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1192,6 +1149,7 @@ struct SettingsView: View {
                     )
                 }
                 .padding(.vertical, 8)
+                .dotSelectLayer()
                 cardDivider
                 VStack(alignment: .leading, spacing: 5) {
                     fieldLabel("Keyterms / custom vocabulary")
@@ -1257,6 +1215,7 @@ struct SettingsView: View {
                     )
                 }
                 .padding(.vertical, 8)
+                .dotSelectLayer()
                 cardDivider
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1290,6 +1249,7 @@ struct SettingsView: View {
                     )
                 }
                 .padding(.vertical, 8)
+                .dotSelectLayer()
                 if (config.settings(for: ProviderIdentifier.groq).responseFormat ?? "json") == "verbose_json" {
                     cardDivider
                     HStack(spacing: 12) {
@@ -1324,6 +1284,7 @@ struct SettingsView: View {
                         )
                     }
                     .padding(.vertical, 8)
+                    .dotSelectLayer()
                 }
                 cardDivider
                 VStack(alignment: .leading, spacing: 5) {
@@ -1390,6 +1351,7 @@ struct SettingsView: View {
                     )
                 }
                 .padding(.vertical, 8)
+                .dotSelectLayer()
                 cardDivider
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1425,6 +1387,7 @@ struct SettingsView: View {
                     )
                 }
                 .padding(.vertical, 8)
+                .dotSelectLayer()
                 if (config.settings(for: ProviderIdentifier.openAI).responseFormat ?? "json") == "verbose_json" {
                     cardDivider
                     HStack(spacing: 12) {
@@ -1459,6 +1422,7 @@ struct SettingsView: View {
                         )
                     }
                     .padding(.vertical, 8)
+                    .dotSelectLayer()
                 }
                 cardDivider
                 VStack(alignment: .leading, spacing: 5) {
@@ -1512,6 +1476,7 @@ struct SettingsView: View {
                     )
                 }
                 .padding(.vertical, 8)
+                .dotSelectLayer()
                 cardDivider
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1534,6 +1499,7 @@ struct SettingsView: View {
                     )
                 }
                 .padding(.vertical, 8)
+                .dotSelectLayer()
                 cardDivider
                 toggleRow(
                     title: "Store audio in Azure",
