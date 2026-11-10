@@ -46,7 +46,7 @@ final class HUDRenderLoopTests: XCTestCase {
 
         hud.showReady(shortcut: "⌥⌘D")
         var elapsed = 0.0
-        while hud.debugPresence < 0.5 && elapsed < 1.0 {
+        while (hud.debugTickCount == 0 || hud.debugPresence < 0.5) && elapsed < 1.5 {
             spin(for: 0.05)
             elapsed += 0.05
         }
@@ -79,12 +79,16 @@ final class HUDRenderLoopTests: XCTestCase {
         XCTAssertEqual(hud.debugContent, 1, accuracy: 0.001, "the fallback left the content transparent")
     }
 
-    /// Runs the main run loop, so the loop's `.common` timer can fire.
+    /// Runs the main run loop in default and common modes so timers can fire.
     private func spin(for seconds: TimeInterval) {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             RunLoop.main.run(
                 mode: .default,
+                before: min(deadline, Date().addingTimeInterval(0.01))
+            )
+            RunLoop.main.run(
+                mode: .common,
                 before: min(deadline, Date().addingTimeInterval(0.01))
             )
         }
