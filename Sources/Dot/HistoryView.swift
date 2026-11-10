@@ -208,7 +208,7 @@ struct HistoryView: View {
             .padding(.bottom, 18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .scrollIndicators(.automatic)
+        .scrollIndicators(.never)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityLabel("Transcripts, newest first")
     }

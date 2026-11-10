@@ -53,9 +53,9 @@ final class ProviderPresetTests: XCTestCase {
         XCTAssertEqual(ProviderPreset.xiaomi.name, "Xiaomi ASR")
         XCTAssertEqual(ProviderPreset.xiaomi.providerID, ProviderIdentifier.xiaomi)
         XCTAssertEqual(ProviderPreset.xiaomi.baseURL, "https://api.xiaomimimo.com/v1")
-        XCTAssertNil(ProviderPreset.xiaomi.model)
+        XCTAssertEqual(ProviderPreset.xiaomi.model, "mimo-v2.5-asr")
         XCTAssertEqual(ProviderPreset.xiaomi.key, .required)
-        XCTAssertFalse(ProviderPreset.xiaomi.isOffered)
+        XCTAssertTrue(ProviderPreset.xiaomi.isOffered)
         XCTAssertEqual(ProviderPreset.xiaomi.symbol, "waveform.badge.mic")
 
         XCTAssertEqual(ProviderPreset.apple.providerID, ProviderIdentifier.apple)
@@ -79,7 +79,7 @@ final class ProviderPresetTests: XCTestCase {
         // the list is ordered by name, and every row is a normal row.
         XCTAssertEqual(
             ProviderPreset.all.map(\.id),
-            ["on-device", "azure", "custom", "deepgram", "elevenlabs", "groq", "openai"]
+            ["on-device", "azure", "custom", "deepgram", "elevenlabs", "groq", "openai", "xiaomi"]
         )
         XCTAssertEqual(
             ProviderPreset.all.map(\.name),
@@ -110,7 +110,7 @@ final class ProviderPresetTests: XCTestCase {
         for preset in ProviderPreset.all {
             XCTAssertTrue(ProviderRegistry.knows(preset.providerID), preset.id)
         }
-        XCTAssertFalse(
+        XCTAssertTrue(
             ProviderPreset.all.contains { $0.providerID == ProviderIdentifier.xiaomi }
         )
         XCTAssertTrue(

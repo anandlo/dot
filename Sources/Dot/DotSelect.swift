@@ -230,34 +230,20 @@ struct DotSelect<Value: Hashable>: View {
         let needsScroll = estimatedListHeight > maxAllowed
         let innerHeight = max(40, displayedListHeight - 12)
         return VStack(spacing: 0) {
-            ScrollWheelIsolator {
-                if needsScroll {
-                    ScrollViewReader { scrollProxy in
-                        ScrollView(.vertical) {
-                            optionsStack
-                        }
-                        .scrollDisabled(false)
-                        .scrollIndicators(.automatic)
-                        .frame(width: max(0, width - 12), height: innerHeight)
-                        .onAppear {
-                            if options.indices.contains(highlighted) {
-                                scrollProxy.scrollTo(highlighted, anchor: .center)
-                            }
-                        }
-                        .onChange(of: highlighted) { _, newIndex in
-                            if scrollToHighlighted {
-                                scrollToHighlighted = false
-                                withAnimation(.easeOut(duration: 0.12)) {
-                                    scrollProxy.scrollTo(newIndex, anchor: .center)
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    optionsStack
-                }
+            if needsScroll {
+                IsolatedDropdownScroll(
+                    content: optionsStack,
+                    width: max(0, width - 12),
+                    height: innerHeight,
+                    highlighted: highlighted,
+                    scrollToHighlighted: $scrollToHighlighted,
+                    rowHeight: options.first.map(Self.rowHeight) ?? 32
+                )
+                .frame(width: max(0, width - 12), height: innerHeight)
+            } else {
+                optionsStack
+                    .frame(width: max(0, width - 12))
             }
-            .frame(width: max(0, width - 12), height: innerHeight)
         }
         .padding(6)
         .frame(width: width, alignment: .leading)
@@ -309,6 +295,11 @@ struct DotSelect<Value: Hashable>: View {
     /// How tall the list will be, near enough to place it.
     private var estimatedListHeight: CGFloat {
         Self.listHeight(for: options)
+    }
+
+    /// Whether the options exceed the allowed dropdown height and require scrolling.
+    private var needsScroll: Bool {
+        estimatedListHeight > allowedListHeight
     }
 
     /// The height of a list of these options.
@@ -429,6 +420,8 @@ struct DotSelect<Value: Hashable>: View {
                     if !isInside {
                         close()
                         swallowed = true
+                    } else if !needsScroll {
+                        swallowed = true
                     }
                 } else if !isInside {
                     close()
@@ -539,43 +532,100 @@ private struct DotSelectRowView<Value: Hashable>: View {
     }
 }
 
-/// An NSViewRepresentable that hosts a SwiftUI view and stops unhandled `scrollWheel`
-/// events from bubbling up to any enclosing ancestor NSScrollView.
-@MainActor
-private struct ScrollWheelIsolator<Content: View>: NSViewRepresentable {
-    let content: Content
+/// An ultra-minimalist overlay scroller with a 3.5px translucent pill and transparent track.
+final class MinimalScroller: NSScroller {
+    override class var isCompatibleWithOverlayScrollers: Bool { true }
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
+    override func drawKnob() {
+        guard let knobRect = rect(for: .knob) as NSRect? else { return }
+        let pillWidth: CGFloat = 3.5
+        let x = knobRect.midX - (pillWidth / 2)
+        let pillRect = NSRect(x: x, y: knobRect.minY + 2, width: pillWidth, height: max(16, knobRect.height - 4))
+        let path = NSBezierPath(roundedRect: pillRect, xRadius: 1.75, yRadius: 1.75)
+        NSColor.white.withAlphaComponent(0.24).setFill()
+        path.fill()
+    }
+}
 
-    init(@ViewBuilder content: () -> Content) {
-        self.content = content()
+/// An NSScrollView that:
+/// 1. Completely isolates scroll events: never propagates scrollWheel events to parent/enclosing scroll views.
+/// 2. Uses an ultra-minimalist, sleek overlay scrollbar (a subtle 3.5px translucent pill, zero ugly gray gutter).
+/// 3. Clamps scrolling smoothly and consumes the event so reaching the bottom never scrolls the window behind it.
+final class PureIsolatedScrollView: NSScrollView {
+    override var enclosingScrollView: NSScrollView? {
+        nil
     }
 
-    func makeNSView(context: Context) -> IsolatorContainerView {
-        let container = IsolatorContainerView()
+    override func scrollWheel(with event: NSEvent) {
+        guard let docView = documentView else { return }
+        let deltaY = event.scrollingDeltaY
+        let multiplier: CGFloat = event.hasPreciseScrollingDeltas ? 1.0 : 14.0
+        let dy = deltaY * multiplier
+
+        let currentOrigin = contentView.bounds.origin
+        let maxOriginY = max(0, docView.bounds.height - contentView.bounds.height)
+        let targetY = min(max(0, currentOrigin.y - dy), maxOriginY)
+
+        contentView.bounds.origin = CGPoint(x: currentOrigin.x, y: targetY)
+        reflectScrolledClipView(contentView)
+    }
+}
+
+@MainActor
+private struct IsolatedDropdownScroll<Content: View>: NSViewRepresentable {
+    let content: Content
+    let width: CGFloat
+    let height: CGFloat
+    let highlighted: Int
+    @Binding var scrollToHighlighted: Bool
+    let rowHeight: CGFloat
+
+    func makeNSView(context: Context) -> PureIsolatedScrollView {
+        let sv = PureIsolatedScrollView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        sv.drawsBackground = false
+        sv.hasVerticalScroller = true
+        sv.hasHorizontalScroller = false
+        sv.autohidesScrollers = true
+        sv.scrollerStyle = .overlay
+        sv.verticalScroller = MinimalScroller()
+
         let hosting = NSHostingView(rootView: content)
         hosting.translatesAutoresizingMaskIntoConstraints = false
-        hosting.wantsLayer = true
-        hosting.layer?.backgroundColor = NSColor.clear.cgColor
-        container.addSubview(hosting)
+        sv.documentView = hosting
         NSLayoutConstraint.activate([
-            hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            hosting.topAnchor.constraint(equalTo: container.topAnchor),
-            hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            hosting.leadingAnchor.constraint(equalTo: sv.contentView.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: sv.contentView.trailingAnchor),
+            hosting.topAnchor.constraint(equalTo: sv.contentView.topAnchor)
         ])
-        container.hosting = hosting
-        return container
+
+        if highlighted > 0 {
+            DispatchQueue.main.async {
+                let targetY = CGFloat(highlighted) * rowHeight
+                let maxOriginY = max(0, hosting.bounds.height - sv.contentView.bounds.height)
+                let clampedY = min(max(0, targetY - (sv.contentView.bounds.height / 2) + (rowHeight / 2)), maxOriginY)
+                sv.contentView.bounds.origin.y = clampedY
+                sv.reflectScrolledClipView(sv.contentView)
+            }
+        }
+
+        return sv
     }
 
-    func updateNSView(_ container: IsolatorContainerView, context: Context) {
-        if let hosting = container.hosting as? NSHostingView<Content> {
+    func updateNSView(_ sv: PureIsolatedScrollView, context: Context) {
+        if let hosting = sv.documentView as? NSHostingView<Content> {
             hosting.rootView = content
         }
-    }
-
-    final class IsolatorContainerView: NSView {
-        var hosting: NSView?
-
-        override func scrollWheel(with event: NSEvent) {}
+        if scrollToHighlighted {
+            DispatchQueue.main.async {
+                scrollToHighlighted = false
+                guard let docView = sv.documentView else { return }
+                let targetY = CGFloat(highlighted) * rowHeight
+                let maxOriginY = max(0, docView.bounds.height - sv.contentView.bounds.height)
+                let clampedY = min(max(0, targetY - (sv.contentView.bounds.height / 2) + (rowHeight / 2)), maxOriginY)
+                sv.contentView.bounds.origin.y = clampedY
+                sv.reflectScrolledClipView(sv.contentView)
+            }
+        }
     }
 }
 

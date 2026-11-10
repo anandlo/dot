@@ -178,10 +178,10 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
         symbol: "waveform.badge.mic",
         providerID: ProviderIdentifier.xiaomi,
         baseURL: "https://api.xiaomimimo.com/v1",
-        model: nil,
+        model: "mimo-v2.5-asr",
         key: .required,
         hasEndpoint: true,
-        isOffered: false
+        isOffered: true
     )
 
     /// Every row this file declares, offered or not.
@@ -256,7 +256,11 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
     /// the answer is simply ``ProviderPreset/all``.
     public static func rows(for config: DotConfig) -> [ProviderPreset] {
         let presented = presenting(config)
-        return all.map { $0.id == presented.id ? presented : $0 }
+        var list = all
+        if !list.contains(where: { $0.id == presented.id }) {
+            list.append(presented)
+        }
+        return list.map { $0.id == presented.id ? presented : $0 }
     }
 
     /// Presents an endpoint Dot owns no offered row for as the custom row.

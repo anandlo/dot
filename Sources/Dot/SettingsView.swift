@@ -65,7 +65,6 @@ struct SettingsView: View {
     @State private var availableModels: [AvailableModel] = []
     @State private var isLoadingModels = false
     @State private var isCustomModelSelected = false
-    @State private var showingDeleteAllConfirmation = false
     @FocusState private var focusedField: Field?
 
     /// Creates the settings.
@@ -276,7 +275,7 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .scrollIndicators(.automatic)
+            .scrollIndicators(.never)
             .zIndex(1)
         }
         .id(selected)
@@ -587,13 +586,16 @@ struct SettingsView: View {
                 elevenLabsOptionsCard
                     .dotSelectLayer()
             }
+            if config.provider == ProviderIdentifier.xiaomi {
+                xiaomiOptionsCard
+                    .dotSelectLayer()
+            }
             if isCustomOrOwnedEndpoint {
                 endpointPrivacyRetentionCard
             }
             languageCard
                 .dotSelectLayer()
             connectionCard
-            keychainSecurityCard
         }
     }
 
@@ -833,47 +835,52 @@ struct SettingsView: View {
         }
     }
 
-    private func deleteAllKeys() {
-        if let error = onDeleteAllAPIKeys() {
-            keyStatus = KeyStatus(text: "Could not clear keys", detail: error, tone: .bad)
-        } else {
-            savedProviders.removeAll()
-            primaryKey = ""
-            keyStatus = KeyStatus(text: "All keys deleted from Keychain", detail: nil, tone: .neutral)
-            revision += 1
-            onChange()
-        }
-    }
-
-    private var keychainSecurityCard: some View {
-        settingsCard("Keychain & Security", symbol: "lock.shield") {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("All API keys are encrypted and stored in the macOS Keychain. Switching providers retains each key so you can toggle between providers without retyping.")
-                    .font(DotTheme.smallFont)
-                    .foregroundStyle(DotTheme.ink2)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack {
-                    Button("Delete All Keys from Keychain") {
-                        showingDeleteAllConfirmation = true
+    private var xiaomiOptionsCard: some View {
+        settingsCard("Service options", symbol: "waveform.badge.mic") {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Speech recognition model")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(DotTheme.ink)
+                        Text("Hosted speech-to-text model")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(DotTheme.ink3)
                     }
-                    .buttonStyle(DotSecondaryButtonStyle())
-                    .foregroundStyle(DotTheme.coral)
-                    .confirmationDialog(
-                        "Delete all stored API keys?",
-                        isPresented: $showingDeleteAllConfirmation,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Delete All Keys", role: .destructive) {
-                            deleteAllKeys()
-                        }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("This will permanently remove API keys for all providers from macOS Keychain.")
-                    }
-
-                    Spacer()
+                    Spacer(minLength: 12)
+                    DotSelect(
+                        label: "Model",
+                        options: modelOptions,
+                        selection: currentModelSelectionBinding,
+                        placeholder: selectedPreset.model ?? "Default",
+                        width: 175
+                    )
                 }
+                .padding(.vertical, 8)
+
+                cardDivider
+
+                Toggle(isOn: Binding(
+                    get: { config.settings(for: ProviderIdentifier.xiaomi).zeroDataRetention ?? true },
+                    set: { val in
+                        var settings = config.settings(for: ProviderIdentifier.xiaomi)
+                        settings.zeroDataRetention = val
+                        config.providers[ProviderIdentifier.xiaomi] = settings
+                        revision &+= 1
+                        onChange()
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Zero Data Retention (ZDR)")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(DotTheme.ink)
+                        Text("Enforce upstream non-logging for audio payloads")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(DotTheme.ink3)
+                    }
+                }
+                .toggleStyle(DotToggleStyle())
+                .padding(.vertical, 8)
             }
         }
     }
