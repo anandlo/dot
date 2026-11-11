@@ -387,20 +387,6 @@ struct SettingsView: View {
 
     private var recordingSection: some View {
         SettingsSection("Recording") {
-            shortcutRow(
-                title: "Start and stop recording",
-                keycap: config.hotkey.keycapLabel,
-                action: onChangeShortcut,
-                hint: "Starts and stops a recording. Escape cancels."
-            )
-            SettingsDivider()
-            shortcutRow(
-                title: "Paste last transcript",
-                keycap: config.pasteHotkey.keycapLabel,
-                action: onChangePasteShortcut,
-                hint: "Opens the recorder for the paste shortcut."
-            )
-            SettingsDivider()
             SettingsRow("Recording mode") {
                 DotSelect(
                     label: "Recording mode",
@@ -2014,7 +2000,7 @@ struct SettingsView: View {
                 }
             }
             .padding(10)
-            .frame(maxWidth: .infinity, minHeight: 122, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
             .background(tileFill(isSelected))
             .overlay(tileBorder(isSelected))
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -2075,7 +2061,7 @@ struct SettingsView: View {
                 }
             }
             .padding(10)
-            .frame(maxWidth: .infinity, minHeight: 122, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
             .background(tileFill(isSelected))
             .overlay(tileBorder(isSelected))
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -2126,7 +2112,7 @@ struct SettingsView: View {
                 }
             }
             .padding(10)
-            .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
             .background(tileFill(isSelected))
             .overlay(tileBorder(isSelected))
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
