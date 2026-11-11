@@ -191,19 +191,7 @@ h2.sec{font-family:var(--display);font-weight:400;font-size:clamp(28px,3.4vw,46p
   .panel > div{zoom:1.1}
 }
 
-/* 1: two presses span one recording */
-.v-span{position:absolute;left:28px;right:28px;top:50%;height:46px;transform:translateY(-50%)}
-.v-span .cap{position:absolute;top:0;width:62px;height:46px;border-radius:10px;background:#F4EFE6;color:var(--paper-ink);
-  display:grid;place-items:center;font-size:18px;box-shadow:0 3px 0 #BDB4A6; /* taste-skill-ignore shadow: keycap travel */
-  animation:cap 3.2s var(--e-out) infinite}
-.v-span .cap.b{right:0;animation-delay:1.75s}
-.v-span .run{position:absolute;left:74px;right:74px;top:21px;height:4px;border-radius:2px;background:rgba(255,244,230,.1);overflow:hidden}
-.v-span .run i{position:absolute;inset:0;background:var(--accent);transform-origin:0 0;animation:run 3.2s linear infinite}
-.v-span .lbl{position:absolute;left:74px;right:74px;top:34px;display:flex;justify-content:space-between;font-size:12px;color:var(--ink-3)}
-@keyframes cap{0%,4%{transform:translateY(0);box-shadow:0 3px 0 #BDB4A6}8%{transform:translateY(3px);box-shadow:0 0 0 #BDB4A6}14%,100%{transform:translateY(0);box-shadow:0 3px 0 #BDB4A6}} /* taste-skill-ignore shadow: keycap travel */
-@keyframes run{0%,6%{transform:scaleX(0)}62%{transform:scaleX(1)}88%{transform:scaleX(1);opacity:1}100%{transform:scaleX(1);opacity:0}}
-
-/* 2: chunks commit while you talk */
+/* 1: chunks commit while you talk */
 .v-chunks{position:absolute;left:28px;right:28px;top:62px;display:flex;gap:6px}
 .v-chunks i{flex:1;height:44px;border-radius:6px;background:rgba(255,244,230,.08);animation:chunk 4s var(--e-out) infinite}
 .v-chunks i:last-child{flex:.35}
@@ -213,7 +201,7 @@ h2.sec{font-family:var(--display);font-weight:400;font-size:clamp(28px,3.4vw,46p
 .v-legend{position:absolute;left:28px;right:28px;top:122px;display:flex;justify-content:space-between;font-size:12px;color:var(--ink-3)}
 .v-legend b{font-weight:500;color:var(--accent)}
 @keyframes chunk{0%{background:rgba(255,244,230,.08)}8%,86%{background:var(--accent)}100%{background:rgba(255,244,230,.08)}}
-/* 3: it lands at the cursor */
+/* 2: it lands at the cursor */
 .v-field{position:absolute;left:24px;right:24px;top:50%;transform:translateY(-50%);padding:14px 16px;border-radius:10px;
   background:var(--paper);color:var(--paper-ink);font-size:15px;line-height:1.5;min-height:76px}
 .v-field .w{display:inline-block;opacity:0;animation:word 5s var(--e-out) infinite}
@@ -221,7 +209,7 @@ h2.sec{font-family:var(--display);font-weight:400;font-size:clamp(28px,3.4vw,46p
 @keyframes word{0%,22%{opacity:0;transform:translateY(4px);filter:blur(2px)}30%,88%{opacity:1;transform:none;filter:none}96%,100%{opacity:0}}
 @keyframes blink{50%{opacity:0}}
 
-/* 4: one engine at a time */
+/* 3: one engine at a time */
 .v-list{position:absolute;left:24px;right:24px;top:18px;bottom:18px;border-radius:10px;background:var(--tile);overflow:hidden}
 .v-list ul{list-style:none;margin:0;padding:6px;position:relative}
 .v-list li{position:relative;z-index:1;height:20px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;
@@ -231,7 +219,7 @@ h2.sec{font-family:var(--display);font-weight:400;font-size:clamp(28px,3.4vw,46p
   animation:sel 8s steps(1,end) infinite}
 @keyframes sel{0%{transform:translateY(0)}25%{transform:translateY(40px)}50%{transform:translateY(60px)}75%{transform:translateY(120px)}}
 
-/* 5: the key never touches disk */
+/* 4: the key never touches disk */
 .v-kc{position:absolute;left:24px;right:24px;top:22px;display:grid;gap:10px}
 .v-kc pre{margin:0;padding:12px 14px;border-radius:10px;background:var(--tile);font-size:12px;line-height:1.6;color:var(--ink-2);overflow:hidden}
 .v-kc .k{color:var(--ink)}
@@ -241,9 +229,10 @@ h2.sec{font-family:var(--display);font-weight:400;font-size:clamp(28px,3.4vw,46p
 .v-kc .row{animation:slot 4s var(--e-out) infinite}
 @keyframes slot{0%,8%{opacity:0;transform:translateY(-10px)}22%,90%{opacity:1;transform:none}100%{opacity:0}}
 
-/* 6: history, newest first */
+/* 5: history, newest first */
 .v-hist{position:absolute;left:24px;right:24px;top:18px;display:grid;gap:8px}
 .v-hist div{display:flex;gap:12px;padding:9px 12px;border-radius:9px;background:var(--tile);font-size:12.5px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;animation:push 6s var(--e-out) infinite}
+.v-hist div span{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .v-hist div b{font-weight:400;color:var(--ink-2);font-variant-numeric:tabular-nums;flex:0 0 auto}
 .v-hist div:first-child{color:var(--ink)}
 @keyframes push{0%{transform:translateY(-46px);opacity:.0}10%,100%{transform:none;opacity:1}}
@@ -347,34 +336,30 @@ h2.sec{font-family:var(--display);font-weight:400;font-size:clamp(28px,3.4vw,46p
     <div class="wrap"><h2 class="sec rv">Talk instead of type.</h2></div>
     <div class="story wrap" id="story">
       <div class="story__stage" data-ui>
-        <div class="panel" data-i="0" aria-hidden="true"><div class="v-span"><span class="cap">⌥⌘D</span><span class="run"><i></i></span><span class="cap b">⌥⌘D</span>
-            <span class="lbl"><span>start</span><span>stop</span></span></div>
+        <div class="panel" data-i="0" aria-hidden="true"><div class="v-chunks"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="v-legend"><span>sent while you talk</span><b>sent when you stop</b></div>
         </div>
-        <div class="panel" data-i="1" aria-hidden="true"><div class="v-chunks"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-          <div class="v-legend"><span>written while you talk</span><b>done when you stop</b></div>
+        <div class="panel" data-i="1" aria-hidden="true"><div class="v-field">Ship it once the <span class="w" style="animation-delay:0s">migration</span> <span class="w" style="animation-delay:.08s">passes</span> <span class="w" style="animation-delay:.16s">on</span> <span class="w" style="animation-delay:.24s">staging.</span><span class="caret"></span></div>
         </div>
-        <div class="panel" data-i="2" aria-hidden="true"><div class="v-field">Ship it once the <span class="w" style="animation-delay:0s">migration</span> <span class="w" style="animation-delay:.08s">passes</span> <span class="w" style="animation-delay:.16s">on</span> <span class="w" style="animation-delay:.24s">staging.</span><span class="caret"></span></div>
-        </div>
-        <div class="panel" data-i="3" aria-hidden="true"><div class="v-list"><ul><span class="sel"></span>
+        <div class="panel" data-i="2" aria-hidden="true"><div class="v-list"><ul><span class="sel"></span>
             <li>Apple on-device<small>local</small></li><li>OpenAI<small>cloud</small></li><li>Groq<small>cloud</small></li><li>Deepgram<small>cloud</small></li>
             <li>ElevenLabs<small>cloud</small></li><li>Azure<small>cloud</small></li><li>Xiaomi ASR<small>cloud</small></li><li>Any OpenAI-compatible URL<small>yours</small></li></ul></div>
         </div>
-        <div class="panel" data-i="4" aria-hidden="true"><div class="v-kc"><pre><span class="k">"provider"</span>: "groq",
+        <div class="panel" data-i="3" aria-hidden="true"><div class="v-kc"><pre><span class="k">"provider"</span>: "groq",
 <span class="k">"recordingMode"</span>: "toggle"</pre>
             <div class="row"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg>DOT_API_KEY_GROQ<em>Keychain</em></div></div>
         </div>
-        <div class="panel" data-i="5" aria-hidden="true"><div class="v-hist"><div><b>9:41</b>The Q3 numbers are in the shared folder.</div><div><b>9:12</b>Rename the flag to recordingMode and keep the default.</div>
-            <div><b>8:57</b>Pick up oat milk and the dry cleaning.</div><div><b>8:30</b>Thanks, that works for Thursday.</div></div>
+        <div class="panel" data-i="4" aria-hidden="true"><div class="v-hist"><div><b>9:41</b><span>The Q3 numbers are in the shared folder.</span></div><div><b>9:12</b><span>Rename the flag to recordingMode and keep the default.</span></div>
+            <div><b>8:57</b><span>Pick up oat milk and the dry cleaning.</span></div><div><b>8:30</b><span>Thanks, that works for Thursday.</span></div></div>
         </div>
         <div class="story__rail" aria-hidden="true"><i id="rail"></i></div>
       </div>
       <ol class="story__steps">
-        <li class="step" data-i="0"><div><h3>Press to start, press to stop.</h3><p>No need to hold a key while you talk. If you would rather hold it, you can switch that in Settings.</p></div></li>
-        <li class="step" data-i="1"><div><h3>Your text is ready right away.</h3><p>Dot starts writing while you are still talking, so there is almost nothing left to do when you finish.</p></div></li>
-        <li class="step" data-i="2"><div><h3>It types where your cursor is.</h3><p>Email, notes, code or chat, the words go into whatever you were working on. If you switch apps before it is done, Dot puts them on your clipboard instead.</p></div></li>
-        <li class="step" data-i="3"><div><h3>Pick your speech engine.</h3><p>Use Apple speech recognition on your Mac with macOS 26 or later, or add a key for OpenAI, Groq, Deepgram, ElevenLabs, Azure or another service. The shortcut stays the same.</p></div></li>
-        <li class="step" data-i="4"><div><h3>Your keys stay safe.</h3><p>API keys are saved in the macOS Keychain, not in a settings file.</p></div></li>
-        <li class="step" data-i="5"><div><h3>Find what you said earlier.</h3><p>Dot keeps your last twenty dictations on your Mac, so you can copy or paste one again.</p></div></li>
+        <li class="step" data-i="0"><div><h3>Long talks, short waits.</h3><p>While you talk, Dot sends what you have said in pieces. When you stop, only the last few seconds are left to transcribe.</p></div></li>
+        <li class="step" data-i="1"><div><h3>It types where your cursor is.</h3><p>Email, notes, code or chat, the words go into whatever you were working on. If you switch apps before it is done, Dot puts them on your clipboard instead.</p></div></li>
+        <li class="step" data-i="2"><div><h3>Pick your speech engine.</h3><p>Use Apple speech recognition on your Mac with macOS 26 or later, or add a key for OpenAI, Groq, Deepgram, ElevenLabs, Azure or another service.</p></div></li>
+        <li class="step" data-i="3"><div><h3>Your keys stay safe.</h3><p>API keys are stored in the macOS Keychain and sent only to the service you chose.</p></div></li>
+        <li class="step" data-i="4"><div><h3>Find what you said earlier.</h3><p>Your recent dictations stay on your Mac, so you can copy or paste one again.</p></div></li>
       </ol>
     </div>
   </section>
