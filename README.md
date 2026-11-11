@@ -249,12 +249,18 @@ Nothing is marked trusted: the certificate has no trust settings, and only
 signature or any other app.
 
 Keep a copy of the identity if you plan to use it for long. A new certificate is a
-new identity, and every permission would have to be granted again:
+new identity, and every permission would have to be granted again, so write the
+copy when you create it:
 
 ```sh
 ./scripts/signing-identity.sh --backup ~/Documents/Dot-Self-Signed.p12
 ./scripts/signing-identity.sh --import ~/Documents/Dot-Self-Signed.p12   # another Mac
 ```
+
+An identity that already exists cannot be re-exported by the script, because
+`security export` has no way to name one identity out of a keychain. Export it
+from Keychain Access instead: **My Certificates**, right-click **Dot Self-Signed**,
+**Export Items**, format **Personal Information Exchange (.p12)**.
 
 Release builds sign with the same identity when the machine that builds them has
 it, and fall back to ad-hoc when it does not. `./scripts/build.sh` and

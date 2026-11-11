@@ -23,6 +23,7 @@
 
 # The variables set here are read by the scripts that source this file.
 # shellcheck disable=SC2034
+set -euo pipefail
 
 DOT_SIGNING_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 

@@ -124,8 +124,9 @@ create_identity() {
   trap 'rm -rf -- "${DOT_SIGNING_WORK:-}"' EXIT
   local work="$DOT_SIGNING_WORK"
 
-  # SHA-1 signs, not SHA-512: the designated requirement language supports the
-  # SHA-1 of a certificate, which is what codesign records.
+  # -sha256 is the digest of the certificate's own signature. It is not the hash
+  # the designated requirement quotes: that one is the SHA-1 of the certificate,
+  # which codesign computes from the DER bytes when it signs.
   log "creating a self-signed code-signing certificate valid for $DAYS days"
   openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days "$DAYS" \
     -keyout "$work/key.pem" -out "$work/cert.pem" \
@@ -161,6 +162,11 @@ create_identity() {
 
   identity_exists || die "the identity was imported but codesign cannot see it; check $KEYCHAIN"
 
+  log ""
+  log "created the identity. Builds signed with it keep their permissions."
+  print_details
+  print_access_note
+
   if [ -n "$backup" ]; then
     local backup_pass
     backup_pass="$(p12_password "Passphrase for $backup")"
@@ -170,15 +176,17 @@ create_identity() {
       -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
       || die "could not write $backup"
     chmod 600 "$backup"
-    log "wrote a backup of the identity to $backup"
+    log ""
+    log "wrote a copy of the identity to $backup"
     log "Keep it out of the repository. Losing it means every person who installs"
     log "Dot has to grant the privacy permissions again after the next update."
+  else
+    log ""
+    log "No copy was written. To keep one for another Mac, export \"$IDENTITY\""
+    log "from Keychain Access: My Certificates, right-click it, Export Items,"
+    log "format Personal Information Exchange (.p12)."
   fi
 
-  log ""
-  log "created the identity. Builds signed with it keep their permissions."
-  print_details
-  print_access_note
   log ""
   log "An app that was ad-hoc signed before this change was granted its"
   log "permissions against its own hash, so grant microphone, Accessibility and"
