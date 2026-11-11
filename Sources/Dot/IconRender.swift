@@ -9,11 +9,21 @@ import UniformTypeIdentifiers
 ///
 /// The drawings are code (``DotMark`` and ``DotMarkDial``), so this is the only
 /// way an icon file is ever made: there is no hand-edited PNG in the tree.
-/// `scripts/render-icon.sh` runs this and hands the iconset to `iconutil`, and
-/// no window is ever created.
+/// `scripts/render-icon.sh` runs this, hands the iconset to `iconutil` and the
+/// Icon Composer document to `actool`, and no window is ever created.
 ///
 /// Every master is drawn at scale 1, so one point is one pixel: a 16 point tile
-/// is a sixteen pixel master, not a downscale of the 1024.
+/// is a sixteen pixel drawing of the vector, not a downscale of the 1024.
+///
+/// Three kinds of file come out of it:
+///
+/// - the iconset, whose every slot is masked to ``DotIconGrid`` and carries a
+///   transparent margin, which is what macOS 14 and 15 need in order to show a
+///   rounded icon instead of a square;
+/// - the Icon Composer document, whose layers are unmasked and full bleed,
+///   because macOS 26 shapes and lights the icon itself;
+/// - the site's marks, both masked and full bleed, since a favicon is drawn on
+///   nothing and an iOS touch icon is masked by iOS.
 @MainActor
 enum IconRender {
     /// The argument that renders the installable assets and exits.
@@ -42,7 +52,7 @@ enum IconRender {
     ///
     /// The pairs exist because a slot is named for a point size and carries one
     /// or two pixels per point. Every slot is drawn at its own pixel size, so no
-    /// slot is a resample of another.
+    /// slot is a resample of another: the 1024 is not the source of the 16.
     static let iconsetSlots: [(name: String, pixels: Int)] = [
         ("icon_16x16.png", 16),
         ("icon_16x16@2x.png", 32),
@@ -56,8 +66,30 @@ enum IconRender {
         ("icon_512x512@2x.png", 1024),
     ]
 
-    /// The sizes `AppIcon-<n>.png` is written at.
-    static let flatSizes = [1024, 512, 256, 128, 64, 32, 16]
+    /// One file the renderer writes into the site's asset directory.
+    struct SiteAsset {
+        /// The file name the site asks for.
+        let name: String
+        /// Its edge in pixels.
+        let pixels: Int
+        /// Whether the grid's corner is baked in and the margin transparent.
+        ///
+        /// A favicon and a rounded mark sit on a page, so they carry the corner.
+        /// A touch icon does not: iOS masks it, and a mask on a mask shows a
+        /// double corner. The social card is full bleed because a card crops to
+        /// its own frame.
+        let masked: Bool
+    }
+
+    /// The site's marks. The paths are the ones `index.html` and the README
+    /// already ask for, so this list is the contract with the site.
+    static let siteAssets: [SiteAsset] = [
+        SiteAsset(name: "icon.png", pixels: 1024, masked: false),
+        SiteAsset(name: "icon-180.png", pixels: 180, masked: false),
+        SiteAsset(name: "icon-rounded.png", pixels: 1024, masked: true),
+        SiteAsset(name: "icon-512.png", pixels: 512, masked: true),
+        SiteAsset(name: "icon-32.png", pixels: 32, masked: true),
+    ]
 
     /// The directory the render was asked for, if any.
     static func requestedDirectory(
@@ -88,41 +120,83 @@ enum IconRender {
 
     // MARK: - Rendering
 
-    /// Writes the icon masters and the menu bar glyph into `directory`.
+    /// Writes every icon master, the Icon Composer document and the menu bar
+    /// glyph into `directory`.
     static func renderAll(to directory: URL, mark: Mark = .shipped) throws {
-        try writeAssets(to: directory) { size in
-            switch mark {
-            case .dial(let dial):
-                try plate(dial: dial, size: size)
-            case .direction(let direction):
-                try plate(direction: direction, size: size)
-            }
-        }
-        try writeMenuGlyph(to: directory)
-    }
-
-    /// Draws the masters for one mark at every size the `.icns` and the flat
-    /// copies need, then writes the iconset.
-    private static func writeAssets(
-        to directory: URL,
-        master: (CGFloat) throws -> CGImage
-    ) throws {
         let fileManager = FileManager.default
         let iconset = directory.appendingPathComponent("AppIcon.iconset", isDirectory: true)
         try fileManager.createDirectory(at: iconset, withIntermediateDirectories: true)
 
-        for size in flatSizes {
-            let image = try master(CGFloat(size))
-            try writeOpaque(image, to: directory.appendingPathComponent("AppIcon-\(size).png"))
-        }
-
-        // The iconset is what `iconutil` reads. A repeated name is drawn once:
-        // two slots that name the same file would be two writers of one path.
+        // A repeated slot name is drawn once: two slots that name the same file
+        // would be two writers of one path.
         var written = Set<String>()
         for slot in iconsetSlots where written.insert(slot.name).inserted {
-            let image = try master(CGFloat(slot.pixels))
-            try writeOpaque(image, to: iconset.appendingPathComponent(slot.name))
+            let image = try masked(mark, pixels: CGFloat(slot.pixels))
+            try writeAlpha(image, to: iconset.appendingPathComponent(slot.name))
         }
+
+        // The in-app tile stays full bleed. ``DotSignalMark`` draws it under its
+        // own rounded clip, so an already-masked file would put a second margin
+        // inside that frame and shrink the mark.
+        try writeOpaque(
+            try fullBleed(mark, pixels: DotIconGrid.reference),
+            to: directory.appendingPathComponent("AppIcon-1024.png")
+        )
+
+        try writeSiteAssets(
+            to: directory.appendingPathComponent("site", isDirectory: true),
+            mark: mark
+        )
+        try writeIconComposer(to: directory, mark: mark)
+        try writeMenuGlyph(to: directory)
+    }
+
+    /// Writes the site's marks into `directory`, one drawing per size.
+    static func writeSiteAssets(to directory: URL, mark: Mark = .shipped) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for asset in siteAssets {
+            let target = directory.appendingPathComponent(asset.name)
+            let pixels = CGFloat(asset.pixels)
+            if asset.masked {
+                try writeAlpha(masked(mark, pixels: pixels), to: target)
+            } else {
+                try writeOpaque(fullBleed(mark, pixels: pixels), to: target)
+            }
+        }
+    }
+
+    /// Writes `AppIcon.icon` into `directory`.
+    ///
+    /// The shipped mark is layered: the plate, the disc's seat and the disc, so
+    /// each silhouette is its own and the system can light the disc without
+    /// drawing a rim around its shadow. A studied direction is one flat drawing,
+    /// so it becomes the document's single background layer.
+    static func writeIconComposer(to directory: URL, mark: Mark = .shipped) throws {
+        let reference = DotIconGrid.reference
+        let canvas = CGSize(width: reference, height: reference)
+        let plateLayer: CGImage
+        let seatLayer: CGImage?
+        let discLayer: CGImage?
+        switch mark {
+        case .dial(let dial):
+            plateLayer = try bitmap(
+                DotPlateSurface(direction: .porcelain, size: reference),
+                size: canvas,
+                opaque: true
+            )
+            seatLayer = try seat(dial: dial, pixels: reference)
+            discLayer = try disc(dial: dial, pixels: reference)
+        case .direction(let direction):
+            plateLayer = try fullBleed(.direction(direction), pixels: reference)
+            seatLayer = nil
+            discLayer = nil
+        }
+        try AppIconPackage.write(
+            to: directory.appendingPathComponent(AppIconPackage.directoryName, isDirectory: true),
+            plate: plateLayer,
+            seat: seatLayer,
+            disc: discLayer
+        )
     }
 
     /// Writes the menu bar glyph: black on transparent, at 18 and 36.
@@ -144,6 +218,53 @@ enum IconRender {
 
     // MARK: - Drawing
 
+    /// One mark at one canvas size, masked to the grid.
+    ///
+    /// The artwork is drawn at the body's edge and the margin around it is left
+    /// transparent, so the file says "rounded icon" to a macOS that will not
+    /// round it. At 16 and 32 pixels that leaves a twelve and a twenty six pixel
+    /// body: the drawing is made at that size, not sampled down to it.
+    static func masked(_ mark: Mark, pixels: CGFloat) throws -> CGImage {
+        let body = DotIconGrid.body(inCanvas: pixels)
+        let image = try bitmap(
+            DotIconMaster(size: pixels) { artwork(mark, size: body) },
+            size: CGSize(width: pixels, height: pixels),
+            opaque: false
+        )
+        return image
+    }
+
+    /// One mark at one size, filling the canvas.
+    ///
+    /// This is the shape the study sheets and the in-app tile use, and the shape
+    /// iOS masks for itself. It is not an app icon on macOS 14 or 15: a bundle
+    /// that ships this ships a square.
+    static func fullBleed(_ mark: Mark, pixels: CGFloat) throws -> CGImage {
+        try bitmap(
+            artwork(mark, size: pixels),
+            size: CGSize(width: pixels, height: pixels),
+            opaque: true
+        )
+    }
+
+    /// One dial's seat at one canvas size: its cast shadow and rim, on nothing.
+    static func seat(dial: DotMarkDial, pixels: CGFloat) throws -> CGImage {
+        try bitmap(
+            DotMarkDialTile(dial: dial, size: pixels, parts: [.seat]),
+            size: CGSize(width: pixels, height: pixels),
+            opaque: false
+        )
+    }
+
+    /// One dial's disc at one canvas size, on nothing.
+    static func disc(dial: DotMarkDial, pixels: CGFloat) throws -> CGImage {
+        try bitmap(
+            DotMarkDialTile(dial: dial, size: pixels, parts: [.disc]),
+            size: CGSize(width: pixels, height: pixels),
+            opaque: false
+        )
+    }
+
     /// One plate at one size, as a bitmap.
     static func plate(direction: DotMarkDirection, size: CGFloat) throws -> CGImage {
         try bitmap(DotPlate(direction: direction, size: size), size: CGSize(width: size, height: size))
@@ -157,6 +278,17 @@ enum IconRender {
         )
     }
 
+    /// The mark's artwork, filling a square of `size` points.
+    @ViewBuilder
+    private static func artwork(_ mark: Mark, size: CGFloat) -> some View {
+        switch mark {
+        case .dial(let dial):
+            DotMarkDialTile(dial: dial, size: size)
+        case .direction(let direction):
+            DotPlate(direction: direction, size: size)
+        }
+    }
+
     /// One view as a bitmap at scale 1.
     private static func bitmap<V: View>(_ view: V, size: CGSize, opaque: Bool = true) throws -> CGImage {
         let renderer = ImageRenderer(content: view.frame(width: size.width, height: size.height))
@@ -168,14 +300,40 @@ enum IconRender {
 
     // MARK: - Encoding
 
+    /// Writes a PNG that keeps its alpha channel.
+    ///
+    /// An icon master has to declare its own shape: a transparent margin is how
+    /// a file tells macOS 14 and 15 that the icon is a rounded tile rather than
+    /// a square. `sips -g hasAlpha` reports `yes` for every file this writes.
+    nonisolated static func writeAlpha(_ image: CGImage, to url: URL) throws {
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                  data: nil,
+                  width: image.width,
+                  height: image.height,
+                  bitsPerComponent: 8,
+                  bytesPerRow: 0,
+                  space: space,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              )
+        else {
+            throw RenderError.couldNotCreateContext
+        }
+        let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        context.clear(bounds)
+        context.draw(image, in: bounds)
+        guard let flattened = context.makeImage() else { throw RenderError.couldNotRender }
+        try encode(flattened, to: url)
+    }
+
     /// Writes a PNG with no alpha channel at all.
     ///
-    /// An icon master that carries an alpha channel is a transparency
-    /// declaration whatever its values are, and macOS masks the icon itself.
-    /// The context here has no alpha component, so the file says "opaque"
-    /// rather than "transparent everywhere but painted", and `sips -g hasAlpha`
-    /// reports `no`.
-    static func writeOpaque(_ image: CGImage, to url: URL) throws {
+    /// A full-bleed master is opaque on purpose: nothing in it is meant to be
+    /// seen through, and macOS 26 masks the lifted layer itself. The context
+    /// here has no alpha component, so the file says "opaque" rather than
+    /// "transparent everywhere but painted", and `sips -g hasAlpha` reports
+    /// `no`.
+    nonisolated static func writeOpaque(_ image: CGImage, to url: URL) throws {
         guard let space = CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(
                   data: nil,
@@ -191,14 +349,18 @@ enum IconRender {
         }
         let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
         // The plate covers every pixel, so the ground only matters if a render
-        // ever leaves one bare. Black keeps that failure invisible instead of
-        // turning it into a white fringe.
+        // ever leaves one bare.
         context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
         context.fill(bounds)
         context.draw(image, in: bounds)
         guard let flat = context.makeImage() else {
             throw RenderError.couldNotRender
         }
+        try encode(flat, to: url)
+    }
+
+    /// Writes one bitmap as a PNG.
+    nonisolated private static func encode(_ image: CGImage, to url: URL) throws {
         guard let destination = CGImageDestinationCreateWithURL(
             url as CFURL,
             UTType.png.identifier as CFString,
@@ -207,7 +369,7 @@ enum IconRender {
         ) else {
             throw RenderError.couldNotEncode
         }
-        CGImageDestinationAddImage(destination, flat, nil)
+        CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else {
             throw RenderError.couldNotEncode
         }

@@ -1,41 +1,58 @@
 #!/usr/bin/env bash
 #
-# Render the app icon and the menu bar glyph, then build Resources/AppIcon.icns.
+# Render the app icon, the Icon Composer document and the menu bar glyph, then
+# build Resources/AppIcon.icns and the site's marks.
 #
-# The drawings are code (Sources/Dot/DotMark.swift and DotMarkDial.swift), and
-# `Dot --render-icon` is the only way an icon file is ever made: there is no
-# hand-edited PNG in the tree.
+# The drawings are code (Sources/Dot/DotMark.swift, DotMarkDial.swift and
+# IconGrid.swift), and `Dot --render-icon` is the only way an icon file is ever
+# made: there is no hand-edited PNG in the tree.
+#
+# Three kinds of file come out of one render, because three consumers want
+# different shapes of the same mark:
+#
+#   * AppIcon.icns, every slot masked into Apple's 824 of 1024 grid with a
+#     transparent margin. macOS 14 and 15 draw an app icon exactly as supplied,
+#     so this file is what stops Dot appearing in the Dock as a hard square.
+#   * AppIcon.icon, the Icon Composer document. Its layers are unmasked and full
+#     bleed because macOS 26 supplies the shape, the lighting and the shadow.
+#     scripts/build.sh compiles it to Assets.car with actool.
+#   * assets/*.png, the site's marks, both masked and full bleed.
 #
 # Usage:
-#   scripts/render-icon.sh                     # install into Resources/
-#   scripts/render-icon.sh --out /tmp/icon     # write somewhere else
+#   scripts/render-icon.sh                     # install into Resources/ and assets/
+#   scripts/render-icon.sh --out /tmp/icon     # write one directory, leave the site alone
 #   scripts/render-icon.sh --direction ember   # pick a studied plate
 #
 # The mark is the one `DotMark.chosenDial` names, drawn on `DotMark.chosen`'s
-# plate, so a bare run writes the shipped icon. An explicit `--direction` draws
-# one of the four studied plates instead, which is how a review is reproduced.
-#
-# Every master is written without an alpha channel: a PNG that carries alpha is
-# a transparency declaration whatever its values are, and macOS masks an app
-# icon to the system corner itself.
+# plate, so a bare run writes the shipped icon.
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$PROJECT_DIR/Resources"
+SITE="$PROJECT_DIR/assets"
 DIRECTION=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --out)
             OUT="$2"
+            SITE=""
             shift 2
+            ;;
+        --site)
+            SITE="$2"
+            shift 2
+            ;;
+        --no-site)
+            SITE=""
+            shift
             ;;
         --direction)
             DIRECTION="$2"
             shift 2
             ;;
         -h|--help)
-            sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -51,6 +68,12 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/dot-icon.XXXXXX")"
 trap 'rm -rf -- "$TMP"' EXIT
 
 cd -- "$PROJECT_DIR"
+
+# Build before rendering. `--show-bin-path` only reports where a binary would
+# live, so a render without this line can quietly draw a mark the source no
+# longer contains: the last build's, at whatever commit it was made.
+log "building the renderer"
+swift build >/dev/null
 BIN="$(swift build --show-bin-path)/Dot"
 
 ARGS=(--render-icon "$TMP/masters")
@@ -78,9 +101,21 @@ for slot in "${SLOTS[@]}"; do
     fi
 done
 
-# The masters must be opaque. `sips` is the check that survives someone
-# "fixing" the renderer later with a transparency-preserving encode.
-for png in "$MASTERS"/AppIcon-*.png "$ICONSET"/*.png; do
+# The iconset must carry alpha. An icon master without a transparent margin is
+# a square, and a square is the defect this file exists to fix: the check is
+# the one that survives someone "simplifying" the renderer into an opaque
+# encode later.
+for png in "$ICONSET"/*.png; do
+    alpha="$(sips -g hasAlpha "$png" 2>/dev/null | awk '/hasAlpha/ {print $2}')"
+    if [ "$alpha" != "yes" ]; then
+        printf 'render-icon: %s has no alpha channel (%s)\n' "$png" "${alpha:-unknown}" >&2
+        exit 1
+    fi
+done
+
+# The full-bleed marks must not carry one: iOS masks a touch icon itself, and a
+# social card is cropped by the card.
+for png in "$MASTERS/site/icon.png" "$MASTERS/site/icon-180.png" "$MASTERS/AppIcon-1024.png"; do
     alpha="$(sips -g hasAlpha "$png" 2>/dev/null | awk '/hasAlpha/ {print $2}')"
     if [ "$alpha" != "no" ]; then
         printf 'render-icon: %s carries an alpha channel (%s)\n' "$png" "${alpha:-unknown}" >&2
@@ -92,15 +127,31 @@ log "building $OUT/AppIcon.icns"
 mkdir -p -- "$OUT"
 iconutil -c icns "$ICONSET" -o "$OUT/AppIcon.icns"
 
-# Only the 1024 master is installed besides the icns: the icon is resolved from
-# the icns, and the flat copies of the smaller sizes were files nothing read.
 cp -- "$MASTERS/AppIcon-1024.png" "$OUT/AppIcon-1024.png"
 cp -- "$MASTERS/MenuGlyph.png" "$OUT/MenuGlyph.png"
 cp -- "$MASTERS/MenuGlyph@2x.png" "$OUT/MenuGlyph@2x.png"
+# A directory, so it is replaced rather than copied into itself.
+rm -r -- "$OUT/AppIcon.icon" 2>/dev/null || true
+cp -R -- "$MASTERS/AppIcon.icon" "$OUT/AppIcon.icon"
+
+if [ -n "$SITE" ]; then
+    log "installing the site's marks into $SITE"
+    mkdir -p -- "$SITE"
+    cp -- "$MASTERS/site/icon.png" "$SITE/icon.png"
+    cp -- "$MASTERS/site/icon-180.png" "$SITE/icon-180.png"
+    cp -- "$MASTERS/site/icon-rounded.png" "$SITE/icon-rounded.png"
+    cp -- "$MASTERS/site/icon-512.png" "$SITE/icon-512.png"
+    cp -- "$MASTERS/site/icon-32.png" "$SITE/icon-32.png"
+fi
 
 # Read the icns back so the report is about the file that exists, not the
 # iconset that was handed to iconutil.
 chunks="$(iconutil -c iconset "$OUT/AppIcon.icns" -o "$TMP/check.iconset" 2>/dev/null && ls "$TMP/check.iconset" | wc -l | tr -d ' ')"
-log "wrote $OUT/AppIcon.icns ($(( $(stat -f%z "$OUT/AppIcon.icns") / 1024 )) KB, ${chunks:-?} sizes)"
-log "wrote $OUT/AppIcon-1024.png (opaque, no alpha channel)"
+log "wrote $OUT/AppIcon.icns ($(( $(stat -f%z "$OUT/AppIcon.icns") / 1024 )) KB, ${chunks:-?} sizes, masked)"
+log "wrote $OUT/AppIcon.icon ($(ls "$OUT/AppIcon.icon/Assets" | wc -l | tr -d ' ') layers, for actool)"
+log "wrote $OUT/AppIcon-1024.png (full bleed, for the in-app tile)"
 log "wrote $OUT/MenuGlyph.png (18) and $OUT/MenuGlyph@2x.png (36), black on transparent"
+if [ -n "$SITE" ]; then
+    log "wrote $SITE/icon-rounded.png, icon-512.png and icon-32.png (masked)"
+    log "wrote $SITE/icon.png and icon-180.png (full bleed)"
+fi

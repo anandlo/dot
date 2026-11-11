@@ -5,9 +5,14 @@ import SwiftUI
 //
 // Every direction below is drawn from geometry, so the icon, the study sheets
 // and the menu bar glyph are generated from one source and no bitmap is ever
-// hand-edited. The plate is a full-bleed opaque square: macOS masks an app
-// icon to the system's continuous corner itself, so baking that corner (or an
-// alpha channel) into the master would be a second, wrong mask.
+// hand-edited.
+//
+// The plate is painted to the edges of its own frame. Turning that frame into
+// an icon is a separate step and it has to be: macOS 14 and 15 draw an app
+// icon exactly as the bundle supplies it, so an icon file that is a full-bleed
+// square appears in the Dock as a hard square. ``DotIconMaster`` is that step.
+// It puts the plate in the 824 of 1024 grid, cuts it with the system corner and
+// leaves the margin transparent.
 //
 // The four directions differ in material, in what the light does, and in how
 // the dot sits in the plate. They do not differ in hue: a dot on black has no
@@ -564,90 +569,100 @@ private struct DotRandom {
 
 /// The icon's own drop shadow, matched to Apple's masters.
 ///
-/// Measured on the 1024 masters IconServices resolves for this Mac, on the
-/// alpha profile running down from the body's bottom edge: Apple's shadow peaks
-/// at alpha 44/255 and reaches 34 px past an 824 px body. This one peaked at
-/// 63/255 and reached 48 px - 43% heavier and 41% further - which is a seat
-/// that reads softer than every icon beside it.
+/// Measured on the 256 point representation of the system apps' icons, on the
+/// alpha running away from the body's edges: Apple's shadow reaches 11 pixels
+/// below a 206 pixel body, 9 to the sides and 7 above it, and its first pixel
+/// below the body is at alpha 33 of 255. Fitted against that profile, this set
+/// reproduces it to within one or two steps of alpha per pixel; the numbers it
+/// replaced sat 60 percent too low, which starved the top of the shadow and
+/// left the icon looking like it was sliding off its own seat.
 ///
 /// The two drawing paths need different numbers to land on one profile.
 /// CoreGraphics' `setShadow(blur:)` spreads over about 1.17 of the blur radius,
 /// while SwiftUI's `.shadow(radius:)` spreads over about 1.94 of the radius, so
-/// the same number in both places drew a shadow half again as wide on a study
-/// sheet as in the Dock composite. Both constants below were fitted by
-/// measurement against Apple's profile, and both are checked against it.
+/// `blur` is `radius` times that ratio.
 enum DotShadow {
     /// Peak alpha at the plate edge, as a fraction of black.
-    static let alpha: Double = 0.21
+    static let alpha: Double = 0.22
     /// CoreGraphics blur, as a fraction of the icon's body.
-    static let blur: CGFloat = 0.033
+    static let blur: CGFloat = radius * 1.94
     /// The same profile asked of SwiftUI, as a fraction of the body.
-    static let radius: CGFloat = 0.017
+    static let radius: CGFloat = 0.020
     /// How far the shadow sits below the plate, as a fraction of the body.
-    static let offset: CGFloat = 0.016
+    static let offset: CGFloat = 0.010
+}
+
+/// The light that catches the plate's edge.
+///
+/// A dark plate on a dark surface is a plate nobody can find. Measured on the
+/// icon Apple ships for Terminal, which is the same kind of object: its
+/// silhouette is 35 of 255 at the sides and 57 at the top where the plate
+/// behind it is 10 to 31, so the edge carries about ten percent of white over
+/// the material and holds the shape on a black desktop. Without that line the
+/// pebble's lower half disappears into a near-black page and the mark reads as
+/// a cream disc floating on nothing.
+///
+/// The line is drawn inside the silhouette and never outside it: a stroke with
+/// an outer half would put its own boundary beside the plate's edge, which is
+/// the separate ring this mark has always avoided.
+enum DotRim {
+    /// The line's width, as a fraction of the body: about two pixels at 1024.
+    static let width: CGFloat = 0.0024
+    /// How much white the line carries at the top, where the light comes from.
+    static let top: Double = 0.13
+    /// How much white it carries at the foot, where the plate turns away.
+    static let foot: Double = 0.07
 }
 
 // MARK: - Presentation
 
-/// The system's continuous-corner corner, so a study shows what the Dock will.
+/// The system's continuous-corner square, so a study shows what the Dock will.
 ///
-/// The master is a full square because macOS masks it; a sheet that showed the
-/// unmasked square would be showing something the user never sees.
-struct DotSquircle: Shape {
-    /// The exponent of the superellipse.
-    ///
-    /// Fitted to the corner profile of Apple's own icons by measurement, not by
-    /// eye: sampling the alpha of the 1024 masters in `/System/Applications`
-    /// gives an 824 px body whose area is 93.92% of its bounding square and
-    /// whose silhouette insets 45 px at a depth of 10% of the body, 21 px at
-    /// 15% and 3 px at 25%. An exponent of 4.45 reproduces the area to 0.01%
-    /// and those insets as 41/21/4 px. The 5.4 this carried before was 1.8% too
-    /// full at the corners - an arc inset of 0.59x Apple's - which is visibly
-    /// tighter than the icons it sits beside.
-    ///
-    /// Unlike a rounded rectangle it keeps the curvature continuous into the
-    /// straight run, which is the whole point of the system corner.
-    var exponent: Double = 4.45
+/// This is the corner macOS 14 and 15 expect an app icon to carry, because they
+/// apply none of their own. It is drawn by the system's own
+/// `RoundedRectangle(cornerRadius:style: .continuous)` rather than by a
+/// superellipse of ours: against the silhouette measured on Apple's own icons
+/// the continuous corner is within one pixel at 256 over the whole curve and
+/// its area is within 0.2 percent, where the exponent-fitted superellipse that
+/// came before was 1.5 percent too full and up to four pixels out at a shallow
+/// depth. The radius is the grid's own 185.4 of 824.
+struct DotSquircle: Shape, InsettableShape {
+    /// The corner radius as a fraction of the shorter edge.
+    var radiusRatio: CGFloat = DotIconGrid.cornerRatio
+    /// How far the shape is pulled in, for a stroke that has to sit inside it.
+    var inset: CGFloat = 0
 
     func path(in rect: CGRect) -> Path {
-        let steps = 720
-        let a = rect.width / 2
-        let b = rect.height / 2
-        let cx = rect.midX
-        let cy = rect.midY
-        let power = 2 / exponent
-        var path = Path()
-        for index in 0...steps {
-            let t = Double(index) / Double(steps) * 2 * Double.pi
-            let c = cos(t)
-            let s = sin(t)
-            let x = cx + a * (c < 0 ? -1 : 1) * pow(abs(c), power)
-            let y = cy + b * (s < 0 ? -1 : 1) * pow(abs(s), power)
-            if index == 0 {
-                path.move(to: CGPoint(x: x, y: y))
-            } else {
-                path.addLine(to: CGPoint(x: x, y: y))
-            }
-        }
-        path.closeSubpath()
-        return path
+        let inner = rect.insetBy(dx: inset, dy: inset)
+        return RoundedRectangle(
+            cornerRadius: max(0, min(inner.width, inner.height) * radiusRatio),
+            style: .continuous
+        )
+        .path(in: inner)
+    }
+
+    func inset(by amount: CGFloat) -> DotSquircle {
+        var copy = self
+        copy.inset += amount
+        return copy
     }
 }
 
 /// The mark as it appears on a desktop: masked, and sitting in its shadow.
 ///
-/// `size` is the icon's own edge; the view is larger than that, because the
-/// shadow it casts needs room and a shadow clipped at the frame is not a
-/// shadow. ``paddedSize(for:)`` is the box the view actually draws in.
+/// `size` is the plate's own edge, which is the icon's body; the view is larger
+/// than that, because the grid leaves a margin around the body and a shadow
+/// clipped at the frame is not a shadow. ``paddedSize(for:)`` is the canvas this
+/// view actually draws in, and it is the size an icon file is written at.
 struct DotIconPresentation: View {
     let direction: DotMarkDirection
     let size: CGFloat
     var showsShadow = true
 
-    /// The fraction of the icon's edge the shadow needs on each side.
-    static let paddingRatio: CGFloat = 0.070
+    /// The margin on each side, as a fraction of the body.
+    static let paddingRatio: CGFloat = DotIconGrid.paddingRatio
 
-    /// The box this view draws in for an icon of `size` points.
+    /// The canvas this view draws in for a body of `size` points.
     static func paddedSize(for size: CGFloat) -> CGFloat {
         size * (1 + paddingRatio * 2)
     }

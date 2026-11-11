@@ -166,20 +166,49 @@ struct DotMarkDialGeometry {
 struct DotMarkDialTile: View {
     let dial: DotMarkDial
     let size: CGFloat
+    /// Which parts of the tile are drawn.
+    ///
+    /// A layered export draws the plate, the disc's seat and the disc in
+    /// separate layers, because a system that lights each layer has to be given
+    /// each silhouette: a disc and its shadow in one layer is a single outline,
+    /// and a glass rim drawn on that outline rings the shadow rather than the
+    /// disc. Every part is the same drawing at the same geometry, so the layers
+    /// reassemble into the flat tile exactly.
+    var parts: Parts = .all
 
     var body: some View {
         let s = size
         let geometry = DotMarkDialGeometry(dial: dial, plate: s)
         ZStack {
-            DotPlateSurface(direction: .porcelain, size: s)
-            seat(geometry)
-            mark(geometry, plate: s)
+            if parts.contains(.plate) {
+                DotPlateSurface(direction: .porcelain, size: s)
+            }
+            if parts.contains(.seat) {
+                seat(geometry)
+            }
+            if parts.contains(.disc) {
+                mark(geometry, plate: s)
+            }
         }
         .frame(width: s, height: s)
         .compositingGroup()
         // A dot that bleeds past the plate has to be cut by the plate's own
         // edge, not drawn over the sheet beside it.
         .clipped()
+    }
+
+    /// The tile's parts, as the layers a layered export needs.
+    struct Parts: OptionSet, Sendable {
+        let rawValue: Int
+
+        /// The plate's material.
+        static let plate = Parts(rawValue: 1 << 0)
+        /// The disc's seat: its cast shadow and the occlusion at its rim.
+        static let seat = Parts(rawValue: 1 << 1)
+        /// The disc itself.
+        static let disc = Parts(rawValue: 1 << 2)
+        /// The tile as a study sheet draws it.
+        static let all: Parts = [.plate, .seat, .disc]
     }
 
     // MARK: Seat
@@ -327,6 +356,9 @@ struct DotMarkDialTile: View {
 }
 
 /// A dial as an icon on a desktop: masked, and sitting in its shadow.
+///
+/// `size` is the plate's own edge; the canvas around it is the grid's margin,
+/// exactly as ``DotIconPresentation`` draws a direction.
 struct DotMarkDialPresentation: View {
     let dial: DotMarkDial
     let size: CGFloat
