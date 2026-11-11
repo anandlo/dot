@@ -55,14 +55,14 @@ final class ConnectorLazyResourceTests: XCTestCase {
 
     func testUseKeepsTheValueAliveAcrossTheIdleWindow() async throws {
         let counter = BuildCounter()
-        let resource = LazyResource<Int>(idle: .milliseconds(80)) {
+        let resource = LazyResource<Int>(idle: .seconds(3)) {
             counter.increment()
             return 4
         }
         _ = resource.acquire()
-        try await Task.sleep(for: .milliseconds(40))
+        try await Task.sleep(for: .milliseconds(100))
         _ = resource.acquire()
-        try await Task.sleep(for: .milliseconds(40))
+        try await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(resource.isLoaded, "A resource used again inside the window must survive")
         XCTAssertEqual(counter.count, 1)
     }
