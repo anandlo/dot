@@ -52,23 +52,12 @@ struct HUDWaveform: View {
     /// and settle back into it when the recording ends, instead of appearing at
     /// a full height it had from nowhere.
     var reveal: Double = 1
-    /// The power the grid's brightness is drawn on.
+    /// Whether a shining dot carries its specular highlight.
     ///
-    /// The grid is the one style whose cells have area, so the drawn energy of
-    /// one cell is a curve of its band rather than the band itself: a dot that
-    /// answers a whisper as brightly as it answers a word fills the grid with
-    /// light and leaves the peaks nothing to stand out against. The value is a
-    /// calibration, chosen by rendering the grid against the Settings swatch at
-    /// a range of values and keeping the one whose picture matched.
-    var displayExponent: Double = 3.0
-    /// Where on the brightness the grid's halo starts, and how far it runs.
-    ///
-    /// The halo grows from nothing at the onset to its full width half a unit
-    /// later, so a cell that is a little brighter than its neighbour has a
-    /// little more halo instead of switching one on. The onset is the same
-    /// calibration as ``displayExponent``: it decides how much of the voice is
-    /// drawn as a field of light and how much is drawn as peaks.
-    var glowOnset: Double = 0.70
+    /// The highlight is the one part of the shine that is a picture rather than a
+    /// measurement: it is drawn in the renders beside a version without it, and
+    /// the picture that reads better is the one the card keeps.
+    var highlight: Bool = true
 
     var body: some View {
         Canvas { context, size in
@@ -277,38 +266,73 @@ struct HUDWaveform: View {
 
     // MARK: - 05 Matrix (Spectrogram Grid)
 
+    /// The ink of the card's own marks, `#FFF4E6`, which a lit dot carries in the
+    /// centre of its light and in its highlight.
+    private static let matrixInk = Color(red: 1.0, green: 0.957, blue: 0.902)
+
+    /// The warm tip of the ramp mixed towards the card's ink.
+    ///
+    /// - Parameter amount: how far towards the ink to go, from `0` to `1`.
+    /// - Returns: the colour of the centre of a dot at that heat.
+    private static func hot(_ amount: Double) -> Color {
+        let tip = MeterRamp.tip
+        let ink = (red: 1.0, green: 0.957, blue: 0.902)
+        let t = min(max(amount, 0), 1)
+        return Color(
+            red: tip.red + (ink.red - tip.red) * t,
+            green: tip.green + (ink.green - tip.green) * t,
+            blue: tip.blue + (ink.blue - tip.blue) * t
+        )
+    }
+
     private func drawMatrix(context: GraphicsContext, size: CGSize) {
         let rows = 5
-        let colPitch: CGFloat = 4.6
-        let cols = max(1, Int(ceil(size.width / colPitch)))
+        // The lattice is square, and the pitch is what keeps two dots apart.
+        //
+        // The grid used to be pitched by a constant column width while the dot
+        // grew with the level, so at the top of the range two neighbouring dots
+        // met and their halos crossed: a voice drawn in blobs rather than in
+        // dots. Pitch is now the smaller of a row's height and five points, and
+        // the dot never grows past a little more than a quarter of it, so a gap
+        // is there by construction at every level.
         let rowPitch = size.height / CGFloat(rows)
+        let pitch = min(5.0, rowPitch)
+        let cols = max(1, Int(ceil(size.width / pitch)))
+        // A canvas taller than the lattice is a card with room over: the five
+        // rows sit in the middle of it instead of being stretched apart.
+        let top = (size.height - pitch * CGFloat(rows)) / 2
         let histCount = max(1, history.count)
         let specCount = spectrumHistory.count
 
-        for col in 0..<cols {
-            let x = size.width - colPitch / 2.0 - CGFloat(col) * colPitch
-            if x < -colPitch { break }
+        /// The centre of one cell.
+        func centre(column: Int, row: Int) -> CGPoint {
+            CGPoint(
+                x: size.width - pitch / 2.0 - CGFloat(column) * pitch,
+                y: top + pitch * (CGFloat(row) + 0.5)
+            )
+        }
 
+        /// The band of one cell, in this voice's own window.
+        func band(column: Int, row: Int) -> Double {
             // Two ticks per column is 33 ms, so the grid scrolls at the rate the
             // audio was recorded at whatever width the card takes.
-            let baseOffset = min(max(0, histCount - 1), col * 2)
-
+            let baseOffset = min(max(0, histCount - 1), column * 2)
             // The spectrum frame recorded at this column's moment.
-            let specFrame: AudioSpectrumFrame? = {
-                guard specCount > 0 else { return nil }
-                let idx = specCount - 1 - min(specCount - 1, col * 2)
-                let idxNext = max(0, idx - 1)
+            if specCount > 0 {
+                let idx = specCount - 1 - min(specCount - 1, column * 2)
                 let a = spectrumHistory[idx]
-                let b = spectrumHistory[idxNext]
-                return AudioSpectrumFrame(bands: (
+                let b = spectrumHistory[max(0, idx - 1)]
+                let frame = AudioSpectrumFrame(bands: (
                     max(a.bands.0, (a.bands.0 + b.bands.0) * 0.5),
                     max(a.bands.1, (a.bands.1 + b.bands.1) * 0.5),
                     max(a.bands.2, (a.bands.2 + b.bands.2) * 0.5),
                     max(a.bands.3, (a.bands.3 + b.bands.3) * 0.5),
                     max(a.bands.4, (a.bands.4 + b.bands.4) * 0.5)
                 ))
-            }()
-
+                if (frame.bands.0 + frame.bands.1 + frame.bands.2 + frame.bands.3 + frame.bands.4) > 0.01 {
+                    return frame[row]
+                }
+            }
             let s0 = sample(offsetFromNewest: baseOffset)
             let s1 = sample(offsetFromNewest: min(histCount - 1, baseOffset + 1))
             let s2 = sample(offsetFromNewest: min(histCount - 1, baseOffset + 2))
@@ -316,88 +340,71 @@ struct HUDWaveform: View {
             let instEnergy = max(s0, (s0 + s1) * 0.5)
             let transientAttack = min(1.0, abs(s0 - s1) * 3.8 + abs(s1 - s2) * 2.4)
             let lowBody = (s0 + s1 + s2 + s3) * 0.25
+            switch row {
+            case 0: return transientAttack * 0.70 + instEnergy * 0.35
+            case 1: return instEnergy * 0.65 + transientAttack * 0.30
+            case 2: return instEnergy * 0.75
+            case 3: return lowBody * 0.70 + instEnergy * 0.25
+            default: return lowBody * 0.75
+            }
+        }
 
+        // Every cell is drawn: the grid is a grid, not a scatter of dots that
+        // appear where the voice is. A dot is its band, one size at every level,
+        // and the level is how the dot is lit.
+        for column in 0..<cols {
             for row in 0..<rows {
-                let y = rowPitch * (CGFloat(row) + 0.5)
+                let point = centre(column: column, row: row)
+                let energy = min(1.0, max(0.0, band(column: column, row: row)))
+                let dot = pitch * (0.21 + 0.07 * CGFloat(energy))
+                let rect = CGRect(
+                    x: point.x - dot,
+                    y: point.y - dot,
+                    width: dot * 2,
+                    height: dot * 2
+                )
+                context.fill(Path(ellipseIn: rect), with: .color(HUDTheme.meter(0, ceiling: ceiling)))
 
-                // All five rows, sibilants at the top through the vowel body and the
-                // chest fundamental at the bottom, light on the same spectrum frame, so
-                // pitch and articulation decide which rows carry energy.
-                let bandWeight: Double
-                if let spec = specFrame, (spec.bands.0 + spec.bands.1 + spec.bands.2 + spec.bands.3 + spec.bands.4) > 0.01 {
-                    bandWeight = spec[row]
-                } else {
-                    switch row {
-                    case 0:
-                        bandWeight = transientAttack * 0.70 + instEnergy * 0.35
-                    case 1:
-                        bandWeight = instEnergy * 0.65 + transientAttack * 0.30
-                    case 2:
-                        bandWeight = instEnergy * 0.75
-                    case 3:
-                        bandWeight = lowBody * 0.70 + instEnergy * 0.25
-                    default:
-                        bandWeight = lowBody * 0.75
-                    }
-                }
-
-                // The live path hands the grid a band that has already been
-                // written onto this voice's own window and bent by the meter's
-                // perceptual curve, so the band is the whole of the shape: a bend
-                // applied a second time here spends the top of the range on a
-                // loudness the speaker never reaches, and the grid reads as dull.
-                // The size of a dot follows that band.
-                let cellEnergy = CGFloat(min(1.0, max(0.0, bandWeight)))
-                let radius = 0.85 + cellEnergy * 1.65
-                // The brightness follows a steeper curve of the same band.
-                //
-                // The meter's curve lifts the middle of the voice, which is what
-                // a bar of height wants: half a voice is drawn well above half a
-                // bar. A dot has area as well as height, so the same lift fills
-                // almost every cell and the grid becomes one bright field with no
-                // structure left in it. The power below spends the brightness on
-                // the loud cells, so the grid rests dark and the peaks of the
-                // voice are the only things that carry light.
-                let display = pow(Double(cellEnergy), displayExponent)
-
-                // A halo on every cell the display curve has lifted, and one that
-                // grows with the cell rather than switching on at a level: an edge
-                // at one energy and none below it draws a grid that reads as dots
-                // flipping on, which is not what the voice did. The colour is the
-                // same amber the shape is drawn in, never a second colour the card
-                // does not own.
-                if display > glowOnset {
-                    let glow = MeterRamp.smoothstep(glowOnset, glowOnset + 0.5, display)
-                    let glowRadius = radius * (1.5 + 0.9 * CGFloat(glow))
-                    let glowRect = CGRect(
-                        x: x - glowRadius,
-                        y: y - glowRadius,
-                        width: glowRadius * 2,
-                        height: glowRadius * 2
+                // A lit dot is a lamp, not a disc of paint: it is filled from a
+                // hot centre through its own colour to a slightly deeper edge, so
+                // the dot itself carries the shine. Nothing is drawn outside the
+                // dot, which is what keeps two neighbours from becoming a blob.
+                let display = pow(energy, 1.6)
+                guard display > 0.15 else { continue }
+                context.fill(
+                    Path(ellipseIn: rect),
+                    with: .radialGradient(
+                        Gradient(stops: [
+                            .init(color: Self.hot(0.75 * display).opacity(1.0), location: 0.0),
+                            .init(
+                                color: HUDTheme.meter(display, ceiling: 1).opacity(0.35 + 0.40 * display),
+                                location: 0.45
+                            ),
+                            .init(
+                                color: HUDTheme.meter(display, ceiling: 1).opacity(0.25 + 0.55 * display),
+                                location: 1.0
+                            ),
+                        ]),
+                        center: point,
+                        startRadius: 0,
+                        endRadius: dot
                     )
-                    context.fill(
-                        Path(ellipseIn: glowRect),
-                        with: .color(HUDTheme.meter(display, ceiling: 1).opacity(0.55 * glow))
-                    )
-                }
+                )
 
-                let rect = CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)
-                let path = Path(ellipseIn: rect)
-
-                if display <= 0.04 {
-                    // The resting grid: dim enough to be a grid, warm enough to
-                    // be the same material as the voice that lights it.
-                    context.fill(path, with: .color(HUDTheme.meter(0, ceiling: ceiling)))
-                } else {
-                    // The colour is drawn against a ceiling of one because the
-                    // value is already relative to this voice: its top is the
-                    // loudest this band has been in this take, so the warm tip is
-                    // reached by the speaker's own peak and not by a peak of the
-                    // whole card, which is a different measurement.
-                    let alpha = 0.55 + 0.45 * display
+                // A lit lamp has one highlight, and it is what the eye reads as
+                // round rather than flat. It is inside the dot, off its centre,
+                // and it is the only porcelain the grid carries.
+                if highlight {
+                    let sparkle = 0.3 * dot
+                    let offset = 0.25 * dot
                     context.fill(
-                        path,
-                        with: .color(HUDTheme.meter(display, ceiling: 1).opacity(alpha))
+                        Path(ellipseIn: CGRect(
+                            x: point.x - offset - sparkle,
+                            y: point.y - offset - sparkle,
+                            width: sparkle * 2,
+                            height: sparkle * 2
+                        )),
+                        with: .color(Self.matrixInk.opacity(0.6 * display))
                     )
                 }
             }

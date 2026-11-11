@@ -2713,6 +2713,47 @@ private struct HUDSwatch: View {
     }
 }
 
+/// The signal a Settings tile is drawn with.
+///
+/// A tile has no microphone, so it draws a synthetic voice. It used to draw that
+/// voice with no spectrum at all, and the grid fell back to an envelope-derived
+/// weight that is darker than anything the live card shows, which is how the tile
+/// came to glow while the island beside it stayed flat. The tile now draws the
+/// same five bands the card draws, through the card's own per-voice window, so
+/// the two pictures are the same kind of picture.
+@MainActor
+enum VisualizerTile {
+    /// The envelope line the tile's synthetic voice is drawn from.
+    static var history: [Double] { SpeechSchedule.history(endingAt: 2.35) }
+
+    /// The five bands of the tile's synthetic voice, on this voice's own window.
+    ///
+    /// A tile's voice is an envelope, not a measurement, so each of its rows is
+    /// written into the band domain the recorder reports before it is scaled:
+    /// ordinary speech puts a band between `0.30` and `0.50` on that scale, and
+    /// the tile's row says how far into that range the moment sits. The window is
+    /// then the card's own, so the two pictures are drawn from the same kind of
+    /// number.
+    ///
+    /// - Parameter history: the envelope line, oldest first.
+    /// - Returns: one frame per tick, from this voice's quietest band to its
+    ///   loudest.
+    static func spectrum(for history: [Double]) -> [AudioSpectrumFrame] {
+        var scale = SpectrumScale()
+        let dt = 1.0 / VoiceMeter.sampleRate
+        return HUDPreview.spectrumHistory(for: history).map { frame in
+            func measured(_ band: Double) -> Double { 0.30 + 0.24 * band }
+            return scale.normalise(AudioSpectrumFrame(bands: (
+                measured(frame.bands.0),
+                measured(frame.bands.1),
+                measured(frame.bands.2),
+                measured(frame.bands.3),
+                measured(frame.bands.4)
+            )), dt: dt)
+        }
+    }
+}
+
 /// A miniature preview swatch showing one visualizer style.
 private struct VisualizerSwatch: View {
     let visualizer: HUDVisualizer
@@ -2763,12 +2804,14 @@ private struct VisualizerSwatch: View {
 
     @ViewBuilder
     private var previewContent: some View {
-        let sampleHistory = SpeechSchedule.history(endingAt: 2.35)
+        let sampleHistory = VisualizerTile.history
+        let sampleSpectrum = VisualizerTile.spectrum(for: sampleHistory)
         let sampleHeights: [CGFloat] = [2, 4, 7, 10, 11, 8, 4, 3, 5, 9, 11, 7, 3, 2, 4, 8, 10, 5, 2]
         HUDWaveform(
             visualizer: visualizer,
             halfHeights: sampleHeights,
             history: sampleHistory,
+            spectrumHistory: sampleSpectrum,
             phase: 0.35,
             time: 2.35,
             level: 0.68,
