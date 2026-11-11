@@ -158,7 +158,6 @@ final class NamingTests: XCTestCase {
         // it and no provider is built for it.
         XCTAssertEqual(ProviderIdentifier.bridge, "bridge")
         XCTAssertFalse(ProviderRegistry.builtInIDs.contains(ProviderIdentifier.bridge))
-        XCTAssertFalse(ProviderMigration.knownProviderIDs.contains(ProviderIdentifier.bridge))
         XCTAssertEqual(ProviderIdentifier.openAI, "openai")
         XCTAssertEqual(ProviderIdentifier.xiaomi, "xiaomi")
         XCTAssertEqual(ProviderIdentifier.apple, "apple")
@@ -332,19 +331,44 @@ final class NamingTests: XCTestCase {
     }
 
     func testTheBundleIdentityIsTheProductIdentity() throws {
-        let build = try String(
-            contentsOf: Self.root.appendingPathComponent("scripts/build.sh"),
-            encoding: .utf8
-        )
-        XCTAssertTrue(build.contains("com.anandlo.dot"))
-        XCTAssertTrue(build.contains("Dot.app"))
-        XCTAssertFalse(build.contains(Self.legacyName), "build.sh still names the old product")
+        // One value in one file: the bundle identifier the app is built with and
+        // the LaunchAgent label that starts it at login are the same string.
+        let config = try Self.script("config.sh")
+        XCTAssertTrue(config.contains("BUNDLE_ID=\"${BUNDLE_ID:-com.anandlo.dot}\""))
+        XCTAssertTrue(config.contains("AGENT_LABEL=\"${AGENT_LABEL:-$BUNDLE_ID}\""))
 
-        let install = try String(
-            contentsOf: Self.root.appendingPathComponent("scripts/install.sh"),
+        for name in ["build.sh", "install.sh", "uninstall.sh"] {
+            let script = try Self.script(name)
+            XCTAssertTrue(
+                script.contains("scripts/config.sh"),
+                "\(name) does not read the shared identity"
+            )
+        }
+
+        let build = try Self.script("build.sh")
+        XCTAssertTrue(build.contains("Dot.app"))
+        XCTAssertFalse(
+            build.contains(Self.legacyName),
+            "build.sh still names the old product"
+        )
+        XCTAssertFalse(
+            build.contains("com.anandlo.dot"),
+            "build.sh spells the identifier out instead of reading it"
+        )
+
+        let install = try Self.script("install.sh")
+        XCTAssertTrue(install.contains("/Applications/Dot.app") || install.contains("APP_NAME=\"Dot\""))
+
+        // The earlier label has to keep being cleaned up: an upgrade must not
+        // leave two agents starting the same app.
+        XCTAssertTrue(config.contains("com.local.dot"), "the legacy agent label is no longer removed")
+    }
+
+    /// One script from `scripts/`.
+    private static func script(_ name: String) throws -> String {
+        try String(
+            contentsOf: root.appendingPathComponent("scripts/\(name)"),
             encoding: .utf8
         )
-        XCTAssertTrue(install.contains("com.local.dot"))
-        XCTAssertTrue(install.contains("/Applications/Dot.app") || install.contains("APP_NAME=\"Dot\""))
     }
 }

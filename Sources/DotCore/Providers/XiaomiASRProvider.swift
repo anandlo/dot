@@ -7,11 +7,10 @@ import Foundation
 /// transcript in `choices[0].message.content`. The key travels in the
 /// `api-key` header, which is the spelling the service documents.
 ///
-/// The picker does not offer this provider any more: a configuration written by
-/// an earlier build selects it, and the picker presents that configuration as a
-/// custom endpoint named by the URL it points at. The provider is only built
-/// while the stored URL is still this service's; an endpoint that was pointed
-/// somewhere else is built as a generic one.
+/// The provider is built only while the stored URL is still this service's. An
+/// endpoint that was pointed somewhere else is the user's own, and is built as a
+/// generic OpenAI-compatible provider instead, because the `api-key` header and
+/// the `input_audio` body are this service's shape and not a general one.
 public struct XiaomiASRProvider: Provider {
     public let id: String = ProviderIdentifier.xiaomi
     public let displayName: String = "Xiaomi ASR"
@@ -28,8 +27,12 @@ public struct XiaomiASRProvider: Provider {
 
     /// The provider needs a key to be used.
     public var requiresCredential: Bool { true }
-    /// One request carries at most thirty seconds of audio.
-    public var maxSegmentSeconds: Int { 30 }
+    /// One request carries at most sixty seconds of audio.
+    ///
+    /// The MiMo model handles a 60-second continuous clip natively, so a long
+    /// dictation stays one request instead of being cut at a boundary the
+    /// model never heard.
+    public var maxSegmentSeconds: Int { 60 }
 
     private let session: URLSession
     private let timeout: TimeInterval
@@ -96,15 +99,9 @@ public struct XiaomiASRProvider: Provider {
         request.timeoutInterval = timeout
         request.httpBody = body
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch let error as URLError {
-            throw ProviderError.transport(error.localizedDescription)
-        } catch {
-            throw ProviderError.transport(error.localizedDescription)
-        }
+        let answer = try await HTTPTransport.send(request, session: session)
+        let data = answer.data
+        let response = answer.response
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse("no HTTP status")
         }
@@ -312,11 +309,11 @@ public struct XiaomiASRProvider: Provider {
         if let error = object["error"] as? [String: Any],
            let message = error["message"] as? String,
            !message.isEmpty {
-            return message
+            return ProviderErrorText.sanitized(message)
         }
         if let message = object["message"] as? String, !message.isEmpty {
-            return message
+            return ProviderErrorText.sanitized(message)
         }
-        return nil
+        return ProviderErrorText.sanitized(String(data: data, encoding: .utf8))
     }
 }

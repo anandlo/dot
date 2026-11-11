@@ -21,13 +21,6 @@ final class ProviderModelCatalogTests: XCTestCase {
         )
     }
 
-    func testNoPreHardcodedModelsBeforeApiKey() {
-        XCTAssertEqual(ProviderModelCatalog.defaultModels(for: ProviderIdentifier.groq), [])
-        XCTAssertEqual(ProviderModelCatalog.defaultModels(for: ProviderIdentifier.openAI), [])
-        XCTAssertEqual(ProviderModelCatalog.defaultModels(for: ProviderIdentifier.deepgram), [])
-        XCTAssertEqual(ProviderModelCatalog.defaultModels(for: ProviderIdentifier.elevenLabs), [])
-    }
-
     func testParseOpenAIModelsWithWhisperFilter() {
         let json = """
         {

@@ -184,118 +184,6 @@ final class ProviderMigrationTests: XCTestCase {
         XCTAssertEqual(reads, 0, "the data of an existing key must never be read")
     }
 
-    // MARK: - Which provider the retirement picks
-
-    func testTheHostedModelIsPickedWhenItsKeyIsTheOnlyOne() {
-        var config = DotConfig.default
-        config.provider = ProviderIdentifier.bridge
-
-        let changed = ProviderMigration.apply(to: &config, probe: xiaomiKey)
-
-        XCTAssertTrue(changed)
-        XCTAssertEqual(config.provider, ProviderIdentifier.xiaomi)
-        let settings = config.settings(for: ProviderIdentifier.xiaomi)
-        XCTAssertNil(settings.model)
-        XCTAssertEqual(settings.baseURL, "https://api.xiaomimimo.com/v1")
-    }
-
-    func testTheOpenAICompatibleProviderIsPickedWhenItsKeyIsTheOnlyOne() {
-        var config = DotConfig.default
-        config.provider = "retired-provider"
-
-        let changed = ProviderMigration.apply(to: &config, probe: openAIKey)
-
-        XCTAssertTrue(changed)
-        XCTAssertEqual(config.provider, ProviderIdentifier.openAI)
-    }
-
-    func testThePickedProviderKeepsTheEndpointTheConfigurationAlreadyHad() {
-        // A key says which service to use, never which URL it belongs to. A Mac
-        // whose OpenAI-compatible settings point at a Groq endpoint stays on
-        // that endpoint: the migration fills nothing in over it.
-        var config = DotConfig.default
-        config.provider = ProviderIdentifier.bridge
-        config.providers[ProviderIdentifier.openAI] = ProviderConfig(
-            model: "whisper-large-v3",
-            baseURL: "https://api.groq.com/openai/v1"
-        )
-
-        ProviderMigration.apply(to: &config, probe: openAIKey)
-
-        XCTAssertEqual(config.provider, ProviderIdentifier.openAI)
-        XCTAssertEqual(
-            ProviderPreset.presenting(config),
-            .groq,
-            "the key and the endpoint it was already using still mean Groq"
-        )
-    }
-
-    func testWithNoKeyTheRetirementPicksTheOnDeviceTranscriber() {
-        // The honest replacement when nothing can authenticate: the provider
-        // that needs no key, never a dead id and never a keyless hosted one.
-        var config = DotConfig.default
-        config.provider = ProviderIdentifier.bridge
-
-        let changed = ProviderMigration.apply(to: &config, probe: noKeys)
-
-        XCTAssertTrue(changed)
-        XCTAssertEqual(config.provider, ProviderIdentifier.apple)
-        XCTAssertTrue(ProviderRegistry.knows(config.provider))
-    }
-
-    func testWithBothKeysTheFirstProviderInRegistryOrderWins() {
-        var config = DotConfig.default
-        config.provider = ProviderIdentifier.bridge
-
-        ProviderMigration.apply(
-            to: &config,
-            probe: probe(keys: [ProviderIdentifier.openAI, ProviderIdentifier.xiaomi])
-        )
-
-        XCTAssertEqual(config.provider, ProviderRegistry.builtInIDs.first { id in
-            id == ProviderIdentifier.openAI
-        })
-    }
-
-    func testAKnownProviderIsNeverRewritten() {
-        for id in [ProviderIdentifier.openAI, ProviderIdentifier.xiaomi, ProviderIdentifier.apple] {
-            var config = DotConfig.default
-            config.provider = id
-            let before = config
-
-            let changed = ProviderMigration.apply(to: &config, probe: probe(keys: [ProviderIdentifier.xiaomi]))
-
-            XCTAssertFalse(changed, id)
-            XCTAssertEqual(config, before, id)
-        }
-    }
-
-    func testAnOlderConfigStillDecodesAndIsMigrated() throws {
-        // A configuration written by a build that still shipped the bridge.
-        let json = #"""
-        {
-          "provider": "bridge",
-          "providers": {
-            "bridge": {},
-            "openai": {"model": "whisper-1", "baseURL": "https://api.openai.com/v1"}
-          },
-          "hotkey": {"keyCode": 2, "modifiers": 2304, "label": "⌥⌘D"},
-          "pasteHotkey": {"keyCode": 9, "modifiers": 2304, "label": "⌥⌘V"},
-          "autoPaste": true,
-          "hudDwellSeconds": 4,
-          "maxSegmentSeconds": 30,
-          "appearance": "system"
-        }
-        """#
-        var config = try JSONDecoder().decode(DotConfig.self, from: Data(json.utf8))
-        XCTAssertEqual(config.provider, ProviderIdentifier.bridge)
-
-        XCTAssertTrue(ProviderMigration.apply(to: &config, probe: xiaomiKey))
-        XCTAssertEqual(config.provider, ProviderIdentifier.xiaomi)
-        XCTAssertNil(
-            config.settings(for: ProviderIdentifier.xiaomi).model
-        )
-    }
 
     // MARK: - The launch retirement
 
@@ -502,19 +390,14 @@ final class ProviderMigrationTests: XCTestCase {
         // registry — has to agree with the registry, because the id in the file
         // is what the next launch builds a provider from.
         XCTAssertTrue(ProviderRegistry.knows(DotConfig.default.provider))
-        XCTAssertTrue(ProviderRegistry.knows(DotConfig.firstRun().provider))
         for id in DotConfig.defaultProviders.keys {
             XCTAssertTrue(ProviderRegistry.knows(id), "the default settings name a live provider: \(id)")
         }
         for preset in ProviderPreset.all {
             XCTAssertTrue(ProviderRegistry.knows(preset.providerID), "the row \(preset.id) names a live provider")
         }
-        for id in ProviderRegistry.builtInIDs {
-            XCTAssertTrue(ProviderMigration.knownProviderIDs.contains(id), id)
-        }
         // The tombstone only has to decode; it is not a provider Dot ships.
         XCTAssertFalse(ProviderRegistry.knows(ProviderIdentifier.bridge))
-        XCTAssertFalse(ProviderMigration.knownProviderIDs.contains(ProviderIdentifier.bridge))
     }
 
     func testEveryProviderTheRetirementCanPickIsOneDotShips() {
@@ -594,6 +477,49 @@ final class ProviderMigrationTests: XCTestCase {
             config.providers[ProviderIdentifier.openAI]?.baseURL,
             "http://localhost:8080/v1"
         )
+    }
+
+    /// Apple's row id is `on-device`, not its provider id, so a lookup by row
+    /// id skipped it: the repair asked for `apple` and the table answered
+    /// nothing. The provider id is the key the configuration stores, so that is
+    /// what the lookup uses.
+    func testTheAppleRowIsFoundByItsProviderID() {
+        XCTAssertNil(
+            ProviderPreset.preset(id: ProviderIdentifier.apple),
+            "the row is not stored under the provider id"
+        )
+        XCTAssertEqual(
+            ProviderPreset.row(forProviderID: ProviderIdentifier.apple)?.id,
+            ProviderPreset.apple.id
+        )
+        XCTAssertNil(
+            ProviderPreset.endpoint(forProviderID: ProviderIdentifier.apple),
+            "the on-device transcriber has no endpoint to write in"
+        )
+    }
+
+    /// Apple has nothing to fill in, so the repair leaves it alone rather than
+    /// inventing an endpoint for a provider that runs inside the machine.
+    func testTheAppleProviderIsNeverGivenAnEndpoint() {
+        var config = DotConfig()
+        config.providers[ProviderIdentifier.apple] = ProviderConfig()
+
+        XCTAssertTrue(ProviderMigration.fillMissingEndpoints(in: &config).isEmpty)
+        XCTAssertNil(config.providers[ProviderIdentifier.apple]?.baseURL)
+    }
+
+    /// Every provider id that a row declares an endpoint for is found by that
+    /// id, which is what makes the repair exhaustive instead of coincidental.
+    func testEveryDeclaredEndpointIsReachableByProviderID() {
+        let declared = ProviderPreset.declared.filter { $0.baseURL != nil }
+        XCTAssertFalse(declared.isEmpty)
+        for row in declared {
+            XCTAssertEqual(
+                ProviderPreset.endpoint(forProviderID: row.providerID)?.baseURL,
+                row.baseURL,
+                row.id
+            )
+        }
     }
 
     /// A custom endpoint is the user's own URL. An empty one means they have not

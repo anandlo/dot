@@ -83,7 +83,8 @@ final class ProviderRegistryTests: XCTestCase {
     func testTheXiaomiProviderNeedsAKey() async {
         let provider: any Provider = XiaomiASRProvider()
         XCTAssertTrue(provider.requiresCredential)
-        XCTAssertEqual(provider.maxSegmentSeconds, 30)
+        // Sixty seconds, the length the MiMo model handles in one clip.
+        XCTAssertEqual(provider.maxSegmentSeconds, 60)
     }
 
     func testTheDeepgramProviderNeedsAKeyAndBuildsRequests() throws {
@@ -231,13 +232,16 @@ final class ProviderRegistryTests: XCTestCase {
     func testTheDefaultSegmentLengthIsThirtySeconds() {
         let providers: [any Provider] = [
             OpenAICompatibleProvider(baseURL: URL(string: "https://api.openai.com/v1")!),
-            XiaomiASRProvider(),
             AppleSpeechProvider(),
             DefaultCapabilityProvider(),
         ]
         for provider in providers {
             XCTAssertEqual(provider.maxSegmentSeconds, 30, provider.id)
         }
+    }
+
+    func testTheXiaomiProviderAcceptsSixtySeconds() {
+        XCTAssertEqual(XiaomiASRProvider().maxSegmentSeconds, 60)
     }
 
     func testAProviderThatOverridesTheCapabilitiesKeepsThem() {

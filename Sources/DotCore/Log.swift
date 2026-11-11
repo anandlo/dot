@@ -45,6 +45,10 @@ public enum LogValue: Sendable {
 /// The log never contains a secret: every API key is registered as a secret
 /// the moment it is read, and every string that goes through the logger is
 /// scrubbed.
+///
+/// The file is `0600` in a folder that is `0700`. It names the apps a person
+/// dictated into and the endpoints their speech was sent to, which is not a
+/// thing every other account on the Mac should be able to read.
 public final class Log: @unchecked Sendable {
     /// The shared logger.
     public static let shared = Log()
@@ -59,14 +63,40 @@ public final class Log: @unchecked Sendable {
     /// How much of the file survives a rotation.
     public static let keptBytes = 1_000_000
 
+    /// The timestamp format of every line.
+    ///
+    /// A format style is a value, so one is shared instead of building an
+    /// `ISO8601DateFormatter` per line. Allocating one of those on every write
+    /// was the most expensive part of writing a line.
+    private static let timestamp = Date.ISO8601FormatStyle()
+
     private let lock = NSLock()
     private var secrets: Set<String> = []
     private var minimumLevel: LogLevel = .info
     private var fileHandle: FileHandle?
     private var fileURL: URL?
+    /// How many bytes the file holds, as far as this logger wrote them.
+    ///
+    /// It is what makes a rotation check arithmetic instead of a `stat` call on
+    /// every line: the size on disk is only read when the file is opened.
+    private var writtenBytes = 0
+    /// The size the file is rotated at.
+    private let limitBytes: Int
+    /// How much of the file survives a rotation.
+    private let retainBytes: Int
 
     /// Creates a logger that starts with no file.
-    public init() {}
+    public init() {
+        self.limitBytes = Self.maximumBytes
+        self.retainBytes = Self.keptBytes
+    }
+
+    /// Creates a logger with a file size of its own, for a test that has to
+    /// rotate a small file instead of five megabytes of one.
+    init(limitBytes: Int, retainBytes: Int) {
+        self.limitBytes = max(256, limitBytes)
+        self.retainBytes = max(0, min(retainBytes, self.limitBytes / 2))
+    }
 
     /// The directory the log file lives in.
     public static func directoryURL() -> URL {
@@ -95,17 +125,23 @@ public final class Log: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
+            try SecureFile.createDirectory(at: url.deletingLastPathComponent())
             if !FileManager.default.fileExists(atPath: url.path) {
-                FileManager.default.createFile(atPath: url.path, contents: nil)
+                let descriptor = open(
+                    url.path,
+                    O_WRONLY | O_CREAT | O_APPEND,
+                    mode_t(SecureFile.filePermissions)
+                )
+                guard descriptor >= 0 else { throw SecureFileError.cannotCreate(url.path) }
+                close(descriptor)
             }
+            // A log an older build wrote is still `0644`.
+            SecureFile.tighten(url)
             let handle = try FileHandle(forWritingTo: url)
-            try handle.seekToEnd()
+            let end = try handle.seekToEnd()
             fileHandle = handle
             fileURL = url
+            writtenBytes = Int(end)
             rotateIfNeededLocked()
             return true
         } catch {
@@ -158,12 +194,12 @@ public final class Log: @unchecked Sendable {
     /// Writes one line.
     public func write(_ level: LogLevel, _ event: String, _ fields: [String: LogValue] = [:]) {
         lock.lock()
-        let allowed = level >= minimumLevel
+        let allowed = level >= minimumLevel && fileHandle != nil
         lock.unlock()
         guard allowed else { return }
 
         var payload: [String: Any] = [
-            "ts": ISO8601DateFormatter().string(from: Date()),
+            "ts": Date().formatted(Self.timestamp),
             "level": level.rawValue,
             "event": event,
         ]
@@ -176,32 +212,71 @@ public final class Log: @unchecked Sendable {
             case .null: payload[key] = NSNull()
             }
         }
-        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
-              var line = String(data: data, encoding: .utf8)
+        guard let encoded = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         else { return }
-        line.append("\n")
+        var line = encoded
+        line.append(0x0A)
         lock.lock()
         defer { lock.unlock() }
-        if let handle = fileHandle {
-            rotateIfNeededLocked()
-            handle.write(Data(line.utf8))
+        guard let handle = fileHandle else { return }
+        if writtenBytes + line.count > limitBytes {
+            rotateLocked()
+            guard fileHandle != nil else { return }
+            fileHandle?.write(line)
+            writtenBytes += line.count
+            return
         }
+        handle.write(line)
+        writtenBytes += line.count
     }
 
+    /// Whether the file on disk is larger than the limit, and the rotation that
+    /// follows.
     private func rotateIfNeededLocked() {
-        guard let fileURL, let handle = fileHandle else { return }
+        guard let fileURL else { return }
         let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
         let size = (attributes?[.size] as? NSNumber)?.intValue ?? 0
-        guard size > Self.maximumBytes else { return }
-        let keep = min(Self.keptBytes, size)
-        guard let data = try? Data(contentsOf: fileURL), data.count > keep else { return }
-        let tail = data.suffix(keep)
-        let start = tail.firstIndex(of: 0x0A).map { tail.index(after: $0) } ?? tail.startIndex
-        try? handle.close()
-        try? data.subdata(in: start..<data.endIndex).write(to: fileURL)
-        if let reopened = try? FileHandle(forWritingTo: fileURL) {
-            _ = try? reopened.seekToEnd()
+        writtenBytes = size
+        guard size > limitBytes else { return }
+        rotateLocked()
+    }
+
+    /// Keeps the newest whole lines and replaces the file with them.
+    ///
+    /// Only the tail is read: the file that is being rotated is the one that
+    /// just grew to the limit, and none of the part that is dropped is needed.
+    /// The replacement is written through ``SecureFile``, so the rotated file
+    /// is still `0600`.
+    private func rotateLocked() {
+        guard let fileURL, let handle = fileHandle else { return }
+        let keep = min(retainBytes, max(0, writtenBytes))
+        do {
+            try handle.close()
+            var tail = Data()
+            if keep > 0 {
+                let reader = try FileHandle(forReadingFrom: fileURL)
+                defer { try? reader.close() }
+                try reader.seek(toOffset: UInt64(max(0, writtenBytes - keep)))
+                tail = try reader.readToEnd() ?? Data()
+            }
+            // The first line is the one the cut landed in the middle of.
+            let start = tail.firstIndex(of: 0x0A).map { tail.index(after: $0) } ?? tail.startIndex
+            let kept = tail.subdata(in: start..<tail.endIndex)
+            try SecureFile.write(kept, to: fileURL)
+            let reopened = try FileHandle(forWritingTo: fileURL)
+            _ = try reopened.seekToEnd()
             fileHandle = reopened
+            writtenBytes = kept.count
+        } catch {
+            // A log that cannot rotate is still a log: reopen it and keep
+            // writing, so the failure does not silence every later line.
+            if let reopened = try? FileHandle(forWritingTo: fileURL) {
+                _ = try? reopened.seekToEnd()
+                fileHandle = reopened
+            } else {
+                fileHandle = nil
+                self.fileURL = nil
+            }
         }
     }
 }

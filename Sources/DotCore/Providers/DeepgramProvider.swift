@@ -162,15 +162,9 @@ public struct DeepgramProvider: Provider {
         request.timeoutInterval = timeout
         request.httpBody = wav
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch let error as URLError {
-            throw ProviderError.transport(error.localizedDescription)
-        } catch {
-            throw ProviderError.transport(error.localizedDescription)
-        }
+        let answer = try await HTTPTransport.send(request, session: session)
+        let data = answer.data
+        let response = answer.response
 
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse("no HTTP status")
@@ -222,15 +216,15 @@ public struct DeepgramProvider: Provider {
               let object = payload as? [String: Any]
         else { return nil }
         if let errMsg = object["err_msg"] as? String, !errMsg.isEmpty {
-            return errMsg
+            return ProviderErrorText.sanitized(errMsg)
         }
         if let message = object["message"] as? String, !message.isEmpty {
-            return message
+            return ProviderErrorText.sanitized(message)
         }
         if let error = object["error"] as? [String: Any],
            let message = error["message"] as? String,
            !message.isEmpty {
-            return message
+            return ProviderErrorText.sanitized(message)
         }
         return nil
     }

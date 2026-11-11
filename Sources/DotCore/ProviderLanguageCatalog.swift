@@ -14,9 +14,14 @@ public struct AvailableLanguage: Identifiable, Equatable, Hashable, Sendable {
     }
 }
 
-/// Catalog that dynamically maps each provider and speech model to its supported spoken languages.
+/// The spoken languages each provider and model can be asked for.
+///
+/// A provider refuses or silently ignores a language it does not implement, so
+/// every list here is the set the provider actually honours. `auto` is an
+/// absence of a choice, not a language: the provider resolves it to its own
+/// detection or to the Mac's language.
 public enum ProviderLanguageCatalog {
-    /// Whisper multilingual language catalog (ISO-639-1) with Auto-detect.
+    /// Whisper's multilingual set, as ISO-639-1 tags, with detection.
     public static let whisperLanguages: [AvailableLanguage] = [
         AvailableLanguage(id: "auto", name: "Auto-detect", detail: "Automatically detects the spoken language"),
         AvailableLanguage(id: "en", name: "English"),
@@ -50,12 +55,12 @@ public enum ProviderLanguageCatalog {
         AvailableLanguage(id: "ms", name: "Malay"),
     ]
 
-    /// Languages for English-only models (e.g. distil-whisper-large-v3-en).
+    /// The one language an English-only model accepts.
     public static let englishOnlyLanguages: [AvailableLanguage] = [
         AvailableLanguage(id: "en", name: "English", detail: "This model only supports English transcription"),
     ]
 
-    /// Azure Speech standard BCP-47 locales with multi-language Auto-detect.
+    /// Azure's BCP-47 locales, with multi-language detection.
     public static let azureLanguages: [AvailableLanguage] = [
         AvailableLanguage(id: "auto", name: "Auto-detect", detail: "Azure Speech multi-language detection"),
         AvailableLanguage(id: "en-US", name: "English (United States)"),
@@ -92,7 +97,7 @@ public enum ProviderLanguageCatalog {
         AvailableLanguage(id: "he-IL", name: "Hebrew (Israel)"),
     ]
 
-    /// Deepgram speech recognition languages.
+    /// Deepgram's speech recognition languages.
     public static let deepgramLanguages: [AvailableLanguage] = [
         AvailableLanguage(id: "auto", name: "Auto-detect", detail: "Deepgram multi-language detect"),
         AvailableLanguage(id: "en", name: "English"),
@@ -125,17 +130,25 @@ public enum ProviderLanguageCatalog {
         AvailableLanguage(id: "no", name: "Norwegian"),
     ]
 
-    /// Xiaomi ASR speech recognition languages.
+    /// The languages Xiaomi ASR honours.
+    ///
+    /// The list is exactly what ``XiaomiASRProvider/namedLanguage(_:)`` sends:
+    /// a tag it does not name is dropped from the request and the model falls
+    /// back to its own default, so offering one here would change nothing but
+    /// the menu. `auto` is the absence of a hint, which the provider resolves
+    /// to the Mac's own language when it can name it.
     public static let xiaomiLanguages: [AvailableLanguage] = [
         AvailableLanguage(id: "auto", name: "Auto-detect", detail: "Auto speech detection"),
         AvailableLanguage(id: "zh", name: "中文 (Mandarin)"),
         AvailableLanguage(id: "en", name: "English"),
-        AvailableLanguage(id: "yue", name: "粤语 (Cantonese)"),
-        AvailableLanguage(id: "ja", name: "日本語 (Japanese)"),
-        AvailableLanguage(id: "ko", name: "한국어 (Korean)"),
     ]
 
-    /// Dynamically discovers all locales supported by Apple Speech on this Mac.
+    /// The locales the on-device transcriber supports on this Mac.
+    ///
+    /// The list is read from the system at call time: it differs between
+    /// machines and changes when macOS installs another language asset.
+    ///
+    /// - Returns: detection first, then the supported locales by name.
     public static func appleLanguages() -> [AvailableLanguage] {
         var list: [AvailableLanguage] = [
             AvailableLanguage(id: "auto", name: "Auto-detect", detail: "System default speech language")
@@ -153,7 +166,16 @@ public enum ProviderLanguageCatalog {
         return list
     }
 
-    /// Dynamically returns the available languages for the given provider and selected model.
+    /// The languages a provider and model accept.
+    ///
+    /// The model narrows the list: an English-only model accepts English and
+    /// nothing else, whatever the provider supports in general.
+    ///
+    /// - Parameters:
+    ///   - providerID: the provider.
+    ///   - model: the configured model, or `nil` for the provider's default.
+    /// - Returns: the languages to offer, `auto` first where the provider
+    ///   detects.
     public static func languages(for providerID: String, model: String? = nil) -> [AvailableLanguage] {
         switch providerID {
         case ProviderIdentifier.apple:
@@ -178,8 +200,17 @@ public enum ProviderLanguageCatalog {
         }
     }
 
-    /// Validates and adjusts the selected language when switching provider or model.
-    /// If the current language is supported, preserves it. Otherwise automatically falls back.
+    /// The language to keep after a provider or model change.
+    ///
+    /// A stored language is preserved when the new provider accepts it, matched
+    /// by prefix when the tags differ in region (`en` against `en-US`), and
+    /// replaced by the provider's first offered language when it does not.
+    ///
+    /// - Parameters:
+    ///   - currentLanguage: the stored tag, or `nil` when nothing was stored.
+    ///   - providerID: the provider being switched to.
+    ///   - model: the configured model, or `nil` for the provider's default.
+    /// - Returns: a tag that appears in ``languages(for:model:)``.
     public static func validatedLanguage(
         _ currentLanguage: String?,
         for providerID: String,
@@ -193,22 +224,24 @@ public enum ProviderLanguageCatalog {
             }
             return supported.first?.id ?? "en"
         }
-        // Exact match
         if supported.contains(where: { $0.id == current }) {
             return current
         }
-        // Prefix match (e.g. "en" matches "en-US", or "en-US" matches "en")
+        // A region-qualified tag and a bare language are the same language.
         if let match = supported.first(where: {
             $0.id.lowercased().hasPrefix(current.lowercased()) ||
             current.lowercased().hasPrefix($0.id.lowercased())
         }) {
             return match.id
         }
-        // Fallback to first supported
         return supported.first?.id ?? "auto"
     }
 
-    /// Converts available languages into MenuLanguage models for the menu bar menu.
+    /// The language rows the menu bar menu shows.
+    ///
+    /// - Parameters:
+    ///   - providerID: the provider.
+    ///   - model: the configured model, or `nil` for the provider's default.
     public static func menuLanguages(for providerID: String, model: String?) -> [MenuLanguage] {
         languages(for: providerID, model: model).map {
             MenuLanguage(id: $0.id, name: $0.name)

@@ -6,6 +6,8 @@ public enum ProviderRegistryError: Error, Equatable, LocalizedError {
     case unknownProvider(String)
     /// The OpenAI-compatible provider has no usable base URL.
     case missingBaseURL(String)
+    /// The base URL is not an address Dot will send audio or a key to.
+    case refusedEndpoint(String, EndpointPolicy.Rejection)
 
     public var errorDescription: String? {
         switch self {
@@ -13,29 +15,9 @@ public enum ProviderRegistryError: Error, Equatable, LocalizedError {
             "There is no provider called '\(id)'."
         case .missingBaseURL(let id):
             "The provider '\(id)' has no base URL."
+        case .refusedEndpoint(let id, let rejection):
+            "\(id.capitalized): \(rejection.localizedDescription)"
         }
-    }
-}
-
-/// What is known about a provider without touching a credential.
-///
-/// The menu, the Settings window and the availability probe only need a name
-/// and whether the row asks for a key. Building a real provider to learn that
-/// used to decrypt the Keychain item, which is exactly the cost
-/// ``CredentialCache`` exists to avoid.
-public struct ProviderDescriptor: Equatable, Sendable {
-    /// The stable id, e.g. `openai`.
-    public let id: String
-    /// The name the menu shows.
-    public let displayName: String
-    /// Whether the row offers an API key.
-    public let requiresCredential: Bool
-
-    /// Creates a descriptor.
-    public init(id: String, displayName: String, requiresCredential: Bool) {
-        self.id = id
-        self.displayName = displayName
-        self.requiresCredential = requiresCredential
     }
 }
 
@@ -88,11 +70,7 @@ public enum ProviderRegistry {
         switch id {
         case ProviderIdentifier.openAI:
             let settings = config.settings(for: id)
-            guard let base = settings.baseURL, !base.isEmpty,
-                  let url = URL(string: base)
-            else {
-                throw ProviderRegistryError.missingBaseURL(id)
-            }
+            let url = try endpoint(settings.baseURL, id: id, fallback: nil)
             return OpenAICompatibleProvider(
                 baseURL: url,
                 apiKey: apiKey(for: id, credentials: credentials),
@@ -105,9 +83,7 @@ public enum ProviderRegistry {
             )
         case ProviderIdentifier.groq:
             let settings = config.settings(for: id)
-            let base = settings.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let url = URL(string: base.isEmpty ? GroqProvider.defaultBaseURL.absoluteString : base)
-                ?? GroqProvider.defaultBaseURL
+            let url = try endpoint(settings.baseURL, id: id, fallback: GroqProvider.defaultBaseURL)
             return GroqProvider(
                 baseURL: url,
                 apiKey: apiKey(for: id, credentials: credentials),
@@ -119,8 +95,7 @@ public enum ProviderRegistry {
             )
         case ProviderIdentifier.azure:
             let settings = config.settings(for: id)
-            let base = settings.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let url = base.isEmpty ? nil : URL(string: base)
+            let url = try optionalEndpoint(settings.baseURL, id: id)
             let region = settings.azureRegion?.trimmingCharacters(in: .whitespacesAndNewlines)
             let resolvedRegion = (region?.isEmpty == false) ? region! : AzureSpeechProvider.defaultRegion
             let mode = settings.azureRecognitionMode?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -141,9 +116,7 @@ public enum ProviderRegistry {
             )
         case ProviderIdentifier.deepgram:
             let settings = config.settings(for: id)
-            let base = settings.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let url = URL(string: base.isEmpty ? DeepgramProvider.defaultBaseURL.absoluteString : base)
-                ?? DeepgramProvider.defaultBaseURL
+            let url = try endpoint(settings.baseURL, id: id, fallback: DeepgramProvider.defaultBaseURL)
             return DeepgramProvider(
                 baseURL: url,
                 apiKey: apiKey(for: id, credentials: credentials),
@@ -159,9 +132,7 @@ public enum ProviderRegistry {
             )
         case ProviderIdentifier.elevenLabs:
             let settings = config.settings(for: id)
-            let base = settings.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let url = URL(string: base.isEmpty ? ElevenLabsProvider.defaultBaseURL.absoluteString : base)
-                ?? ElevenLabsProvider.defaultBaseURL
+            let url = try endpoint(settings.baseURL, id: id, fallback: ElevenLabsProvider.defaultBaseURL)
             return ElevenLabsProvider(
                 baseURL: url,
                 apiKey: apiKey(for: id, credentials: credentials),
@@ -180,6 +151,7 @@ public enum ProviderRegistry {
         case ProviderIdentifier.xiaomi:
             let settings = config.settings(for: id)
             let endpoint = storedEndpoint(config: config)
+            try checkEndpoint(endpoint.url, id: id)
             // An endpoint that was pointed somewhere else is no longer the
             // service this id was written for. It is the user's own endpoint,
             // so it is called with the shape every other custom endpoint gets.
@@ -206,6 +178,47 @@ public enum ProviderRegistry {
             return AppleSpeechProvider(localeIdentifier: locale)
         default:
             throw ProviderRegistryError.unknownProvider(id)
+        }
+    }
+
+    /// Reads the base URL a provider's settings name, and refuses one Dot will
+    /// not send a key or audio to.
+    ///
+    /// A remote endpoint is only reached over TLS. `http` is accepted for a
+    /// loopback address, which is the local whisper.cpp, LM Studio or Ollama
+    /// case the OpenAI-compatible provider exists for.
+    ///
+    /// - Parameters:
+    ///   - stored: the base URL as the configuration holds it.
+    ///   - id: the provider id, for the error a refusal carries.
+    ///   - fallback: the endpoint to use when the configuration names none.
+    /// - Returns: the endpoint to call.
+    /// - Throws: ``ProviderRegistryError`` when there is no endpoint, or it is
+    ///   one Dot refuses.
+    private static func endpoint(_ stored: String?, id: String, fallback: URL?) throws -> URL {
+        let trimmed = stored?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty {
+            guard let fallback else { throw ProviderRegistryError.missingBaseURL(id) }
+            return fallback
+        }
+        do {
+            return try EndpointPolicy.url(from: trimmed)
+        } catch let rejection as EndpointPolicy.Rejection {
+            throw ProviderRegistryError.refusedEndpoint(id, rejection)
+        }
+    }
+
+    /// Reads a base URL that may be absent.
+    private static func optionalEndpoint(_ stored: String?, id: String) throws -> URL? {
+        let trimmed = stored?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        return try endpoint(trimmed, id: id, fallback: nil)
+    }
+
+    /// Refuses an endpoint that is already a URL.
+    private static func checkEndpoint(_ url: URL, id: String) throws {
+        if let rejection = EndpointPolicy.validate(url) {
+            throw ProviderRegistryError.refusedEndpoint(id, rejection)
         }
     }
 
@@ -263,22 +276,6 @@ public enum ProviderRegistry {
             return value
         }
         return normalized(lhs) == normalized(rhs)
-    }
-
-    /// What is known about a provider without resolving its key.
-    ///
-    /// - Parameters:
-    ///   - id: the provider id.
-    ///   - config: the configuration the provider's settings come from.
-    /// - Throws: ``ProviderRegistryError`` when the provider cannot be built at
-    ///   all.
-    public static func descriptor(id: String, config: DotConfig) throws -> ProviderDescriptor {
-        let provider = try makeProvider(id: id, config: config, credentials: .empty)
-        return ProviderDescriptor(
-            id: provider.id,
-            displayName: provider.displayName,
-            requiresCredential: provider.requiresCredential
-        )
     }
 
     /// Builds the provider the configuration selects.

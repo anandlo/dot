@@ -62,7 +62,8 @@ final class WAVWriterTests: XCTestCase {
             withUnsafeBytes(of: &littleEndian) { expected.append(contentsOf: $0) }
         }
 
-        let wav = WAVWriter.encode(pcm16: expected)
+        var wav = WAVWriter.header(dataLength: expected.count)
+        wav.append(expected)
         XCTAssertEqual(wav.count, 44 + expected.count)
 
         let recovered = try WAVWriter.samples(in: wav)
@@ -76,15 +77,6 @@ final class WAVWriterTests: XCTestCase {
         let samples: [Int16] = [0, -1, 1, 300, -300, 32_767, -32_768]
         let wav = WAVWriter.encode(samples: samples)
         XCTAssertEqual(try WAVWriter.samples(in: wav), samples)
-    }
-
-    func testOddSampleCountIsTruncated() {
-        var raw = Data([0x01, 0x02, 0x03])
-        let wav = WAVWriter.encode(pcm16: raw)
-        XCTAssertEqual(wav.count, 44 + 2)
-        let info = try? WAVWriter.parse(wav)
-        XCTAssertEqual(info?.dataLength, 2)
-        raw.removeAll()
     }
 
     func testParsingRejectsBrokenFiles() {

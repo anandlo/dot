@@ -100,7 +100,13 @@ public struct HUDDwellClock: Equatable, Sendable {
     /// Whether the last advance found the card being read.
     public private(set) var isPaused: Bool
     /// The time of the last advance, in the caller's clock.
-    private var updatedAt: Double
+    ///
+    /// A caller that moves the clock by hand — the headless test, because a
+    /// starved run loop can withhold frames for longer than the whole dwell and
+    /// then deliver one frame that carries all of it at once — needs to know
+    /// where the clock stands. The frame loop reads the time from the system
+    /// and does not need this.
+    public private(set) var advancedAt: Double
 
     /// Creates a clock that has just started.
     ///
@@ -111,7 +117,7 @@ public struct HUDDwellClock: Equatable, Sendable {
         self.duration = duration.isFinite ? max(0, duration) : 0
         self.remaining = self.duration
         self.isPaused = false
-        self.updatedAt = now.isFinite ? now : 0
+        self.advancedAt = now.isFinite ? now : 0
     }
 
     /// Starts the countdown again.
@@ -127,7 +133,7 @@ public struct HUDDwellClock: Equatable, Sendable {
         remaining = self.duration
         isPaused = false
         if now.isFinite {
-            updatedAt = now
+            advancedAt = now
         }
     }
 
@@ -145,8 +151,8 @@ public struct HUDDwellClock: Equatable, Sendable {
         // would make every later difference invalid, and the card would never
         // be dismissed again.
         guard now.isFinite else { return isExpired }
-        let delta = now - updatedAt
-        updatedAt = now
+        let delta = now - advancedAt
+        advancedAt = now
         guard !interacting, delta > 0 else { return isExpired }
         remaining = max(0, remaining - delta)
         return isExpired

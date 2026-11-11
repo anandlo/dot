@@ -204,37 +204,6 @@ final class CredentialCacheTests: XCTestCase {
         XCTAssertEqual(counter.count, 1)
     }
 
-    func testAProviderDescriptionNeverTouchesACredential() throws {
-        let counter = Counter()
-        counter.keys[ProviderIdentifier.xiaomi] = "xiaomi-key"
-        let cache = CredentialCache(reader: counter.read)
-
-        for id in ProviderRegistry.builtInIDs {
-            let descriptor = try ProviderRegistry.descriptor(id: id, config: .default)
-            XCTAssertFalse(descriptor.displayName.isEmpty)
-            XCTAssertEqual(descriptor.id, id)
-        }
-
-        // A description does not need a key, so it does not ask for one.
-        XCTAssertEqual(counter.count, 0)
-        XCTAssertEqual(cache.readCount, 0)
-
-        // The real build still finds the key.
-        let provider = try ProviderRegistry.selectedProvider(config: .default, credentials: cache)
-        XCTAssertNotNil(provider)
-    }
-
-    func testTheDescriptorNamesMatchTheProviders() throws {
-        let descriptions = try ProviderRegistry.builtInIDs.map {
-            try ProviderRegistry.descriptor(id: $0, config: .default)
-        }
-        XCTAssertEqual(descriptions.map(\.id), ["openai", "groq", "azure", "deepgram", "elevenlabs", "xiaomi", "apple"])
-        XCTAssertEqual(descriptions.map(\.requiresCredential), [true, true, true, true, true, true, false])
-        XCTAssertEqual(descriptions[1].displayName, "Groq")
-        XCTAssertEqual(descriptions[2].displayName, "Azure Speech")
-        XCTAssertEqual(descriptions[6].displayName, "Apple Speech")
-    }
-
     func testARefusedKeyIsNotReportedAsAMissingOne() {
         // Measured on this machine: after a re-signed build, the decrypting
         // query answered "not found" while `security find-generic-password`

@@ -99,8 +99,8 @@ public struct GroqProvider: Provider {
         var request = URLRequest(url: modelsURL)
         request.timeoutInterval = 6
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        guard let (_, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse
+        guard let answer = try? await HTTPTransport.send(request, session: session),
+              let http = answer.response as? HTTPURLResponse
         else { return false }
         return (200..<300).contains(http.statusCode)
     }
@@ -169,15 +169,9 @@ public struct GroqProvider: Provider {
     public func transcribe(wav: Data, model: String?, language: String?) async throws -> String {
         let request = try buildRequest(wav: wav, model: model, language: language)
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch let error as URLError {
-            throw ProviderError.transport(error.localizedDescription)
-        } catch {
-            throw ProviderError.transport(error.localizedDescription)
-        }
+        let answer = try await HTTPTransport.send(request, session: session)
+        let data = answer.data
+        let response = answer.response
 
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse("No HTTP response received from Groq.")
@@ -228,12 +222,12 @@ public struct GroqProvider: Provider {
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let errorObj = json["error"] as? [String: Any],
                let message = errorObj["message"] as? String, !message.isEmpty {
-                return message
+                return ProviderErrorText.sanitized(message) ?? message
             }
             if let message = json["message"] as? String, !message.isEmpty {
-                return message
+                return ProviderErrorText.sanitized(message) ?? message
             }
         }
-        return String(data: data, encoding: .utf8) ?? "Unknown Groq error"
+        return ProviderErrorText.sanitized(String(data: data, encoding: .utf8)) ?? "Unknown Groq error"
     }
 }

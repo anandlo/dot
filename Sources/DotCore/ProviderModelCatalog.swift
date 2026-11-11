@@ -13,9 +13,20 @@ public struct AvailableModel: Identifiable, Equatable, Hashable, Sendable {
     }
 }
 
-/// Discovers and lists available models for speech providers dynamically from their API.
+/// The models each provider offers, read from the provider's own API.
+///
+/// A model list that ships with the app goes out of date as soon as a service
+/// adds one. Everything here is derived from identifiers the service reports, so
+/// a model this build has never heard of is still presented and still offered.
 public enum ProviderModelCatalog {
-    /// Formats a clean, readable name from any raw model identifier dynamically.
+    /// The display name of a model identifier.
+    ///
+    /// Built from the identifier itself — `whisper-large-v3-turbo` becomes
+    /// "Whisper Large V3 Turbo" — so a model added by a service after this build
+    /// shipped is presented like the ones that were known when it shipped.
+    ///
+    /// - Parameter id: the identifier the service reports.
+    /// - Returns: the words the picker shows for it.
     public static func formattedName(for id: String) -> String {
         let parts = id.split(separator: "-").map { part -> String in
             let lower = part.lowercased()
@@ -42,7 +53,11 @@ public enum ProviderModelCatalog {
         return parts.joined(separator: " ")
     }
 
-    /// Provides dynamic, accurate subtitle detail describing the model type without blanket hardcoding.
+    /// The one-line description the model picker shows under a model id.
+    ///
+    /// The answer is derived from the id rather than from a table of known
+    /// models: an endpoint may list a model this build has never heard of, and
+    /// it still has to be presented as something other than a raw identifier.
     public static func modelDetail(for id: String) -> String {
         let lower = id.lowercased()
         if lower.contains("whisper") {
@@ -54,7 +69,13 @@ public enum ProviderModelCatalog {
         return "Endpoint model"
     }
 
-    /// Determines whether a model is explicitly a non-speech-recognition model (TTS, chat LLM, vision, embeddings).
+    /// Whether the identifier names something other than a transcriber.
+    ///
+    /// `/models` on an OpenAI-shaped service lists everything the key may call:
+    /// speech synthesis, chat models, embeddings, image models. Offering one of
+    /// those as a transcription model would fail on the first press.
+    ///
+    /// - Parameter id: the identifier the service reports.
     public static func isExplicitNonASRModel(_ id: String) -> Bool {
         let lower = id.lowercased()
         if lower.contains("tts")
@@ -78,7 +99,13 @@ public enum ProviderModelCatalog {
         return false
     }
 
-    /// Determines whether a model identifier represents an explicit speech-to-text (ASR) model.
+    /// Whether the identifier is recognisably a transcription model.
+    ///
+    /// The answer is used to narrow a list that contains both, never to hide an
+    /// unknown model: a service whose names do not match any of these tokens
+    /// still gets its whole list, filtered only by ``isExplicitNonASRModel(_:)``.
+    ///
+    /// - Parameter id: the identifier the service reports.
     public static func isSpeechToTextModel(_ id: String) -> Bool {
         if isExplicitNonASRModel(id) { return false }
         let lower = id.lowercased()
@@ -94,13 +121,23 @@ public enum ProviderModelCatalog {
             || lower.contains("listen")
     }
 
-    /// Models are discovered dynamically from the user's API key; returns empty when not yet authenticated.
-    public static func defaultModels(for providerID: String) -> [AvailableModel] {
-        return []
-    }
-
-    /// Fetches models dynamically from the provider's API using the provided API key.
-    /// Returns an empty list when no key is present or on network error.
+    /// Fetches the models a provider lists from its own `/models` endpoint.
+    ///
+    /// The list is what the service reports, filtered to the models that can
+    /// transcribe. Without a key there is nothing to ask with, so the answer is
+    /// empty and the caller falls back to its own defaults. The one exception is
+    /// Xiaomi, which ships a single ASR model: it is always inserted, so the
+    /// picker is never empty for a service that has exactly one thing to offer.
+    ///
+    /// - Parameters:
+    ///   - providerID: the provider whose endpoint to read.
+    ///   - baseURL: the endpoint to read, or `nil` for the provider's default.
+    ///   - apiKey: the credential to send, when the service needs one.
+    ///   - authStyle: how the credential is sent, for the providers that accept
+    ///     more than one spelling.
+    ///   - session: the session the request is made with.
+    /// - Returns: the transcription models the service reports, newest first, or
+    ///   an empty list when it could not be asked.
     public static func fetchModels(
         for providerID: String,
         baseURL: URL? = nil,
@@ -195,10 +232,11 @@ public enum ProviderModelCatalog {
             if let (data, response) = try? await session.data(for: request),
                let http = response as? HTTPURLResponse,
                (200..<300).contains(http.statusCode) {
-                // Filter for explicit ASR models from the endpoint, filtering out TTS & Chat models
                 models = parseOpenAIModels(data: data, filterSubstring: "asr")
             }
-            // Xiaomi's official speech recognition model: guarantee it is available
+            // The one model this service offers is always presented: an endpoint
+            // that is unreachable, or that lists nothing recognisable, must not
+            // leave the picker empty for a service that has exactly one model.
             let asrModelID = "mimo-v2.5-asr"
             let asrTitle = formattedName(for: asrModelID)
             let defaultXiaomi = AvailableModel(
@@ -212,7 +250,8 @@ public enum ProviderModelCatalog {
             return models
 
         default:
-            // Custom endpoint or self-hosted server
+            // A custom endpoint or a self-hosted server: only the caller knows
+            // where it is, so there is no default to fall back to.
             if let baseURL {
                 let url = baseURL.appendingPathComponent("models")
                 var request = URLRequest(url: url)
@@ -233,7 +272,7 @@ public enum ProviderModelCatalog {
         }
     }
 
-    // MARK: - Dynamic Format Parsers
+    // MARK: - Format parsers
 
     public static func parseOpenAIModels(data: Data, filterSubstring: String? = nil, fallback: [AvailableModel] = []) -> [AvailableModel] {
         struct ModelList: Decodable {
@@ -249,7 +288,6 @@ public enum ProviderModelCatalog {
 
         var ids = decoded.data.map(\.id)
 
-        // Always strip explicit non-ASR models (TTS, chat LLMs, embeddings, vision, moderation)
         ids = ids.filter { !isExplicitNonASRModel($0) }
 
         if let sub = filterSubstring?.lowercased(), !sub.isEmpty {

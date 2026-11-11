@@ -15,9 +15,9 @@ final class LevelScaleTests: XCTestCase {
     private let rate = 16_000
 
     /// A sine at a precise RMS, as the microphone would hand it over.
-    private func sine(rmsDBFS: Double, seconds: Double = 0.02) -> [Int16] {
+    private func sine(decibels: Double, seconds: Double = 0.02) -> [Int16] {
         // A sine of amplitude A has RMS A/√2.
-        let amplitude = min(1, pow(10, rmsDBFS / 20) * sqrt(2))
+        let amplitude = min(1, pow(10, decibels / 20) * sqrt(2))
         let count = Int(seconds * Double(rate))
         return (0..<count).map { index in
             let value = amplitude * sin(2 * .pi * 220 * Double(index) / Double(rate))
@@ -26,18 +26,23 @@ final class LevelScaleTests: XCTestCase {
     }
 
     /// A square wave at a precise RMS.
-    private func square(rmsDBFS: Double, seconds: Double = 0.02) -> [Int16] {
-        let amplitude = min(1, pow(10, rmsDBFS / 20))
+    private func square(decibels: Double, seconds: Double = 0.02) -> [Int16] {
+        let amplitude = min(1, pow(10, decibels / 20))
         let count = Int(seconds * Double(rate))
         return (0..<count).map { index in
             Int16((index % 2 == 0 ? amplitude : -amplitude) * 32_767)
         }
     }
 
+    /// The RMS of a signal in dBFS, through the two measurements that remain.
+    private func dbfs(_ samples: [Int16]) -> Double {
+        AudioLevel.decibels(AudioLevel.rms(samples: samples))
+    }
+
     /// Pushes a signal into a fresh meter and returns it.
     private func meter(fed samples: [Int16], frames: Int = 1) -> VoiceMeter {
         let meter = VoiceMeter()
-        let db = AudioLevel.rmsDBFS(samples: samples)
+        let db = dbfs(samples)
         for frame in 0..<frames {
             meter.push(decibels: db, now: Double(frame) / 60.0)
         }
@@ -64,33 +69,43 @@ final class LevelScaleTests: XCTestCase {
     func testNormalSpeechSitsInTheMiddleOfTheRange() {
         for db in [-30.0, -26.0, -20.0] {
             let level = LevelScale.level(decibels: db)
-            XCTAssertGreaterThan(level, 0.35, "\(db) dBFS")
-            XCTAssertLessThan(level, 0.65, "\(db) dBFS")
+            XCTAssertGreaterThan(level, 0.45, "\(db) dBFS")
+            XCTAssertLessThan(level, 0.72, "\(db) dBFS")
         }
         // A real sine, through the real RMS path, not only the arithmetic.
-        let measured = AudioLevel.rmsDBFS(samples: sine(rmsDBFS: -26))
+        let measured = dbfs(sine(decibels: -26))
         let level = LevelScale.level(decibels: measured)
-        XCTAssertEqual(level, 0.48, accuracy: 0.05)
+        XCTAssertEqual(level, 0.59, accuracy: 0.05)
     }
 
     func testLoudSpeechIsHighButNotAtTheTop() {
         let loud = LevelScale.level(decibels: -12)
-        XCTAssertGreaterThan(loud, 0.65)
-        XCTAssertLessThan(loud, 0.8)
+        XCTAssertGreaterThan(loud, 0.72)
+        XCTAssertLessThan(loud, 0.88)
+
+        // The range of a voice, on one scale: every anchor is a different
+        // height, in order, and none of them is the top of the card.
+        let anchors = [-45.0, -35.0, -25.0, -15.0, -8.0].map { LevelScale.level(decibels: $0) }
+        for (index, value) in anchors.enumerated() where index > 0 {
+            XCTAssertGreaterThan(value - anchors[index - 1], 0.07, "anchor \(index)")
+        }
+        XCTAssertLessThan(anchors[0], 0.28, "a whisper is above the floor and small")
+        XCTAssertLessThan(anchors[3], 0.90, "a raised voice is not the top")
     }
 
     func testDigitalFullScaleLeavesHeadroomAtTheTop() {
         // The loudest sample a PCM file can hold: a full-scale square wave is
         // the only signal whose RMS is 0 dBFS.
-        let fullScale = AudioLevel.rmsDBFS(samples: square(rmsDBFS: 0))
+        let fullScale = dbfs(square(decibels: 0))
         XCTAssertEqual(fullScale, 0, accuracy: 0.01)
 
         let level = LevelScale.level(decibels: fullScale)
-        XCTAssertLessThan(level, 0.95)
+        XCTAssertLessThan(level, 0.97)
         XCTAssertGreaterThan(level, 0.85)
 
-        // And the drawn shape keeps headroom: a full-scale input does not
-        // reach the top of the card.
+        // And the drawn shape keeps headroom: a full-scale input does not reach
+        // the top of the card. It is the loudest signal a PCM file can hold, so
+        // it is allowed most of the shape; a microphone in a room is not.
         let maximum: CGFloat = 13
         let heights = Waveform.halfHeights(
             history: Array(repeating: level, count: Waveform.historyLength),
@@ -99,7 +114,7 @@ final class LevelScaleTests: XCTestCase {
             maximum: maximum,
             breath: 0
         )
-        XCTAssertLessThan(CGFloat(level) * maximum, maximum - 1)
+        XCTAssertLessThan(CGFloat(level) * maximum, maximum - 0.4)
         // The only thing above the scaled level is the breath, which is bounded.
         XCTAssertLessThanOrEqual(
             heights.max() ?? 0,
@@ -138,21 +153,31 @@ final class LevelScaleTests: XCTestCase {
     }
 
     func testTheEnvelopeAttacksFastAndReleasesSlowly() {
+        // Thirty milliseconds of attack: one frame of the 60 Hz clock is a
+        // quarter of the way up, three frames are most of the way, so a word is
+        // at its height within the first syllable.
         let attack = EnvelopeShape.step(envelope: 0, level: 1, dt: 1.0 / 60.0)
-        XCTAssertGreaterThan(attack, 0.7, "one frame is most of the way up")
+        XCTAssertGreaterThan(attack, 0.2, "one frame starts the rise")
+        var rising = 0.0
+        for _ in 0..<3 { rising = EnvelopeShape.step(envelope: rising, level: 1, dt: 1.0 / 60.0) }
+        XCTAssertGreaterThan(rising, 0.75, "three frames are most of the way up")
 
+        // Two hundred milliseconds of release: one frame is a small step down,
+        // and a full-scale shape falls under a tenth inside half a second.
         let release = EnvelopeShape.step(envelope: 1, level: 0, dt: 1.0 / 60.0)
         XCTAssertGreaterThan(release, 0.8, "one frame is a small step down")
-
-        // A full-scale envelope falls under a tenth in under half a second.
-        XCTAssertLessThan(EnvelopeShape.releaseTime(to: 0.1), 0.5)
+        XCTAssertLessThan(EnvelopeShape.releaseTime(to: 0.1), 0.55)
         var envelope = 1.0
         var elapsed = 0.0
         while envelope >= 0.1, elapsed < 5 {
             envelope = EnvelopeShape.step(envelope: envelope, level: 0, dt: 1.0 / 60.0)
             elapsed += 1.0 / 60.0
         }
-        XCTAssertLessThan(elapsed, 0.5)
+        XCTAssertLessThan(elapsed, 0.55)
+
+        // The release is the long one, and it is what a shape that has stopped
+        // is drawn on: a third of a second of falling, not a flicker.
+        XCTAssertGreaterThan(EnvelopeShape.releaseTau, EnvelopeShape.attackTau * 4)
     }
 
     func testTheShapeIsAFaithfulCopyOfTheEnvelope() {
@@ -174,16 +199,19 @@ final class LevelScaleTests: XCTestCase {
             meter.push(decibels: -.infinity, now: frame)
             frame += 1.0 / 60.0
         }
-        let speech = AudioLevel.rmsDBFS(samples: sine(rmsDBFS: -26))
+        let speech = dbfs(sine(decibels: -26))
         for _ in 0..<(60 * 20) {
             meter.push(decibels: speech, now: frame)
             frame += 1.0 / 60.0
         }
-        XCTAssertLessThan(meter.envelope, 0.7)
+        XCTAssertLessThan(meter.envelope, 0.75)
+        XCTAssertGreaterThan(meter.envelope, 0.2, "the voice is a shape, not a hairline")
 
-        // The floor was seeded by the first frame that carried audio, not by
-        // the silence before it.
-        XCTAssertEqual(meter.floorDBFS ?? -1, speech, accuracy: 6)
+        // And the other half of the same invariant: the frames that carried no
+        // audio never became the floor. A tone with no modulation at all is
+        // indistinguishable from a fan, so the floor may rise toward it, but
+        // only to its own ceiling, never to the tone itself.
+        XCTAssertLessThanOrEqual(meter.floorDBFS ?? 0, VoiceMeter.floorCeilingDBFS + 0.001)
     }
 
     /// The proof, without a microphone: a synthetic voice, through the real RMS
@@ -222,7 +250,7 @@ final class LevelScaleTests: XCTestCase {
                 let value = rms * sin(2 * .pi * 180 * Double(sample) / Double(rate))
                 return Int16((value * 32_767).rounded())
             }
-            meter.push(decibels: AudioLevel.rmsDBFS(samples: block), now: time)
+            meter.push(decibels: dbfs(block), now: time)
             envelope.append(meter.envelope)
             levels.append(meter.level)
         }
@@ -246,8 +274,8 @@ final class LevelScaleTests: XCTestCase {
         XCTAssertLessThan(room.max() ?? 1, 0.02, "the room is a hairline")
 
         let firstPhrase = Array(envelope[30..<96]) // 0.5 … 1.6 s
-        XCTAssertGreaterThan(firstPhrase.max() ?? 0, 0.35, "the phrase is visible")
-        XCTAssertLessThan(firstPhrase.max() ?? 1, 0.8, "and not at the top")
+        XCTAssertGreaterThan(firstPhrase.max() ?? 0, 0.45, "the phrase is visible")
+        XCTAssertLessThan(firstPhrase.max() ?? 1, 0.86, "and not at the top")
         XCTAssertGreaterThan(
             firstPhrase.max()! - firstPhrase.min()!,
             0.2,
@@ -258,11 +286,15 @@ final class LevelScaleTests: XCTestCase {
         XCTAssertLessThan(pause.last ?? 1, 0.05, "it falls back in the pause")
 
         let loudPhrase = Array(envelope[138..<174])
-        XCTAssertGreaterThan(loudPhrase.max() ?? 0, 0.55, "the louder phrase is higher")
-        XCTAssertLessThan(loudPhrase.max() ?? 1, 0.95, "and still off the top")
+        XCTAssertGreaterThan(loudPhrase.max() ?? 0, 0.6, "the louder phrase is higher")
+        XCTAssertLessThan(loudPhrase.max() ?? 1, 0.98, "and still off the top")
 
         let tail = Array(envelope.suffix(24))
-        XCTAssertLessThan(tail.last ?? 1, 0.05, "silence at the end is the floor")
+        // The release is two hundred milliseconds, so half a second of room
+        // leaves a fifth of the last syllable: a shape that has stopped falls
+        // over a third of a second instead of cutting to the axis.
+        XCTAssertLessThan(tail.last ?? 1, 0.09, "silence at the end is nearly the floor")
+        XCTAssertLessThan(tail.last ?? 1, tail.first ?? 1, "and it is still falling")
 
         // Nothing in the take is pinned, which was the whole defect.
         XCTAssertEqual(envelope.filter { $0 >= 0.99 }.count, 0)

@@ -46,14 +46,6 @@ public enum Segmenter {
         let size = sampleCount(seconds: seconds)
         return (samples + size - 1) / size
     }
-
-    /// Splits a WAV into segments, each one a WAV of its own.
-    ///
-    /// - Throws: ``WAVError`` when the WAV cannot be read.
-    public static func wavSegments(wav: Data, seconds: Int) throws -> [Data] {
-        let samples = try WAVWriter.samples(in: wav)
-        return segments(samples: samples, seconds: seconds).map { WAVWriter.encode(samples: $0) }
-    }
 }
 
 /// What came back from a recording.
@@ -80,17 +72,6 @@ public struct TranscriptReport: Sendable, Equatable {
 
     /// Whether nothing at all was recorded.
     public var isEmpty: Bool { total == 0 }
-
-    /// A short description of what happened, for the HUD.
-    public var summary: String {
-        guard total > 0 else { return "Nothing was recorded." }
-        let prefix = "transcribed \(succeeded) of \(total) segment\(total == 1 ? "" : "s")"
-        guard failed > 0 else { return prefix }
-        if failed == 1 {
-            return "\(prefix) (one failed)"
-        }
-        return "\(prefix) (\(failed) failed)"
-    }
 }
 
 /// Sends a recording to a provider, one segment at a time.

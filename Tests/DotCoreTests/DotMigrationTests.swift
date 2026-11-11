@@ -124,7 +124,7 @@ final class DotMigrationTests: XCTestCase {
         var config = DotConfig.load(from: currentConfiguration.appendingPathComponent("config.json"))
         XCTAssertEqual(config.provider, ProviderIdentifier.bridge, "the tombstone still decodes")
         let noKeys = CredentialProbe(hasKey: { _ in false })
-        XCTAssertTrue(ProviderMigration.apply(to: &config, probe: noKeys))
+        _ = ProviderMigration.retireDeadProviders(in: &config, probe: noKeys)
         XCTAssertEqual(config.provider, ProviderIdentifier.apple)
     }
 

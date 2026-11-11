@@ -82,6 +82,17 @@ public struct Hotkey: Codable, Sendable, Equatable, Hashable {
         label: "⌥⌘V"
     )
 
+    /// The default shortcut that opens the dictation palette: `⌃⌥V`.
+    ///
+    /// `⌥⌘V` is already the paste shortcut and `⌥⌘D` starts a recording, so the
+    /// palette takes the same letter as paste with the other modifier pair: the
+    /// two are both about a transcript that already exists.
+    public static let defaultPalette = Hotkey(
+        keyCode: 9, // kVK_ANSI_V
+        modifiers: HotkeyModifiers.mask(.control, .option),
+        label: "⌃⌥V"
+    )
+
     /// Whether the combination has one of the "strong" modifiers.
     public var hasStrongModifier: Bool {
         HotkeyModifiers.contains(modifiers, .command)
@@ -197,23 +208,25 @@ public enum HotkeyValidator {
         "B": 11, "Q": 12, "W": 13, "E": 14, "R": 15, "T": 16, "Y": 17,
         "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "=": 24, "9": 25,
         "7": 26, "-": 27, "8": 28, "0": 29, "]": 30, "O": 31, "U": 32, "[": 33,
-        "I": 34, "P": 35, "L": 36, "J": 37, "'": 38, "K": 39, ";": 40, "\\": 41,
-        ",": 42, "/": 43, "N": 45, "M": 46, ".": 47, "`": 50,
+        "I": 34, "P": 35, "L": 37, "J": 38, "'": 39, "K": 40, ";": 41, "\\": 42,
+        ",": 43, "/": 44, "N": 45, "M": 46, ".": 47, "`": 50,
     ]
 
     /// The named keys a shortcut can use.
     ///
-    /// The key codes are the Carbon virtual key codes. `Return` shares its
-    /// code with the letter `L` (`0x24`), so `L` wins the name: a shortcut on
-    /// that code is a shortcut on `L`.
+    /// The key codes are the Carbon virtual key codes (`kVK_ANSI_*`). Each
+    /// code names exactly one key: `36` is Return, `37` is L, and `50` is the
+    /// grave accent. The letters and punctuation from `36` up are the same US
+    /// ANSI layout as ``ansiKeyCodes``, so a label and an alias can never
+    /// disagree about which physical key a code means.
     static let namedKeys: [Int: String] = [
         0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X", 8: "C", 9: "V",
         11: "B", 12: "Q", 13: "W", 14: "E", 15: "R", 16: "Y", 17: "T",
         18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5", 24: "=", 25: "9",
         26: "7", 27: "-", 28: "8", 29: "0", 30: "]", 31: "O", 32: "U", 33: "[",
-        34: "I", 35: "P", 36: "L", 37: "J", 38: "'", 39: "K", 40: ";", 41: "\\",
-        42: ",", 43: "/", 44: "N", 45: "M", 46: ".", 47: "Tab", 48: "Space",
-        49: "`", 50: "Return", 51: "Delete", 53: "Esc",
+        34: "I", 35: "P", 36: "Return", 37: "L", 38: "J", 39: "'", 40: "K", 41: ";",
+        42: "\\", 43: ",", 44: "/", 45: "N", 46: "M", 47: ".", 48: "Tab",
+        49: "Space", 50: "`", 51: "Delete", 53: "Esc",
         65: "⌨.", 67: "⌨*", 69: "⌨+", 71: "⌨Clear", 75: "⌨/", 76: "⌨Enter", 78: "⌨-",
         81: "⌨=", 82: "⌨0", 83: "⌨1", 84: "⌨2", 85: "⌨3", 86: "⌨4", 87: "⌨5",
         88: "⌨6", 89: "⌨7", 91: "⌨8", 92: "⌨9",
@@ -244,7 +257,7 @@ public enum HotkeyValidator {
         add(12, command, "⌘Q")          // Quit
         add(13, command, "⌘W")          // Close window
         add(4, command, "⌘H")           // Hide
-        add(45, command, "⌘M")          // Minimise
+        add(46, command, "⌘M")          // Minimise
         add(50, command, "⌘`")          // Cycle windows
         add(53, command, "⌘Esc")
         add(53, option, "⌥Esc")
@@ -267,7 +280,7 @@ public enum HotkeyValidator {
         // Accessibility and the screen.
         add(3, command | control, "⌃⌘F")   // Full screen
         add(3, command | shift, "⌘⇧F")
-        add(43, command | shift, "⌘⇧/")     // Help
+        add(44, command | shift, "⌘⇧/")     // Help
         add(2, command | control, "⌃⌘D")    // Dictionary
         add(49, command | shift | control, "⌃⌘⇧Space")
         add(12, command | control | option | shift, "⌃⌥⌘⇧Q")
@@ -371,6 +384,20 @@ public final class GlobalHotkeyManager: @unchecked Sendable {
     public static let pasteIdentifier: UInt32 = 2
     /// The identifier the manager gives the ANSI alias of a hot key.
     public static let aliasIdentifier: UInt32 = 3
+    /// The identifier the manager gives the palette hot key.
+    public static let paletteIdentifier: UInt32 = 4
+
+    /// Every identifier Dot registers.
+    ///
+    /// A value that is not on this list is a key nothing answers: the handler
+    /// in the app switches on these constants, so a registration that used a
+    /// number of its own would be a key that silently does nothing.
+    public static let identifiers: Set<UInt32> = [
+        recordIdentifier,
+        pasteIdentifier,
+        aliasIdentifier,
+        paletteIdentifier,
+    ]
 
     /// Called with the identifier of the hot key that was pressed.
     public typealias Handler = @Sendable (UInt32) -> Void

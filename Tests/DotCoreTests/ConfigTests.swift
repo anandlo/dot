@@ -7,7 +7,7 @@ final class ConfigTests: XCTestCase {
 
     override func setUpWithError() throws {
         directory = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("ion-config-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("dot-config-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
@@ -39,19 +39,6 @@ final class ConfigTests: XCTestCase {
         XCTAssertNotEqual(
             Hotkey.defaultRecord,
             Hotkey(keyCode: 1, modifiers: HotkeyModifiers.mask(.option, .shift), label: "⌥⇧S")
-        )
-    }
-
-    func testAFreshInstallStartsOnTheHostedSetup() {
-        let config = DotConfig.firstRun()
-
-        XCTAssertEqual(config.provider, ProviderIdentifier.openAI)
-        XCTAssertEqual(
-            config.settings(for: ProviderIdentifier.openAI).baseURL,
-            "https://api.openai.com/v1"
-        )
-        XCTAssertNil(
-            config.settings(for: ProviderIdentifier.openAI).model
         )
     }
 
@@ -331,5 +318,50 @@ final class ConfigTests: XCTestCase {
         case .failure(let rejection):
             XCTFail("the default shortcut must be accepted: \(rejection)")
         }
+    }
+}
+
+extension ConfigTests {
+    /// One key Dot cannot read must not reset the file.
+    ///
+    /// The configuration is written by hand as often as by the app, and a
+    /// spelling no build knows used to throw out of the decoder: the endpoints,
+    /// the shortcuts and the microphone book all came back as the shipped
+    /// defaults, and the next save wrote them over the person's file.
+    func testOneBadEnumDoesNotResetTheWholeFile() throws {
+        let url = directory.appendingPathComponent("config.json")
+        try #"""
+        {
+          "provider": "deepgram",
+          "autoPaste": false,
+          "hudDwellSeconds": 9,
+          "hudMaterial": "velvet",
+          "appearance": "sepia",
+          "hudVisualizer": "zigzag",
+          "recordingMode": "somersault",
+          "providers": {
+            "deepgram": { "baseURL": "https://api.deepgram.com/v1", "authStyle": "Bearer" }
+          }
+        }
+        """#.write(to: url, atomically: true, encoding: .utf8)
+
+        let config = DotConfig.load(from: url)
+        XCTAssertEqual(config.provider, "deepgram", "the selected provider survived")
+        XCTAssertFalse(config.autoPaste, "an unrelated setting survived")
+        XCTAssertEqual(config.hudDwellSeconds, 9)
+        XCTAssertEqual(config.hudMaterial, .glass, "the bad value fell back on its own")
+        XCTAssertEqual(config.appearance, .system)
+        XCTAssertEqual(config.hudVisualizer, .stretch)
+        XCTAssertEqual(config.recordingMode, .toggle)
+        XCTAssertEqual(
+            config.settings(for: "deepgram").authStyle,
+            nil,
+            "a header style no build knows loads as the documented default"
+        )
+        XCTAssertEqual(
+            config.settings(for: "deepgram").baseURL,
+            "https://api.deepgram.com/v1",
+            "the endpoint survived the bad enum beside it"
+        )
     }
 }

@@ -6,15 +6,34 @@ import Foundation
 /// authenticates via `Ocp-Apim-Subscription-Key`, configures language, format, and profanity filtering via query
 /// parameters, and returns transcripts in simple or detailed JSON structures.
 ///
-/// Data is processed statelessly in memory with Zero Data Retention (ZDR) enabled by default.
+/// By default every request carries `storeAudio=false`, which asks the service
+/// not to keep the audio. It is a request in the query string, not a guarantee:
+/// what the service does with the audio is governed by its own retention policy.
 public struct AzureSpeechProvider: Provider {
     public let id: String = ProviderIdentifier.azure
     public let displayName: String = "Azure Speech"
 
     /// Default region for Azure Speech service.
     public static let defaultRegion = "eastus"
+    /// The endpoint of one region and recognition mode.
+    ///
+    /// Every request URL and the endpoint a preset advertises are built here, so
+    /// the host and the path cannot disagree between the two.
+    ///
+    /// - Parameters:
+    ///   - region: the datacenter region, e.g. `eastus`.
+    ///   - mode: the recognition mode, e.g. `conversation`.
+    /// - Returns: the REST endpoint, without query parameters.
+    public static func endpointURL(region: String, mode: String) -> URL {
+        URL(string: "https://\(region).stt.speech.microsoft.com/speech/recognition/\(mode)/cognitiveservices/v1")!
+    }
     /// Default recognition mode for conversational dialogue.
     public static let defaultRecognitionMode = "conversation"
+    /// The endpoint Dot ships: the default region in conversation mode.
+    public static let defaultBaseURL = endpointURL(
+        region: defaultRegion,
+        mode: defaultRecognitionMode
+    )
     /// Default profanity filtering mode: masked with asterisks.
     public static let defaultProfanityFilter = "masked"
     /// Default output format: detailed with capitalization and punctuation.
@@ -127,45 +146,34 @@ public struct AzureSpeechProvider: Provider {
     }
 
     /// Builds the endpoint URL for Azure Speech REST API.
+    ///
+    /// A stored endpoint keeps the query parameters it already carries; the one
+    /// built from the region gets the configured ones. Either way the request
+    /// carries `storeAudio=false` unless the configuration asked otherwise.
+    ///
+    /// - Parameter language: the language the request is recognised in.
+    /// - Returns: the URL to post the audio to.
     public func endpointURL(language: String?) -> URL {
-        let lang = Self.normalizedLanguage(language)
-        let effectiveStoreAudio = storeAudio ?? (zeroDataRetention ? false : nil)
-
-        if let baseURL {
-            guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
-                return baseURL
-            }
-            var items = components.queryItems ?? []
-            if !items.contains(where: { $0.name == "language" }) {
-                items.append(URLQueryItem(name: "language", value: lang))
-            }
-            if !items.contains(where: { $0.name == "format" }) {
-                items.append(URLQueryItem(name: "format", value: outputFormat))
-            }
-            if !items.contains(where: { $0.name == "profanity" }) {
-                items.append(URLQueryItem(name: "profanity", value: profanityFilter))
-            }
-            if let effectiveStoreAudio, !items.contains(where: { $0.name == "storeAudio" }) {
-                items.append(URLQueryItem(name: "storeAudio", value: effectiveStoreAudio ? "true" : "false"))
-            }
-            components.queryItems = items
-            return components.url ?? baseURL
+        let base = baseURL ?? Self.endpointURL(region: region, mode: recognitionMode)
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+            return base
         }
-
-        var components = URLComponents()
-        components.scheme = "https"
-        components.host = "\(region).stt.speech.microsoft.com"
-        components.path = "/speech/recognition/\(recognitionMode)/cognitiveservices/v1"
-        var queryItems = [
-            URLQueryItem(name: "language", value: lang),
-            URLQueryItem(name: "format", value: outputFormat),
-            URLQueryItem(name: "profanity", value: profanityFilter),
-        ]
-        if let effectiveStoreAudio {
-            queryItems.append(URLQueryItem(name: "storeAudio", value: effectiveStoreAudio ? "true" : "false"))
+        var items = components.queryItems ?? []
+        if !items.contains(where: { $0.name == "language" }) {
+            items.append(URLQueryItem(name: "language", value: Self.normalizedLanguage(language)))
         }
-        components.queryItems = queryItems
-        return components.url ?? URL(string: "https://\(region).stt.speech.microsoft.com/speech/recognition/\(recognitionMode)/cognitiveservices/v1?language=\(lang)&format=\(outputFormat)&profanity=\(profanityFilter)")!
+        if !items.contains(where: { $0.name == "format" }) {
+            items.append(URLQueryItem(name: "format", value: outputFormat))
+        }
+        if !items.contains(where: { $0.name == "profanity" }) {
+            items.append(URLQueryItem(name: "profanity", value: profanityFilter))
+        }
+        if let store = storeAudio ?? (zeroDataRetention ? false : nil),
+           !items.contains(where: { $0.name == "storeAudio" }) {
+            items.append(URLQueryItem(name: "storeAudio", value: store ? "true" : "false"))
+        }
+        components.queryItems = items
+        return components.url ?? base
     }
 
     /// Builds the `URLRequest` to post audio to Azure Speech.
@@ -193,15 +201,9 @@ public struct AzureSpeechProvider: Provider {
 
         let request = buildRequest(apiKey: apiKey, wav: wav, language: language)
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch let error as URLError {
-            throw ProviderError.transport(error.localizedDescription)
-        } catch {
-            throw ProviderError.transport(error.localizedDescription)
-        }
+        let answer = try await HTTPTransport.send(request, session: session)
+        let data = answer.data
+        let response = answer.response
 
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse("no HTTP status")
@@ -286,19 +288,18 @@ public struct AzureSpeechProvider: Provider {
     /// Extracts an error message from an Azure error response.
     public static func errorMessage(in data: Data) -> String? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            guard let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !text.isEmpty
-            else { return nil }
-            return text
+            // A proxy or a captive portal answers with a page, not a message:
+            // the head of it is the only part that can be read.
+            return ProviderErrorText.sanitized(String(data: data, encoding: .utf8))
         }
         if let message = (json["error"] as? [String: Any])?["message"] as? String {
-            return message
+            return ProviderErrorText.sanitized(message)
         }
         if let message = json["message"] as? String {
-            return message
+            return ProviderErrorText.sanitized(message)
         }
         if let message = json["DisplayText"] as? String {
-            return message
+            return ProviderErrorText.sanitized(message)
         }
         return nil
     }

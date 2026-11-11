@@ -13,6 +13,12 @@ public struct OpenAICompatibleProvider: Provider {
     public let id: String
     public let displayName: String = "OpenAI-compatible"
 
+    /// The endpoint of the hosted OpenAI API.
+    ///
+    /// It is the reference shape this provider implements, and the default the
+    /// OpenAI row and a fresh configuration both read.
+    public static let defaultBaseURL = URL(string: "https://api.openai.com/v1")!
+
     /// The base URL of the service, e.g. `https://api.openai.com/v1`.
     public let baseURL: URL
     /// The API key, when the service needs one.
@@ -107,14 +113,14 @@ public struct OpenAICompatibleProvider: Provider {
         if let apiKey, !apiKey.isEmpty {
             request.setValue(authStyle.value(for: apiKey), forHTTPHeaderField: authStyle.header)
         }
-        guard let (_, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse
+        guard let answer = try? await HTTPTransport.send(request, session: session),
+              let http = answer.response as? HTTPURLResponse
         else { return false }
         return (200..<300).contains(http.statusCode)
     }
 
     public func transcribe(wav: Data, model: String?, language: String?) async throws -> String {
-        let boundary = "ion-\(UUID().uuidString)"
+        let boundary = "dot-\(UUID().uuidString)"
         var body = Data()
         if let model, !model.isEmpty {
             body.appendMultipartField(name: "model", value: model, boundary: boundary)
@@ -165,15 +171,9 @@ public struct OpenAICompatibleProvider: Provider {
         request.timeoutInterval = timeout
         request.httpBody = body
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch let error as URLError {
-            throw ProviderError.transport(error.localizedDescription)
-        } catch {
-            throw ProviderError.transport(error.localizedDescription)
-        }
+        let answer = try await HTTPTransport.send(request, session: session)
+        let data = answer.data
+        let response = answer.response
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse("no HTTP status")
         }
@@ -190,8 +190,11 @@ public struct OpenAICompatibleProvider: Provider {
     // MARK: - Internals
 
     /// Whether a host name is the local machine.
+    ///
+    /// The rule lives in ``EndpointPolicy``, so the address Dot accepts and the
+    /// address this provider probes cannot disagree.
     static func isLoopback(_ host: String) -> Bool {
-        host == "127.0.0.1" || host == "localhost" || host == "::1" || host.hasPrefix("127.")
+        EndpointPolicy.isLoopback(host)
     }
 
     /// The transcript in a successful answer.
@@ -225,10 +228,10 @@ public struct OpenAICompatibleProvider: Provider {
         if let error = object["error"] as? [String: Any],
            let message = error["message"] as? String,
            !message.isEmpty {
-            return message
+            return ProviderErrorText.sanitized(message)
         }
         if let message = object["message"] as? String, !message.isEmpty {
-            return message
+            return ProviderErrorText.sanitized(message)
         }
         return nil
     }

@@ -31,16 +31,6 @@ public enum AudioLevel {
         return (total / Double(count)).squareRoot()
     }
 
-    /// The RMS in dBFS. Silence is negative infinity.
-    public static func rmsDBFS(samples: [Int16]) -> Double {
-        decibels(rms(samples: samples))
-    }
-
-    /// The RMS of raw PCM16 bytes in dBFS.
-    public static func rmsDBFS(pcm16: Data) -> Double {
-        decibels(rms(pcm16: pcm16))
-    }
-
     /// The loudest sample in dBFS.
     public static func peakDBFS(samples: [Int16]) -> Double {
         var peak = 0

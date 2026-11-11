@@ -97,19 +97,46 @@ public final class Resampler: @unchecked Sendable {
             throw ResamplerError.formatMismatch
         }
         for buffer in buffers {
-            let mono = Self.monoSamples(from: buffer)
-            guard !mono.isEmpty else { continue }
-            guard let monoBuffer = AVAudioPCMBuffer(
-                pcmFormat: monoFormat,
-                frameCapacity: AVAudioFrameCount(mono.count)
-            ), let channel = monoBuffer.floatChannelData?[0] else {
-                throw ResamplerError.conversionFailed("no buffer")
-            }
-            monoBuffer.frameLength = AVAudioFrameCount(mono.count)
-            channel.update(from: mono, count: mono.count)
-            pending.append(monoBuffer)
+            try enqueueLocked(Self.monoSamples(from: buffer))
         }
         return try run()
+    }
+
+    /// Converts one buffer that is already down-mixed.
+    ///
+    /// The audio tap mixes a buffer to mono to measure it. Handing those
+    /// samples straight here saves the second down-mix the callback used to
+    /// pay for on every buffer, and the allocation that came with it.
+    ///
+    /// - Parameters:
+    ///   - monoSamples: the mono mix of one buffer.
+    ///   - sampleRate: the rate the buffer was recorded at; it has to be the
+    ///     rate this converter was built for.
+    /// - Returns: the samples produced so far.
+    /// - Throws: ``ResamplerError/formatMismatch`` when the rate is not the
+    ///   one the converter expects.
+    public func convert(monoSamples: [Float], sampleRate: Double) throws -> [Int16] {
+        guard sampleRate == inputFormat.sampleRate else {
+            throw ResamplerError.formatMismatch
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        try enqueueLocked(monoSamples)
+        return try run()
+    }
+
+    /// Puts one mono buffer in line for the converter.
+    private func enqueueLocked(_ mono: [Float]) throws {
+        guard !mono.isEmpty else { return }
+        guard let monoBuffer = AVAudioPCMBuffer(
+            pcmFormat: monoFormat,
+            frameCapacity: AVAudioFrameCount(mono.count)
+        ), let channel = monoBuffer.floatChannelData?[0] else {
+            throw ResamplerError.conversionFailed("no buffer")
+        }
+        monoBuffer.frameLength = AVAudioFrameCount(mono.count)
+        channel.update(from: mono, count: mono.count)
+        pending.append(monoBuffer)
     }
 
     /// Ends the stream and returns the samples the converter was still holding.

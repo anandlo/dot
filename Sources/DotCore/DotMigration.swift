@@ -34,10 +34,10 @@ public enum DotMigration {
     /// The old default that marks the welcome as finished.
     public static let legacyWelcomedKey = "ion.welcomed"
 
-    /// The default that marks the welcome as finished today.
+    /// The default that marks the welcome as finished.
     public static let welcomedKey = "dot.welcomed"
 
-    /// The prefix environment variables use today.
+    /// The prefix environment variables are read under.
     public static let environmentPrefix = "DOT_"
 
     // MARK: - Environment
@@ -117,10 +117,10 @@ public enum DotMigration {
         )
     }
 
-    /// The folder the configuration and the history live in today.
+    /// The folder the configuration and the history live in.
     static let currentApplicationSupportPath = DotConfig.directoryName
 
-    /// The folder the log lives in today.
+    /// The folder the log lives in.
     static let currentLogPath = Log.directoryName
 
     /// Moves the log folder, then the log file inside it.

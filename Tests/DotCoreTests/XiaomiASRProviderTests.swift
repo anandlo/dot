@@ -202,7 +202,7 @@ final class XiaomiASRProviderTests: XCTestCase {
         let ready = await provider.isAvailable()
         XCTAssertTrue(ready)
         XCTAssertTrue(provider.requiresCredential)
-        XCTAssertEqual(provider.maxSegmentSeconds, 30)
+        XCTAssertEqual(provider.maxSegmentSeconds, 60)
 
         let withoutKey = XiaomiASRProvider()
         let unavailable = await withoutKey.isAvailable()

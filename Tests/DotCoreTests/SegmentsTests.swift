@@ -96,7 +96,6 @@ final class SegmentsTests: XCTestCase {
         XCTAssertTrue(provider.requests.isEmpty)
         XCTAssertTrue(report.isEmpty)
         XCTAssertEqual(report.total, 0)
-        XCTAssertEqual(report.summary, "Nothing was recorded.")
     }
 
     func testALongRecordingIsSplitAndSentInOrder() async throws {
@@ -136,7 +135,6 @@ final class SegmentsTests: XCTestCase {
         XCTAssertEqual(report.succeeded, 3)
         XCTAssertEqual(report.failed, 1)
         XCTAssertEqual(report.text, "one three four")
-        XCTAssertEqual(report.summary, "transcribed 3 of 4 segments (one failed)")
     }
 
     func testWhenEverySegmentFailsTheErrorIsThrown() async throws {

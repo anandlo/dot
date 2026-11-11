@@ -97,6 +97,11 @@ final class StopPathTests: XCTestCase {
     }
 
     /// The loop as it is now: commit every twelve seconds, preview the tail.
+    ///
+    /// The fixture models the live loop's schedule — a whole chunk is committed
+    /// as soon as one is open, and the tail is previewed after enough new audio
+    /// — because what this file measures is the *stop*, and the stop's cost is
+    /// decided by what the loop left committed.
     private func runAfter(samples: [Int16], provider: CountingProvider) async throws -> Run {
         var run = Run()
         var ledger = TranscriptLedger(commitSeconds: 12)
@@ -109,7 +114,8 @@ final class StopPathTests: XCTestCase {
             let elapsed = Double(arrived) / Double(rate)
             guard elapsed >= ticks else { continue }
             ticks += 1.4
-            if let chunk = ledger.dueChunk(sampleCount: arrived) {
+            let chunk = ledger.committedSamples..<(ledger.committedSamples + ledger.commitSamples)
+            if arrived >= chunk.upperBound {
                 _ = try await provider.transcribe(
                     wav: WAVWriter.encode(samples: Array(samples[chunk])),
                     model: nil,
@@ -118,8 +124,8 @@ final class StopPathTests: XCTestCase {
                 ledger.commit(range: chunk, text: "chunk \(ledger.committedText.count + 1)")
                 run.liveRequests += 1
                 run.liveSamples += chunk.count
-            } else if ledger.shouldSendProvisional(sampleCount: arrived, minimumGrowth: growth),
-                      let range = ledger.provisionalRange(sampleCount: arrived) {
+            } else if arrived - (ledger.provisional?.endSample ?? ledger.committedSamples) >= growth {
+                let range = ledger.committedSamples..<arrived
                 _ = try await provider.transcribe(
                     wav: WAVWriter.encode(samples: Array(samples[range])),
                     model: nil,

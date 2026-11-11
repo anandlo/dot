@@ -42,7 +42,7 @@ final class StubServer: @unchecked Sendable {
     }
 
     private let listener: NWListener
-    private let queue = DispatchQueue(label: "ion.stub.server")
+    private let queue = DispatchQueue(label: "dot.stub.server")
     private let lock = NSLock()
     private var responses: [Response] = []
     private var received: [Received] = []

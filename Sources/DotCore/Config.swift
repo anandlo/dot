@@ -55,6 +55,34 @@ public enum HUDVisualizer: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// How the record shortcut starts and ends a recording.
+///
+/// The two interactions are one setting apart: the shortcut, the watcher and
+/// the card are the same in both. What changes is which edge of the key ends
+/// the recording — the next press, or the release.
+public enum RecordingMode: String, Codable, Sendable, CaseIterable {
+    /// Press to start, press again to stop. The default.
+    case toggle
+    /// Press and hold while speaking; the release stops the recording.
+    case hold
+
+    /// The human-readable name of the mode.
+    public var title: String {
+        switch self {
+        case .toggle: "Press twice"
+        case .hold: "Hold"
+        }
+    }
+
+    /// The line that states the interaction plainly.
+    public var detail: String {
+        switch self {
+        case .toggle: "Press the shortcut to start, and press it again to stop."
+        case .hold: "Hold the shortcut while you speak, and let go to stop."
+        }
+    }
+}
+
 /// How a service expects its key on a request.
 ///
 /// The two spellings cover the OpenAI-compatible services Dot can reach: most
@@ -253,7 +281,10 @@ public struct ProviderConfig: Codable, Sendable, Equatable {
         self.model = try container.decodeIfPresent(String.self, forKey: .model)
         self.baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL)
         self.language = try container.decodeIfPresent(String.self, forKey: .language)
-        self.authStyle = try container.decodeIfPresent(AuthStyle.self, forKey: .authStyle)
+        // The header style is the file's only enum-valued key. Reading it the
+        // tolerant way keeps a hand-edited spelling from resetting every other
+        // setting in the file.
+        self.authStyle = (try? container.decodeIfPresent(AuthStyle.self, forKey: .authStyle)) ?? nil
         self.smartFormat = try container.decodeIfPresent(Bool.self, forKey: .smartFormat)
         self.punctuate = try container.decodeIfPresent(Bool.self, forKey: .punctuate)
         self.paragraphs = try container.decodeIfPresent(Bool.self, forKey: .paragraphs)
@@ -329,6 +360,8 @@ public struct DotConfig: Codable, Sendable, Equatable {
     public var hotkey: Hotkey
     /// The shortcut that pastes the last transcript again.
     public var pasteHotkey: Hotkey
+    /// The shortcut that opens the dictation palette.
+    public var paletteHotkey: Hotkey
     /// Whether the transcript is pasted into the frontmost application.
     public var autoPaste: Bool
     /// Whether single-clicking the menu bar icon starts or stops recording.
@@ -344,7 +377,9 @@ public struct DotConfig: Codable, Sendable, Equatable {
     public var hudDwellRevision: Int
     /// The longest segment that is sent in one request, in seconds.
     ///
-    /// `0` means "use the provider's own capability".
+    /// `0` means "use the provider's own capability"; a value above zero caps
+    /// every provider at once. The request never carries more than the smaller
+    /// of this value and the provider's capability.
     public var maxSegmentSeconds: Int
     /// The microphone to use; `nil` means the system default input.
     public var microphoneDeviceUID: String?
@@ -356,6 +391,24 @@ public struct DotConfig: Codable, Sendable, Equatable {
     public var appearance: AppearanceMode
     /// What visualizer the HUD island uses to draw incoming audio.
     public var hudVisualizer: HUDVisualizer
+    /// How the record shortcut starts and ends a recording.
+    public var recordingMode: RecordingMode
+    /// Whether a transcript is rewritten for the app it is going into.
+    ///
+    /// Off by default. A rewrite changes the words that are inserted, so it is
+    /// opt-in and it is announced on the card whenever it runs.
+    public var outputGrammarEnabled: Bool
+    /// The target the person chose for one app, keyed by bundle identifier.
+    ///
+    /// An empty row means the table decides, which is why an override is a
+    /// dictionary of exceptions rather than a list of every app.
+    public var outputGrammarTargets: [String: DictationTarget]
+    /// What Dot learned about each microphone, keyed by its CoreAudio UID.
+    ///
+    /// The level meter and the level scale read it; the audio that is sent to a
+    /// provider never does. An empty book is the shipped state, and a device
+    /// with no entry is drawn on the fixed window.
+    public var microphoneCalibration: [String: MicrophoneCalibration]
 
     /// The configuration Dot starts with.
     public static let `default` = DotConfig(
@@ -363,6 +416,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         providers: DotConfig.defaultProviders,
         hotkey: .defaultRecord,
         pasteHotkey: .defaultPaste,
+        paletteHotkey: .defaultPalette,
         autoPaste: true,
         fastRecord: false,
         hudDwellSeconds: HUDDwell.defaultSeconds,
@@ -372,44 +426,48 @@ public struct DotConfig: Codable, Sendable, Equatable {
         logTranscripts: false,
         hudMaterial: .glass,
         appearance: .system,
-        hudVisualizer: .stretch
+        hudVisualizer: .stretch,
+        recordingMode: .toggle,
+        outputGrammarEnabled: false,
+        outputGrammarTargets: [:],
+        microphoneCalibration: [:]
     )
 
     /// The settings the providers start with.
     ///
-    /// The initial settings for each provider.
-    ///
-    /// Model selections are not hardcoded: available models are discovered
-    /// dynamically when an API key is connected.
+    /// Each endpoint is read from the provider that calls it, so there is one
+    /// definition of every base URL in the module. A model is left empty on
+    /// purpose: the list a provider offers is read from its own API once a key
+    /// is stored, and the provider's `defaultModel` is used until then.
     public static let defaultProviders: [String: ProviderConfig] = [
         ProviderIdentifier.openAI: ProviderConfig(
-            baseURL: "https://api.openai.com/v1",
+            baseURL: OpenAICompatibleProvider.defaultBaseURL.absoluteString,
             zeroDataRetention: true
         ),
         ProviderIdentifier.groq: ProviderConfig(
-            baseURL: "https://api.groq.com/openai/v1",
+            baseURL: GroqProvider.defaultBaseURL.absoluteString,
             zeroDataRetention: true,
             temperature: 0.0,
             responseFormat: "json"
         ),
         ProviderIdentifier.azure: ProviderConfig(
-            baseURL: "https://eastus.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1",
-            azureRegion: "eastus",
-            azureRecognitionMode: "conversation",
-            azureProfanityFilter: "masked",
-            azureOutputFormat: "detailed",
+            baseURL: AzureSpeechProvider.defaultBaseURL.absoluteString,
+            azureRegion: AzureSpeechProvider.defaultRegion,
+            azureRecognitionMode: AzureSpeechProvider.defaultRecognitionMode,
+            azureProfanityFilter: AzureSpeechProvider.defaultProfanityFilter,
+            azureOutputFormat: AzureSpeechProvider.defaultOutputFormat,
             zeroDataRetention: true
         ),
         ProviderIdentifier.deepgram: ProviderConfig(
-            baseURL: "https://api.deepgram.com/v1",
+            baseURL: DeepgramProvider.defaultBaseURL.absoluteString,
             zeroDataRetention: true
         ),
         ProviderIdentifier.elevenLabs: ProviderConfig(
-            baseURL: "https://api.elevenlabs.io/v1",
+            baseURL: ElevenLabsProvider.defaultBaseURL.absoluteString,
             zeroDataRetention: true
         ),
         ProviderIdentifier.xiaomi: ProviderConfig(
-            baseURL: "https://api.xiaomimimo.com/v1",
+            baseURL: XiaomiASRProvider.defaultBaseURL.absoluteString,
             zeroDataRetention: true
         ),
         ProviderIdentifier.apple: ProviderConfig(),
@@ -421,6 +479,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         providers: [String: ProviderConfig] = DotConfig.defaultProviders,
         hotkey: Hotkey = .defaultRecord,
         pasteHotkey: Hotkey = .defaultPaste,
+        paletteHotkey: Hotkey = .defaultPalette,
         autoPaste: Bool = true,
         fastRecord: Bool = false,
         hudDwellSeconds: Double = HUDDwell.defaultSeconds,
@@ -430,12 +489,17 @@ public struct DotConfig: Codable, Sendable, Equatable {
         logTranscripts: Bool = false,
         hudMaterial: HUDMaterial = .glass,
         appearance: AppearanceMode = .system,
-        hudVisualizer: HUDVisualizer = .stretch
+        hudVisualizer: HUDVisualizer = .stretch,
+        recordingMode: RecordingMode = .toggle,
+        outputGrammarEnabled: Bool = false,
+        outputGrammarTargets: [String: DictationTarget] = [:],
+        microphoneCalibration: [String: MicrophoneCalibration] = [:]
     ) {
         self.provider = provider
         self.providers = providers
         self.hotkey = hotkey
         self.pasteHotkey = pasteHotkey
+        self.paletteHotkey = paletteHotkey
         self.autoPaste = autoPaste
         self.fastRecord = fastRecord
         self.hudDwellSeconds = hudDwellSeconds
@@ -446,6 +510,10 @@ public struct DotConfig: Codable, Sendable, Equatable {
         self.hudMaterial = hudMaterial
         self.appearance = appearance
         self.hudVisualizer = hudVisualizer
+        self.recordingMode = recordingMode
+        self.outputGrammarEnabled = outputGrammarEnabled
+        self.outputGrammarTargets = outputGrammarTargets
+        self.microphoneCalibration = microphoneCalibration
     }
 
     /// The folder the configuration lives in, relative to the home directory.
@@ -465,6 +533,17 @@ public struct DotConfig: Codable, Sendable, Equatable {
         directoryURL().appendingPathComponent("config.json")
     }
 
+    /// The target a transcript for `bundleIdentifier` is written for.
+    ///
+    /// - Parameter bundleIdentifier: the app that was frontmost when the
+    ///   recording started.
+    public func dictationTarget(for bundleIdentifier: String?) -> DictationTarget {
+        DictationTarget.resolved(
+            bundleIdentifier: bundleIdentifier,
+            overrides: outputGrammarTargets
+        )
+    }
+
     /// The settings of one provider, or the defaults for it.
     public func settings(for providerID: String) -> ProviderConfig {
         providers[providerID] ?? DotConfig.defaultProviders[providerID] ?? ProviderConfig()
@@ -482,6 +561,9 @@ public struct DotConfig: Codable, Sendable, Equatable {
     /// anything builds a provider from it.
     public static func load(from url: URL = defaultURL()) -> DotConfig {
         guard let data = try? Data(contentsOf: url) else { return .default }
+        // A file an older build wrote is still `0644`, and it names every
+        // endpoint the app talks to. Reading it is the moment to restrict it.
+        SecureFile.tighten(url)
         do {
             return try JSONDecoder().decode(DotConfig.self, from: data)
         } catch {
@@ -493,14 +575,6 @@ public struct DotConfig: Codable, Sendable, Equatable {
         }
     }
 
-    /// The configuration a Mac without a saved configuration starts with.
-    ///
-    /// Everyone starts on the OpenAI-compatible provider, where one pasted key
-    /// is enough to begin.
-    public static func firstRun() -> DotConfig {
-        .default
-    }
-
     /// Writes the configuration.
     ///
     /// - Throws: ``ConfigError/retiredProvider(_:)`` when the selected provider
@@ -508,18 +582,16 @@ public struct DotConfig: Codable, Sendable, Equatable {
     ///   builds, so an id that cannot be built must never reach it; the launch
     ///   correction runs before the first save, so this refusal only fires on a
     ///   bug.
+    /// The file is written `0600` in a folder that is `0700`: the endpoint of
+    /// every configured service is in it, and so is the microphone book.
     public func save(to url: URL = defaultURL()) throws {
         guard ProviderRegistry.knows(provider) else {
             throw ConfigError.retiredProvider(provider)
         }
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(self)
-        try data.write(to: url, options: .atomic)
+        try SecureFile.write(data, to: url)
     }
 }
 
@@ -546,6 +618,8 @@ extension DotConfig {
             ?? fallback.providers
         self.hotkey = try container.decodeIfPresent(Hotkey.self, forKey: .hotkey) ?? fallback.hotkey
         self.pasteHotkey = try container.decodeIfPresent(Hotkey.self, forKey: .pasteHotkey) ?? fallback.pasteHotkey
+        self.paletteHotkey = try container.decodeIfPresent(Hotkey.self, forKey: .paletteHotkey)
+            ?? fallback.paletteHotkey
         self.autoPaste = try container.decodeIfPresent(Bool.self, forKey: .autoPaste) ?? fallback.autoPaste
         self.fastRecord = try container.decodeIfPresent(Bool.self, forKey: .fastRecord) ?? fallback.fastRecord
         self.hudDwellSeconds = try container.decodeIfPresent(Double.self, forKey: .hudDwellSeconds)
@@ -557,12 +631,44 @@ extension DotConfig {
             ?? fallback.maxSegmentSeconds
         self.microphoneDeviceUID = try container.decodeIfPresent(String.self, forKey: .microphoneDeviceUID)
         self.logTranscripts = try container.decodeIfPresent(Bool.self, forKey: .logTranscripts) ?? fallback.logTranscripts
-        self.hudMaterial = try container.decodeIfPresent(HUDMaterial.self, forKey: .hudMaterial)
-            ?? fallback.hudMaterial
-        self.appearance = try container.decodeIfPresent(AppearanceMode.self, forKey: .appearance)
-            ?? fallback.appearance
-        self.hudVisualizer = try container.decodeIfPresent(HUDVisualizer.self, forKey: .hudVisualizer)
-            ?? fallback.hudVisualizer
+        // The three appearance choices are enum valued. A hand-edited file can
+        // name one no build knows, and a decoding that throws here would take
+        // the whole file with it: the endpoints, the shortcuts and the
+        // microphone book would all come back as the shipped defaults. A value
+        // that does not decode loads as the default for its own field.
+        let storedMaterial = (try? container.decodeIfPresent(HUDMaterial.self, forKey: .hudMaterial)) ?? nil
+        self.hudMaterial = storedMaterial ?? fallback.hudMaterial
+        let storedAppearance = (try? container.decodeIfPresent(AppearanceMode.self, forKey: .appearance)) ?? nil
+        self.appearance = storedAppearance ?? fallback.appearance
+        let storedVisualizer = (try? container.decodeIfPresent(HUDVisualizer.self, forKey: .hudVisualizer)) ?? nil
+        self.hudVisualizer = storedVisualizer ?? fallback.hudVisualizer
+        // A file written before the interaction was a setting has no field, and
+        // a hand-edited one may name a mode no build knows: both load as the
+        // default instead of failing the whole configuration.
+        let storedMode = (try? container.decodeIfPresent(
+            RecordingMode.self,
+            forKey: .recordingMode
+        )) ?? nil
+        self.recordingMode = storedMode ?? fallback.recordingMode
+        self.outputGrammarEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .outputGrammarEnabled
+        ) ?? fallback.outputGrammarEnabled
+        // An unknown target name in a hand-edited file drops that one row
+        // instead of failing the whole file.
+        let storedOverrides = try? container.decodeIfPresent(
+            [String: DictationTarget].self,
+            forKey: .outputGrammarTargets
+        )
+        self.outputGrammarTargets = DictationTarget.normalizedOverrides(storedOverrides ?? nil ?? [:])
+        // A file written before the book existed has no field, and a hand-edited
+        // one may hold values no microphone could produce: both load, and only
+        // what can be drawn is kept.
+        let storedBook = try? container.decodeIfPresent(
+            [String: MicrophoneCalibration].self,
+            forKey: .microphoneCalibration
+        )
+        self.microphoneCalibration = MicrophoneCalibrationBook.sanitized(storedBook ?? nil ?? [:])
     }
 }
 

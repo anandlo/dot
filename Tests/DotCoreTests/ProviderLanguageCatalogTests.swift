@@ -48,6 +48,29 @@ final class ProviderLanguageCatalogTests: XCTestCase {
         XCTAssertTrue(languages.contains(where: { $0.id == "en" }))
     }
 
+    /// The provider sends a hint only for the tags it can name, so the menu must
+    /// not offer a language the model will never be asked for.
+    func testXiaomiOffersOnlyTheLanguagesTheProviderNames() {
+        let offered = ProviderLanguageCatalog.xiaomiLanguages.map(\.id).filter { $0 != "auto" }
+        XCTAssertEqual(offered.sorted(), ["en", "zh"])
+        for tag in offered {
+            XCTAssertEqual(
+                XiaomiASRProvider.asrLanguage(tag, system: nil),
+                tag,
+                "\(tag) is offered but the provider does not name it"
+            )
+        }
+    }
+
+    /// A tag the provider cannot name is never offered, so switching a stored
+    /// Cantonese setting to Xiaomi resolves to a language it does honour.
+    func testAStoredCantoneseSettingFallsBackForXiaomi() {
+        XCTAssertEqual(
+            ProviderLanguageCatalog.validatedLanguage("yue", for: ProviderIdentifier.xiaomi, model: nil),
+            "auto"
+        )
+    }
+
     func testAppleLanguagesDynamicLocales() {
         let languages = ProviderLanguageCatalog.languages(for: ProviderIdentifier.apple, model: nil)
         XCTAssertGreaterThan(languages.count, 1)

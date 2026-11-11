@@ -125,18 +125,6 @@ public enum WAVWriter {
         return data
     }
 
-    /// Wraps raw little-endian PCM16 samples in the canonical header.
-    ///
-    /// An odd number of bytes is truncated, because the container holds whole
-    /// 16-bit samples.
-    public static func encode(pcm16: Data) -> Data {
-        var samples = pcm16
-        if samples.count % 2 != 0 { samples.removeLast() }
-        var out = header(dataLength: samples.count)
-        out.append(samples)
-        return out
-    }
-
     /// Wraps signed 16-bit samples in the canonical header.
     ///
     /// The bytes are written into one buffer and appended in one go: the

@@ -18,13 +18,6 @@ import Foundation
 /// lands on that service because the key is there, not because the code
 /// expected it.
 public enum ProviderMigration {
-    /// The providers a configuration may select.
-    ///
-    /// Derived from ``ProviderRegistry/builtInIDs`` on purpose: a second
-    /// hand-kept list drifts, and the drift is exactly how a configuration ends
-    /// up naming a provider nothing can build.
-    public static var knownProviderIDs: Set<String> { Set(ProviderRegistry.builtInIDs) }
-
     /// What the launch correction found and did.
     public struct Correction: Equatable, Sendable {
         /// The selected provider id the configuration named that Dot cannot
@@ -101,8 +94,14 @@ public enum ProviderMigration {
     /// field: ``ProviderRegistry`` refuses to build the provider, so a Mac that
     /// names OpenAI has no provider at all and every press does nothing. The
     /// endpoint written in is the preset's own, so nothing is guessed, and only
-    /// a row that names a service is touched: a custom endpoint is the user's
-    /// own URL and an empty one there means they have not typed it yet.
+    /// a row that declares one is touched: a custom endpoint is the user's own
+    /// URL and an empty one there means they have not typed it yet, and the
+    /// on-device transcriber has no endpoint at all.
+    ///
+    /// The row is looked up by *provider* id. A row's own id is not the id the
+    /// configuration stores — Apple's row is `on-device` and the custom row
+    /// shares `openai` with OpenAI's — so a lookup by row id would silently skip
+    /// the providers whose two ids differ.
     ///
     /// - Parameter config: the configuration to repair.
     /// - Returns: the providers whose endpoint was written, sorted.
@@ -113,7 +112,7 @@ public enum ProviderMigration {
             let endpointIsMissing = settings.baseURL?
                 .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
             guard endpointIsMissing,
-                  let preset = ProviderPreset.preset(id: id),
+                  let preset = ProviderPreset.endpoint(forProviderID: id),
                   let endpoint = preset.baseURL,
                   !endpoint.isEmpty
             else { continue }
@@ -213,22 +212,6 @@ public enum ProviderMigration {
         return true
     }
 
-    /// Rewrites a provider Dot cannot build.
-    ///
-    /// - Parameters:
-    ///   - config: the configuration to update.
-    ///   - probe: the Keychain seam.
-    /// - Returns: whether the configuration changed and has to be saved.
-    @discardableResult
-    public static func apply(
-        to config: inout DotConfig,
-        probe: CredentialProbe = CredentialProbe()
-    ) -> Bool {
-        guard !ProviderRegistry.knows(config.provider) else { return false }
-        _ = selectBestAvailable(in: &config, probe: probe)
-        return true
-    }
-
     // MARK: - The choice
 
     /// Selects the best provider that is usable right now.
@@ -261,8 +244,9 @@ public enum ProviderMigration {
 
     /// The provider ids that refuse requests without a key, in registry order.
     ///
-    /// The rows that are not offered count too: a key that exists still says
-    /// which service to use, and a configuration that lands on one of them is
+    /// The declared rows are read rather than the offered ones: a key that
+    /// exists still says which service to use, even for a provider the picker
+    /// no longer draws, and a configuration that lands on one of those is
     /// presented as the custom endpoint it already is.
     private static var keyedProviderIDs: [String] {
         ProviderRegistry.builtInIDs.filter { id in

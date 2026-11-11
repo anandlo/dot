@@ -132,3 +132,52 @@ final class ResamplerTests: XCTestCase {
         }
     }
 }
+
+extension ResamplerTests {
+    /// The tap already has the down-mixed buffer, so the converter takes it
+    /// instead of mixing the same audio a second time.
+    func testTheMonoOverloadProducesTheSameSamplesAsTheBuffer() throws {
+        let format = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let mono = sine(frames: 4_800, sampleRate: 48_000)
+
+        func throughBuffer() throws -> [Int16] {
+            let resampler = try Resampler(inputFormat: format)
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_800))
+            buffer.frameLength = 4_800
+            buffer.floatChannelData?[0].update(from: mono, count: 4_800)
+            var out = try resampler.convert(buffer)
+            out.append(contentsOf: try resampler.flush())
+            return out
+        }
+
+        func throughMono() throws -> [Int16] {
+            let resampler = try Resampler(inputFormat: format)
+            var out = try resampler.convert(monoSamples: mono, sampleRate: 48_000)
+            out.append(contentsOf: try resampler.flush())
+            return out
+        }
+
+        let expected = try throughBuffer()
+        let actual = try throughMono()
+        XCTAssertEqual(actual.count, expected.count)
+        XCTAssertEqual(actual, expected)
+    }
+
+    func testTheMonoOverloadRefusesTheWrongRate() throws {
+        let format = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let resampler = try Resampler(inputFormat: format)
+        XCTAssertThrowsError(try resampler.convert(monoSamples: [0.1, 0.2], sampleRate: 44_100)) { error in
+            XCTAssertEqual(error as? ResamplerError, .formatMismatch)
+        }
+    }
+}

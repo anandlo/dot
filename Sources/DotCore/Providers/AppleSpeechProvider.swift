@@ -127,18 +127,26 @@ public struct AppleSpeechProvider: Provider {
 }
 
 /// Collects the transcript while the analysis runs.
-private actor TranscriptCollector {
-    private var buffer = ""
+///
+/// `SpeechTranscriber.results` yields one result per finished segment, not one
+/// for the whole recording, so every result has to be appended and not
+/// overwritten. The fragments are joined with a single space, and empty ones
+/// are dropped, so a long dictation reads as one sentence instead of running
+/// its words together or leaving a double space where a silent segment sat.
+actor TranscriptCollector {
+    private var fragments: [String] = []
     private var error: Error?
 
     func add(_ text: String) {
-        buffer = text
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        fragments.append(trimmed)
     }
 
     func fail(_ error: Error) {
         self.error = error
     }
 
-    var text: String { buffer }
+    var text: String { TranscriptLedger.join(fragments) }
     var failure: Error? { error }
 }

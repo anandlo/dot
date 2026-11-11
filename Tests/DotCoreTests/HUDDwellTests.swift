@@ -7,7 +7,6 @@ final class HUDDwellTests: XCTestCase {
     func testTheTranscriptStaysForTenSeconds() {
         XCTAssertEqual(HUDDwell.defaultSeconds, 10)
         XCTAssertEqual(DotConfig.default.hudDwellSeconds, 10)
-        XCTAssertEqual(DotConfig.firstRun().hudDwellSeconds, 10)
         XCTAssertEqual(DotConfig.default.hudDwellRevision, HUDDwell.revision)
 
         // The slider has to be able to reach the dwell the card starts with,

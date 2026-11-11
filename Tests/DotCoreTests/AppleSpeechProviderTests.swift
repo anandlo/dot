@@ -81,4 +81,41 @@ final class AppleSpeechProviderTests: XCTestCase {
     func testTheProviderNeedsNoKey() {
         XCTAssertFalse(AppleSpeechProvider().requiresCredential)
     }
+
+    /// The transcriber answers with one result per segment. Every one of them
+    /// has to reach the transcript, and the joins must not double a space or
+    /// run two words together.
+    func testEveryResultReachesTheTranscript() async {
+        let collector = TranscriptCollector()
+        await collector.add("The first segment.")
+        await collector.add(" The second one.")
+        await collector.add("Third.")
+        let text = await collector.text
+        XCTAssertEqual(text, "The first segment. The second one. Third.")
+    }
+
+    func testAnEmptyResultAddsNoSpace() async {
+        let collector = TranscriptCollector()
+        await collector.add("One.")
+        await collector.add("")
+        await collector.add("   \n ")
+        await collector.add("Two.")
+        let text = await collector.text
+        XCTAssertEqual(text, "One. Two.")
+    }
+
+    func testACollectorWithNoResultIsEmpty() async {
+        let collector = TranscriptCollector()
+        let text = await collector.text
+        XCTAssertEqual(text, "")
+        let failure = await collector.failure
+        XCTAssertNil(failure)
+    }
+
+    func testTheCollectorKeepsTheFirstFailure() async {
+        let collector = TranscriptCollector()
+        await collector.fail(ProviderError.noSpeech)
+        let failure = await collector.failure
+        XCTAssertEqual(failure as? ProviderError, .noSpeech)
+    }
 }

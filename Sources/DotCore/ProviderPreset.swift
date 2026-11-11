@@ -7,16 +7,20 @@ import Foundation
 /// pure data: nothing here reads the Keychain, the network or a file, so the
 /// same rules run in Settings, in the welcome, in the menu and in a test.
 ///
+/// The base URL of a service is declared once, on the provider type that calls
+/// it, and read from there. A second copy here would be a copy that could drift
+/// from the endpoint the request is actually posted to.
+///
 /// The list is what makes Dot agnostic. Every service is one row with the same
 /// shape, and nothing outside this file decides which service a row means; the
 /// views draw the rows and never name a service.
 ///
-/// A row may exist without being offered. ``ProviderPreset/xiaomi`` is the one
-/// such row: configurations written by an earlier build still select its
-/// provider id, so the id, the endpoint and the key requirement have to keep
-/// decoding, but the picker does not draw it. A configuration that selects it
-/// is presented as a custom endpoint by ``ProviderPreset/presenting(_:)`` — a
-/// stored endpoint the user owns, not a service Dot recommends.
+/// Every row this file declares is offered: a service that ships is a service a
+/// person can pick. ``ProviderPreset/isOffered`` still exists for the one case
+/// that needs it — a row kept so that a configuration written by an earlier
+/// build keeps decoding after the picker stops drawing it — and a configuration
+/// that selects such a provider is presented by ``ProviderPreset/presenting(_:)``
+/// as the endpoint the user already owns, never dropped.
 public struct ProviderPreset: Identifiable, Equatable, Sendable {
     /// What a row needs before it can transcribe.
     public enum KeyRequirement: String, Codable, Sendable, CaseIterable {
@@ -50,9 +54,10 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
     public let hasEndpoint: Bool
     /// Whether the picker draws the row.
     ///
-    /// A row that is not offered still describes a provider id Dot can build,
-    /// because a configuration written before the row was retired selects it.
-    /// Only the presence in the picker goes.
+    /// Every declared row is offered today. A row that is not offered still
+    /// describes a provider id Dot can build, because a configuration written by
+    /// an earlier build may select it; only its presence in the picker goes, and
+    /// ``ProviderPreset/declared`` still carries it.
     public let isOffered: Bool
 
     /// Creates a preset.
@@ -99,7 +104,7 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
         name: "Azure Speech",
         symbol: "cloud.fill",
         providerID: ProviderIdentifier.azure,
-        baseURL: "https://eastus.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1",
+        baseURL: AzureSpeechProvider.defaultBaseURL.absoluteString,
         model: nil,
         key: .required,
         hasEndpoint: true,
@@ -125,7 +130,7 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
         name: "Deepgram",
         symbol: "waveform.path.ecg",
         providerID: ProviderIdentifier.deepgram,
-        baseURL: "https://api.deepgram.com/v1",
+        baseURL: DeepgramProvider.defaultBaseURL.absoluteString,
         model: nil,
         key: .required,
         hasEndpoint: true,
@@ -138,7 +143,7 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
         name: "ElevenLabs",
         symbol: "waveform.circle.fill",
         providerID: ProviderIdentifier.elevenLabs,
-        baseURL: "https://api.elevenlabs.io/v1",
+        baseURL: ElevenLabsProvider.defaultBaseURL.absoluteString,
         model: nil,
         key: .required,
         hasEndpoint: true,
@@ -151,7 +156,7 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
         name: "Groq",
         symbol: "bolt.fill",
         providerID: ProviderIdentifier.groq,
-        baseURL: "https://api.groq.com/openai/v1",
+        baseURL: GroqProvider.defaultBaseURL.absoluteString,
         model: nil,
         key: .required,
         hasEndpoint: true,
@@ -164,7 +169,7 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
         name: "OpenAI",
         symbol: "cloud",
         providerID: ProviderIdentifier.openAI,
-        baseURL: "https://api.openai.com/v1",
+        baseURL: OpenAICompatibleProvider.defaultBaseURL.absoluteString,
         model: nil,
         key: .required
     )
@@ -177,7 +182,7 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
         name: "Xiaomi ASR",
         symbol: "waveform.badge.mic",
         providerID: ProviderIdentifier.xiaomi,
-        baseURL: "https://api.xiaomimimo.com/v1",
+        baseURL: XiaomiASRProvider.defaultBaseURL.absoluteString,
         model: "mimo-v2.5-asr",
         key: .required,
         hasEndpoint: true,
@@ -187,8 +192,9 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
     /// Every row this file declares, offered or not.
     ///
     /// This is the list a guard test scans and the list the provider migration
-    /// consults: a key that exists for a retired-from-the-picker provider still
-    /// says which service to use, even though no row draws it.
+    /// consults. It is deliberately not filtered by ``isOffered``: a provider a
+    /// configuration can still select needs its endpoint, its key requirement
+    /// and its name whether or not the picker draws it.
     public static let declared: [ProviderPreset] = [.apple, .azure, .custom, .deepgram, .elevenLabs, .groq, .openAI, .xiaomi]
 
     /// The rows the picker draws, in the order Settings, the welcome and the
@@ -199,8 +205,41 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
     public static let all: [ProviderPreset] = declared.filter(\.isOffered)
 
     /// The row with an id, when there is one.
+    ///
+    /// The id is the row's own — `on-device` for Apple, `custom` for the
+    /// endpoint the user fills in — and not the provider id the row writes into
+    /// the configuration. Two rows can share a provider id, so a caller that
+    /// holds a provider id wants ``endpoint(forProviderID:)`` instead.
     public static func preset(id: String) -> ProviderPreset? {
         all.first { $0.id == id }
+    }
+
+    /// The first row that declares a provider id.
+    ///
+    /// The lookup is by provider id because that is what a configuration
+    /// stores. Several rows can share one — Apple's row is `on-device`, and
+    /// every OpenAI-shaped service writes `openai` — so this answers with the
+    /// first declared row and the caller decides whether it carries what it
+    /// needs.
+    ///
+    /// - Parameter id: the provider id, e.g. `apple` or `openai`.
+    /// - Returns: the first declared row with that provider id, or `nil`.
+    public static func row(forProviderID id: String) -> ProviderPreset? {
+        declared.first { $0.providerID == id }
+    }
+
+    /// The row that declares the endpoint a provider id calls.
+    ///
+    /// Only a row with a base URL qualifies: the custom row carries none of its
+    /// own, so a provider id that several rows share still answers with the
+    /// endpoint Dot ships rather than with the user's empty field.
+    ///
+    /// - Parameter id: the provider id, e.g. `groq` or `openai`.
+    /// - Returns: the row that declares the endpoint, or `nil` when the
+    ///   provider has none to declare — the on-device transcriber needs no
+    ///   network, and the custom row is the user's own URL.
+    public static func endpoint(forProviderID id: String) -> ProviderPreset? {
+        declared.first { $0.providerID == id && $0.baseURL != nil }
     }
 
     /// The row the picker shows for a configuration.

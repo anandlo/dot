@@ -67,15 +67,18 @@ public enum ProviderError: Error, Equatable, LocalizedError, Sendable {
         case .missingCredential(let detail):
             detail
         case .rejected(let status, let message):
-            if let message, !message.isEmpty {
+            // A service, or a proxy in front of one, can answer with a page of
+            // markup. What the card shows and the log keeps is the head of it.
+            if let message = ProviderErrorText.sanitized(message) {
                 "The service answered HTTP \(status): \(message)"
             } else {
                 "The service answered HTTP \(status)."
             }
         case .invalidResponse(let detail):
-            "The service sent an unexpected answer: \(detail)"
+            "The service sent an unexpected answer: "
+                + (ProviderErrorText.sanitized(detail) ?? "no detail")
         case .transport(let detail):
-            "The service could not be reached: \(detail)"
+            "The service could not be reached: " + (ProviderErrorText.sanitized(detail) ?? "no detail")
         case .noSpeech:
             "No speech was recognised in the recording."
         case .unsupported(let detail):
