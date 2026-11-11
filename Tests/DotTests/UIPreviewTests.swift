@@ -33,8 +33,12 @@ final class UIPreviewTests: XCTestCase {
             ("welcome-tour-paste.png", CGSize(width: 720, height: 560)),
             ("welcome-tour-hold-dark.png", CGSize(width: 720, height: 560)),
             ("welcome-tour-hold-early.png", CGSize(width: 720, height: 560)),
-            ("about.png", CGSize(width: 520, height: 368)),
-            ("about-dark.png", CGSize(width: 520, height: 368)),
+            ("about.png", AboutView.size),
+            ("about-dark.png", AboutView.size),
+            ("about-update-checking.png", AboutView.size),
+            ("about-update-current.png", AboutView.size),
+            ("about-update-available.png", AboutView.size),
+            ("about-update-available-dark.png", AboutView.size),
         ]
         for entry in expected {
             let url = directory.appendingPathComponent(entry.name)
@@ -178,34 +182,6 @@ final class UIPreviewTests: XCTestCase {
                 bitmap.pixelsHigh,
                 Int(entry.size.height) * 2 + inset * 2,
                 "\(entry.name) height"
-            )
-        }
-    }
-
-    func testTheTranscriptEditorRendersToPNGs() throws {
-        guard let value = DotMigration.environment("RENDER_UI_DIR"),
-              !value.isEmpty
-        else {
-            throw XCTSkip("Set DOT_RENDER_UI_DIR to render the transcript editor.")
-        }
-
-        let directory = URL(fileURLWithPath: value, isDirectory: true)
-        try UIPreview.renderTranscriptEditor(to: directory)
-
-        for name in ["transcript-editor.png", "transcript-editor-dark.png"] {
-            let url = directory.appendingPathComponent(name)
-            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), name)
-            let data = try Data(contentsOf: url)
-            let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data), "\(name) is not a PNG")
-            XCTAssertEqual(
-                bitmap.pixelsWide,
-                Int(UIPreview.transcriptEditorSize.width) * 2,
-                "\(name) width"
-            )
-            XCTAssertEqual(
-                bitmap.pixelsHigh,
-                Int(UIPreview.transcriptEditorSize.height) * 2,
-                "\(name) height"
             )
         }
     }

@@ -25,24 +25,21 @@ struct DotSelectOption<Value: Hashable> {
     }
 }
 
-/// The select control Dot draws itself.
+/// The select control Dot draws itself, in place of a stock pop-up button.
 ///
-/// The app has one design language — ``DotFieldStyle`` fields, ``DotCard``
-/// sheets, the ``DotTheme`` tokens — and a stock macOS pop-up button is the one
-/// control that never learned it. This is the replacement: the trigger wears the
-/// field chrome, and the list is a raised card of the app's own surface and
-/// border instead of a system menu.
+/// It is a select, not a menu of actions: exactly one value is current, a
+/// checkmark names that row, and every row writes a value back through the
+/// binding. A row may carry `nil`, which is how "System Default" and "Choose a
+/// service" are offered.
 ///
-/// It is a select, not a menu of actions: one value is always current, a row
-/// with a checkmark says which, and every row carries a value back through the
-/// binding. A row may present `nil`, which is how "System Default" and "Choose
-/// a service" are offered.
+/// Contract:
 ///
-/// Keyboard and VoiceOver are part of the control rather than a wrapper:
-/// Space and Return open the list, the arrow keys move, Return commits, Escape
-/// cancels and leaves focus on the trigger. The trigger reports its label, its
-/// current value and that it opens a list. Reduce Motion swaps the spring for a
-/// fade, so the chevron and the list never spring.
+/// - Space and Return open the list, the arrow keys move, Return commits, Escape
+///   closes and leaves focus on the trigger.
+/// - The trigger reports its label, its current value and that it opens a list.
+/// - The list opens upward when there is more room above the trigger than below
+///   it, and scrolls instead of overflowing the surface it sits in.
+/// - Reduce Motion replaces the scale transition with a fade.
 @MainActor
 struct DotSelect<Value: Hashable>: View {
     /// What the control selects, e.g. "Microphone".
@@ -288,17 +285,23 @@ struct DotSelect<Value: Hashable>: View {
         triggerFrame = proxy.frame(in: .global)
     }
 
-    /// The upper limit for a dropdown menu before scrolling kicks in.
+    /// The tallest the list may be before it scrolls, in points.
     private static var maxDropdownHeight: CGFloat { 250 }
+    /// The room a list opening upward must leave above it, in points.
     private static var safeTopMargin: CGFloat { 78 }
+    /// The room a list opening downward must leave below it, in points.
     private static var safeBottomMargin: CGFloat { 16 }
 
     /// How tall the list will be, near enough to place it.
+    ///
+    /// Exact enough for placement: the card adds the vertical padding, and the
+    /// rows are measured with ``rowHeight(_:)`` rather than laid out.
     private var estimatedListHeight: CGFloat {
         Self.listHeight(for: options)
     }
 
     /// Whether the options exceed the allowed dropdown height and require scrolling.
+    /// Whether the options do not fit the space the list may take.
     private var needsScroll: Bool {
         estimatedListHeight > allowedListHeight
     }
@@ -309,21 +312,27 @@ struct DotSelect<Value: Hashable>: View {
         return 12 + rows + CGFloat(max(0, options.count - 1)) * 2
     }
 
-    /// The height of one row: a detail line takes its own room.
+    /// The height of one row, in points: a detail line takes its own room.
     static func rowHeight(_ option: DotSelectOption<Value>) -> CGFloat {
         option.detail == nil ? 32 : 40
     }
 
+    /// The room above the trigger, in points, inside the surface the select sits in.
     private var availableSpaceAbove: CGFloat {
         guard triggerFrame.height > 0 else { return Self.maxDropdownHeight }
         return max(0, triggerFrame.minY - Self.safeTopMargin - 6)
     }
 
+    /// The room below the trigger, in points, inside the surface the select sits in.
     private var availableSpaceBelow: CGFloat {
         guard containerHeight > 0, triggerFrame.height > 0 else { return Self.maxDropdownHeight }
         return max(0, containerHeight - triggerFrame.maxY - Self.safeBottomMargin - 6)
     }
 
+    /// Whether the list has to open above the trigger.
+    ///
+    /// It drops down whenever it fits below, because a list that covers the
+    /// fields above the trigger hides the thing it is editing.
     private var opensUpward: Bool {
         let fitsBelow = availableSpaceBelow >= min(estimatedListHeight, Self.maxDropdownHeight)
         if fitsBelow { return false }
@@ -346,6 +355,7 @@ struct DotSelect<Value: Hashable>: View {
         min(estimatedListHeight, allowedListHeight)
     }
 
+    /// Where the list sits relative to the trigger, with the gap between them.
     private var listOffset: CGFloat {
         opensUpward ? -(displayedListHeight + 6) : triggerHeight + 6
     }
@@ -405,8 +415,12 @@ struct DotSelect<Value: Hashable>: View {
 
     // MARK: - Dismissal
 
-    /// Closes the list on a click anywhere outside the control, or when scrolling
-    /// outside the control, matching native macOS pop-up button behavior.
+    /// Closes the list on a click or a scroll outside the control.
+    ///
+    /// The monitor is local, so it only sees events delivered to this app: a
+    /// click in another application closes the window that owns the select and
+    /// takes the list with it. A scroll inside a list that does not overflow is
+    /// swallowed, so the surface behind it does not move under the pointer.
     private func startDismissMonitor() {
         guard dismissMonitor == nil else { return }
         dismissMonitor = NSEvent.addLocalMonitorForEvents(
@@ -533,25 +547,41 @@ private struct DotSelectRowView<Value: Hashable>: View {
     }
 }
 
-/// An ultra-minimalist overlay scroller with a 3.5px translucent pill and transparent track.
+/// An overlay scroller drawn as a thin translucent pill on a transparent track.
+///
+/// The knob is ``pillWidth`` points wide and inset by ``pillInset`` at both ends,
+/// so it stays a hairline at any scroll-extent without a gutter being reserved
+/// for it.
 final class MinimalScroller: NSScroller {
+    /// The width of the knob, in points.
+    static let pillWidth: CGFloat = 3.5
+    /// The inset at each end of the knob, in points.
+    static let pillInset: CGFloat = 2
+    /// The smallest knob the pill is drawn at, in points.
+    static let minimumPillHeight: CGFloat = 16
+
     override class var isCompatibleWithOverlayScrollers: Bool { true }
     override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
     override func drawKnob() {
         guard let knobRect = rect(for: .knob) as NSRect? else { return }
-        let pillWidth: CGFloat = 3.5
-        let x = knobRect.midX - (pillWidth / 2)
-        let pillRect = NSRect(x: x, y: knobRect.minY + 2, width: pillWidth, height: max(16, knobRect.height - 4))
-        let path = NSBezierPath(roundedRect: pillRect, xRadius: 1.75, yRadius: 1.75)
+        let width = Self.pillWidth
+        let pillRect = NSRect(
+            x: knobRect.midX - width / 2,
+            y: knobRect.minY + Self.pillInset,
+            width: width,
+            height: max(Self.minimumPillHeight, knobRect.height - Self.pillInset * 2)
+        )
+        let path = NSBezierPath(roundedRect: pillRect, xRadius: width / 2, yRadius: width / 2)
         NSColor.white.withAlphaComponent(0.24).setFill()
         path.fill()
     }
 }
 
-/// An NSScrollView that:
-/// 1. Completely isolates scroll events: never propagates scrollWheel events to parent/enclosing scroll views.
-/// 2. Uses an ultra-minimalist, sleek overlay scrollbar (a subtle 3.5px translucent pill, zero ugly gray gutter).
-/// 3. Clamps scrolling smoothly and consumes the event so reaching the bottom never scrolls the window behind it.
+/// A scroll view that belongs to exactly one surface.
+///
+/// It never forwards a wheel event to an enclosing scroll view, it draws its knob
+/// through ``MinimalScroller``, and it clamps the offset itself so reaching the
+/// end of the content never scrolls the window behind it.
 final class PureIsolatedScrollView: NSScrollView {
     override var enclosingScrollView: NSScrollView? {
         nil
@@ -699,10 +729,9 @@ struct DotSelectOpenKey: PreferenceKey {
 /// Keeps the card a select sits in above the cards beside it while its list is
 /// open.
 ///
-/// A list is drawn outside its card, so it crosses into whatever the page puts
-/// next — and a stack draws later children over earlier ones, which would hide
-/// every list that opens upward. While a select is open the card it lives in
-/// takes the front, whatever the page's order is.
+/// A list is drawn outside its card, and a stack draws later children over
+/// earlier ones, so without this every list that opens upward is covered by the
+/// card below it regardless of where it is drawn.
 private struct DotSelectLayer: ViewModifier {
     @State private var isOpen = false
 
@@ -722,10 +751,10 @@ extension View {
     }
 }
 
-/// The trigger: the same chrome as ``DotFieldStyle``, with a chevron.
+/// The trigger: the chrome of ``DotFieldStyle``, with a chevron.
 ///
 /// The radius, the fill, the border and the focus ring are the field's values,
-/// so a select and the text field beside it read as one control family.
+/// so a select beside a text field reads as the same control family.
 private struct DotSelectTriggerStyle: ButtonStyle {
     let focused: Bool
     let open: Bool

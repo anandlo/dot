@@ -11,19 +11,32 @@ enum TourStep: Int, CaseIterable, Identifiable {
 
     /// The instruction the step makes. The shortcut is handed in, never
     /// written out here: it is a setting.
-    func title(shortcut: String) -> String {
+    ///
+    /// - Parameters:
+    ///   - shortcut: the label of the record shortcut as configured.
+    ///   - mode: how the person starts and ends a recording. The last step is
+    ///     the one that names it: in hold mode the release ends the take, in
+    ///     toggle mode the next press does.
+    func title(shortcut: String, mode: RecordingMode) -> String {
         switch self {
         case .hold: "Press \(shortcut) to start"
         case .speak: "Speak naturally"
-        case .paste: "Press again to paste"
+        case .paste: mode == .hold ? "Let go to paste" : "Press again to paste"
         }
     }
 
     /// One line under the title.
-    var detail: String {
+    ///
+    /// - Parameter mode: how the person starts and ends a recording. The middle
+    ///   step is where the recording ends, so it has to describe the interaction
+    ///   the person chose rather than the one Dot shipped.
+    func detail(mode: RecordingMode) -> String {
         switch self {
         case .hold: "The island appears wherever you are."
-        case .speak: "Your words appear as you talk."
+        case .speak:
+            mode == .hold
+                ? "Your words appear as you talk. Let go of the shortcut to stop."
+                : "Your words appear as you talk. Press the shortcut again to stop."
         case .paste: "The text lands right at your cursor."
         }
     }
@@ -480,6 +493,9 @@ private struct TourScene: View {
 struct WelcomeTourPage: View {
     let step: TourStep
     let shortcutLabel: String
+    /// How the recorded shortcut starts and ends a recording, so the tour
+    /// teaches the interaction the person is actually going to get.
+    var recordingMode: RecordingMode = .toggle
     var animated = true
     var phase: Double = TourFrame.stillPhase
     let onBack: () -> Void
@@ -498,11 +514,11 @@ struct WelcomeTourPage: View {
                 ))
 
             VStack(spacing: 8) {
-                Text(step.title(shortcut: shortcutLabel))
+                Text(step.title(shortcut: shortcutLabel, mode: recordingMode))
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(DotTheme.ink)
                     .accessibilityAddTraits(.isHeader)
-                Text(step.detail)
+                Text(step.detail(mode: recordingMode))
                     .font(.system(size: 13.5))
                     .foregroundStyle(DotTheme.ink2)
             }
@@ -524,7 +540,7 @@ struct WelcomeTourPage: View {
                 HStack(spacing: 6) {
                     ForEach(TourStep.allCases) { each in
                         Capsule()
-                            .fill(each == step ? DotTheme.ink : DotTheme.ink3.opacity(0.3))
+                            .fill(each == step ? DotTheme.selectionFill : DotTheme.ink3.opacity(0.28))
                             .frame(width: each == step ? 18 : 6, height: 6)
                     }
                 }

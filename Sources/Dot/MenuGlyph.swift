@@ -1,33 +1,28 @@
 import AppKit
 
-/// The mark in the menu bar.
+/// The mark in the menu bar: the app icon, drawn small.
 ///
-/// It is the app icon, drawn small: a rounded plate in the icon's graphite with
-/// the icon's porcelain disc cutting its top right corner.
+/// A rounded plate in the icon's graphite with the icon's porcelain disc cutting
+/// its top right corner.
 ///
-/// It is the only drawing in this file, and getting here took three answers
-/// from the person using it. Drawn as a template - one ink, the dot cut out of
-/// the plate - it read as a camera, then as a keyhole. Drawn as the plate alone
-/// it read as a white rectangle with nothing in it. The mark's dot is a second
-/// *tone*: that is what the icon is, and no single-ink drawing of it survives.
-/// So this one is not a template. It carries two colours, chosen so the mark
-/// stays legible whichever way the menu bar is toned: graphite on a light bar,
-/// porcelain on a dark one.
+/// The drawing is deliberately not a template image. The identity of the mark is
+/// the contrast between the plate and the disc, and a single-ink drawing of it
+/// loses the disc: it reads as a camera, or as a keyhole, or as a plain
+/// rectangle. Two tones — graphite on a light bar, porcelain on a dark one —
+/// keep the shape legible in either appearance.
 ///
-/// It breathes. The plate widens by a fraction of a point on the same three and
-/// twenty frame schedule as before, so a recording still looks live, and the
-/// loop is pre-rendered per tone so a frame costs a lookup instead of a drawing
-/// pass.
+/// While recording, the plate widens by a fraction of a point across a
+/// pre-rendered loop of ``frameCount`` frames per tone, so a frame is a lookup
+/// rather than a drawing pass.
 @MainActor
 enum MenuGlyph {
     /// The glyph's box, in points: the height the menu bar gives an item.
     static let side: CGFloat = 22
     /// The plate's side inside that box, in points.
     ///
-    /// The system's own items ink between twelve and sixteen points of the bar.
-    /// A plate that filled the whole box was the largest thing up there and read
-    /// as too big for the room; fifteen sits at the top of the neighbours'
-    /// range.
+    /// The system's own items ink between twelve and sixteen points of the bar,
+    /// so fifteen sits inside that range. A plate that filled the whole box is
+    /// visibly larger than everything beside it.
     private static let plateInk: CGFloat = 15
     /// How far the plate widens at the top of a breath, in points.
     private static let breathInk: CGFloat = 0.45

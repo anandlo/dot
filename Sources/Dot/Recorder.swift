@@ -28,10 +28,13 @@ enum RecorderError: Error, LocalizedError {
     }
 }
 
-/// Real-time 5-band acoustic spectrum frame (`0...1` per row) computed directly
-/// from the microphone's PCM waveform on each audio tap buffer.
+/// One frame of the microphone's 5-band acoustic spectrum.
+///
+/// Each band is an energy level in `0...1`, measured on the PCM of one audio tap
+/// buffer rather than from a prepared analysis of the recording.
 public struct AudioSpectrumFrame: Sendable, Equatable {
-    /// 5 frequency/acoustic bands from top (`0`: high sibilance/fricatives) to bottom (`4`: chest fundamental).
+    /// The bands, from row `0` at the top (sibilants and fricatives) to row `4`
+    /// at the bottom (the fundamental and chest resonance).
     public var bands: (Double, Double, Double, Double, Double)
 
     public static let zero = AudioSpectrumFrame(bands: (0, 0, 0, 0, 0))
@@ -58,10 +61,38 @@ public struct AudioSpectrumFrame: Sendable, Equatable {
         }
     }
 
+    /// What one audio buffer measured.
+    public struct Measure: Sendable, Equatable {
+        /// The RMS of the buffer, from `0` to `1`.
+        public var level: Double
+        /// The five bands of the buffer.
+        public var frame: AudioSpectrumFrame
+
+        public init(level: Double, frame: AudioSpectrumFrame) {
+            self.level = level
+            self.frame = frame
+        }
+    }
+
     /// Computes 5 genuine frequency bands from a mono float audio buffer (`sampleRate` Hz).
     public static func analyze(mono: [Float], sampleRate: Double) -> AudioSpectrumFrame {
+        measure(mono: mono, sampleRate: sampleRate).frame
+    }
+
+    /// Measure the level and the bands of one buffer in a single pass.
+    ///
+    /// The tap used to walk the buffer three times per callback, once for the
+    /// level, once for the bands and once more inside the resampler. The two
+    /// walks here share their accumulators, so the audio thread does less work
+    /// for the same meter.
+    ///
+    /// - Parameters:
+    ///   - mono: the down-mixed samples of one buffer.
+    ///   - sampleRate: the rate the samples were recorded at.
+    /// - Returns: the level and the bands, both computed from the same pass.
+    public static func measure(mono: [Float], sampleRate: Double) -> Measure {
         let n = mono.count
-        guard n >= 16 else { return .zero }
+        guard n >= 16 else { return Measure(level: 0, frame: .zero) }
 
         var sumSq: Double = 0
         var lowState: Double = 0
@@ -105,10 +136,11 @@ public struct AudioSpectrumFrame: Sendable, Equatable {
 
         let invN = 1.0 / Double(n)
         let totalRMS = sqrt(sumSq * invN)
-        guard totalRMS > 0.0008 else { return .zero }
+        guard totalRMS > 0.0008 else { return Measure(level: totalRMS, frame: .zero) }
 
-        // Convert each band's RMS into perceptual dBFS-mapped 0...1 energy
-        // with an expanded dynamic range (-60 dBFS floor) to prevent pegging at 100%.
+        // Each band's RMS is mapped to 0...1 on a dBFS scale with a -60 dBFS
+        // floor. A linear map sits at 100% for all normal speech, which would
+        // make the bands indistinguishable.
         func mapBand(_ rms: Double, gain: Double) -> Double {
             let boosted = rms * gain
             guard boosted > 0.00005 else { return 0 }
@@ -120,18 +152,21 @@ public struct AudioSpectrumFrame: Sendable, Equatable {
         let zcr = Double(zeroCrossings) * invN * (sampleRate / 16000.0)
         let sibilanceBoost = min(1.6, max(0.8, zcr * 2.2))
 
-        // Row 0 (top): High-frequency sibilants / fricatives ("s", "sh", "t", "k")
+        // Row 0 (top): sibilants and fricatives.
         let b0 = mapBand(sqrt(highSq * invN), gain: 1.5 * sibilanceBoost)
-        // Row 1 (upper-mid): Upper vocal formants (1.2 kHz - 3.5 kHz, bright vowels "ee", "ay")
+        // Row 1: upper vocal formants, 1.2-3.5 kHz.
         let b1 = mapBand(sqrt(midHighSq * invN), gain: 1.25)
-        // Row 2 (center): Core speech presence (350 Hz - 1.8 kHz)
+        // Row 2: core speech presence, 350 Hz-1.8 kHz.
         let b2 = mapBand(sqrt((midLowSq + midHighSq) * 0.6 * invN), gain: 1.05)
-        // Row 3 (lower-mid): Warm vowel body (250 Hz - 850 Hz, "ah", "oh")
+        // Row 3: lower-mid vowel body, 250-850 Hz.
         let b3 = mapBand(sqrt(midLowSq * invN), gain: 1.15)
-        // Row 4 (bottom): Fundamental pitch & chest resonance (80 Hz - 300 Hz, deep voice)
+        // Row 4 (bottom): fundamental pitch and chest resonance, 80-300 Hz.
         let b4 = mapBand(sqrt(lowSq * invN), gain: 1.0)
 
-        return AudioSpectrumFrame(bands: (b0, b1, b2, b3, b4))
+        return Measure(
+            level: totalRMS,
+            frame: AudioSpectrumFrame(bands: (b0, b1, b2, b3, b4))
+        )
     }
 }
 
@@ -157,24 +192,19 @@ final class AudioTapProcessor: @unchecked Sendable {
     /// Handles one buffer from the input tap.
     func handle(_ buffer: AVAudioPCMBuffer) {
         let mono = Resampler.monoSamples(from: buffer)
-        let level: Double
-        if mono.isEmpty {
-            level = 0
-        } else {
-            var total = 0.0
-            for v in mono {
-                let d = Double(v)
-                total += d * d
-            }
-            level = (total / Double(mono.count)).squareRoot()
-        }
-        let spectrum = AudioSpectrumFrame.analyze(mono: mono, sampleRate: buffer.format.sampleRate)
+        let measure = AudioSpectrumFrame.measure(mono: mono, sampleRate: buffer.format.sampleRate)
         lock.lock()
-        latestLevel = level
-        latestSpectrum = spectrum
+        latestLevel = measure.level
+        latestSpectrum = measure.frame
         lock.unlock()
         do {
-            let converted = try resampler.convert(buffer)
+            // The downmix above is the one conversion this buffer needs: the
+            // resampler is handed the samples it already has instead of mixing
+            // them again.
+            let converted = try resampler.convert(
+                monoSamples: mono,
+                sampleRate: buffer.format.sampleRate
+            )
             guard !converted.isEmpty else { return }
             lock.lock()
             samples.append(contentsOf: converted)
@@ -245,10 +275,11 @@ final class AudioTapProcessor: @unchecked Sendable {
 final class Recorder {
     /// The result of a recording.
     struct Recording {
-        /// The 16 kHz mono samples that were recorded.
+        /// Every 16 kHz mono sample the recording produced.
         ///
-        /// The stop does not encode a WAV of the whole take: the part of it
-        /// that is already transcribed is final, and only the tail is sent.
+        /// The whole take is kept so the tail can be cut out of it: the audio
+        /// that is already transcribed is final, and only the tail is encoded
+        /// into the WAV the stop sends.
         let samples: [Int16]
         /// How long the recording was, in seconds.
         let duration: TimeInterval
@@ -496,8 +527,11 @@ final class Recorder {
     private func startTicker() {
         let source = DispatchSource.makeTimerSource(queue: .main)
         source.schedule(deadline: .now() + 1.0 / 30.0, repeating: 1.0 / 30.0)
+        // The source is scheduled on the main queue, so every tick is already
+        // on the main thread: it runs in place instead of allocating a task
+        // thirty times a second for the length of the recording.
         source.setEventHandler { [weak self] in
-            Task { @MainActor in
+            MainThreadTick.run {
                 guard let self, self.isRecording else { return }
                 self.onTick?(self.processor?.level ?? 0, self.elapsed)
             }

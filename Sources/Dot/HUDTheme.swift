@@ -34,6 +34,9 @@ enum HUDTheme {
 
     /// The waveform: the voice drawn in the icon's own porcelain, not a second
     /// colour the product never shipped.
+    ///
+    /// It is the ink of the card's quieter marks. The voice itself is drawn in
+    /// ``live``: see ``meter(_:ceiling:)``.
     static let accent = Color(red: 0.949, green: 0.929, blue: 0.898).opacity(0.72)
     /// The bright tip of the waveform.
     static let accentTip = Color(red: 1.0, green: 0.984, blue: 0.957).opacity(0.95)
@@ -41,15 +44,35 @@ enum HUDTheme {
     static let mint = Color(red: 0.722, green: 0.690, blue: 0.643)
     /// Success, named for what it is: a quiet silver.
     static let silver = mint
-    /// The live dot and a failure.
+    /// The live dot and a failure, `#F5B944`.
+    ///
+    /// It is also the voice. The meter's bars are this colour at the height of
+    /// ordinary speech, deeper below it and warmer above it, so the dot and the
+    /// shape that answers it are one material rather than a coloured dot beside
+    /// a white shape.
     static let live = Color(red: 0.961, green: 0.725, blue: 0.267)
     /// The transcribing state.
     static let amber = Color(red: 0.659, green: 0.639, blue: 0.604)
 
+    /// The colour of one bar of the meter.
+    ///
+    /// - Parameters:
+    ///   - level: the height of the bar, from `0` to `1`.
+    ///   - ceiling: the loudest moment of this take, from `0` to `1`.
+    /// - Returns: a warm amber, dim and short at the floor, bright with a warm
+    ///   tip at a peak. Never white: the top of the shape has to keep a colour
+    ///   to say "that was loud" with.
+    static func meter(_ level: Double, ceiling: Double) -> Color {
+        let tint = MeterRamp.tint(level: level, ceiling: ceiling)
+        return Color(red: tint.red, green: tint.green, blue: tint.blue).opacity(tint.opacity)
+    }
+
     // MARK: - Type
 
+    /// The size of the small caps label.
+    static let labelFontSize: CGFloat = 10.5
     /// The small caps label.
-    static let labelFont = Font.system(size: 10.5, weight: .semibold)
+    static let labelFont = Font.system(size: labelFontSize, weight: .semibold)
     /// The clock.
     static let clockFont = Font.system(size: 12, weight: .medium, design: .monospaced)
     /// The transcript.
@@ -101,23 +124,16 @@ enum HUDTheme {
     static let actionBorder = Color.white.opacity(0.045)
     /// The border of an icon button under the pointer.
     static let actionBorderHover = Color.white.opacity(0.14)
+    /// The font of the titled button a message card offers.
+    static let messageActionFont = Font.system(size: 11.5, weight: .medium)
+    /// The padding inside the titled button, on the left and the right, in points.
+    static let messageActionHPadding: CGFloat = 10
+    /// The height of the titled button, in points.
+    static let messageActionHeight: CGFloat = 22
+    /// The gap between the titled button and the icon buttons, in points.
+    static let messageActionGap: CGFloat = 10
     /// The divider between the content and the actions.
     static let hairline = Color.white.opacity(0.075)
-
-    /// The fill of the hint that names a button under the pointer.
-    ///
-    /// It is the card's own surface lifted by a value, not a second material:
-    /// the hint belongs to the card and must not look like a system tooltip.
-    static let hintFill = Color(red: 0.118, green: 0.106, blue: 0.090)
-    /// The border of the hint.
-    static let hintBorder = Color.white.opacity(0.10)
-    /// The type of the hint.
-    static let hintFont = Font.system(size: 11, weight: .medium)
-    /// How long the pointer rests on a button before the hint appears.
-    ///
-    /// A hint that appears the moment the pointer crosses a button flickers at
-    /// every pass; the delay is what makes it an answer to a question.
-    static let hintDelay: Duration = .milliseconds(750)
 }
 
 /// Native macOS behind-window backdrop blur using NSVisualEffectView.

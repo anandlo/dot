@@ -89,44 +89,91 @@ enum DotTheme {
     static let sidebarHighlight = adaptive(light: white(0.22), dark: white(0.035))
     /// The pill behind the selected sidebar item.
     ///
-    /// The plate's own warm graphite rather than the indigo accent: the sidebar
-    /// carries the app's identity, and a navy pill on porcelain paper was a
-    /// second, unrelated accent sitting next to the mark.
-    static let sidebarSelectedFill = adaptive(light: ns(0.169, 0.157, 0.133), dark: ns(0.208, 0.196, 0.176))
-    /// The border of the selected sidebar pill: a highlight along the top of a
-    /// dark plate, not a coloured ring.
-    static let sidebarSelectedBorder = adaptive(light: white(0.16), dark: white(0.13))
+    /// A tint of the ink rather than a plate of it: a near-black slab on paper
+    /// was the largest black shape in the window, and the sidebar is a list of
+    /// names, not a toolbar. The fill only says "here"; the weight of the label
+    /// and the icon carry the rest.
+    static let sidebarSelectedFill = adaptive(light: ns(0.075, 0.065, 0.085, 0.08), dark: white(0.10))
+    /// The border of the selected sidebar pill: a hairline that keeps the tint
+    /// from fading into the sidebar surface.
+    static let sidebarSelectedBorder = adaptive(light: black(0.09), dark: white(0.12))
     /// The selected sidebar text.
-    static let sidebarSelectedText = adaptive(light: white(1), dark: ns(0.980, 0.969, 0.953))
+    static let sidebarSelectedText = ink
     /// The selected sidebar icon.
-    static let sidebarSelectedIcon = adaptive(light: white(0.78), dark: white(0.74))
-    /// The hover wash of an unselected sidebar item.
-    static let sidebarHoverFill = adaptive(light: white(0.55), dark: white(0.055))
+    static let sidebarSelectedIcon = accent
+    /// The hover wash of an unselected sidebar item: the same tint, at half the
+    /// strength of the pill.
+    static let sidebarHoverFill = adaptive(light: ns(0.075, 0.065, 0.085, 0.045), dark: white(0.06))
 
     /// The glow in the top-left corner of the paper.
     static let paperGlow = adaptive(light: white(0.65), dark: white(0.050))
     /// The warm shade at the bottom of the paper.
     static let paperShade = adaptive(light: ns(0.42, 0.31, 0.20, 0.06), dark: black(0.30))
 
-    /// The off track of a switch.
-    static let toggleTrack = adaptive(light: black(0.20), dark: white(0.22))
-    /// The border of the off track.
-    static let toggleTrackBorder = adaptive(light: black(0.12), dark: white(0.16))
-    /// The on track of a switch.
-    static let toggleOn = adaptive(light: ns(0.169, 0.157, 0.133), dark: ns(0.949, 0.929, 0.898))
-    /// The border of the on track.
-    static let toggleOnBorder = adaptive(light: black(0.18), dark: white(0.30))
-    /// The switch knob.
-    static let toggleKnob = adaptive(light: white(1), dark: ns(0.953, 0.929, 0.894))
-    /// The border that keeps the knob visible on a pale track.
-    static let toggleKnobBorder = adaptive(light: black(0.16), dark: black(0.30))
-    /// The shadow under the knob.
-    static let toggleKnobShadow = adaptive(light: black(0.22), dark: black(0.50))
+    // MARK: - Switch
+
+    /// The track of a switch that is on.
+    ///
+    /// The system green, stepped per appearance: the light stop is the green
+    /// that sits calmly on warm paper, the dark stop the slightly brighter one
+    /// that holds on warm charcoal. Green is the only colour in the app that
+    /// means a state, so it is not spent on anything decorative.
+    static let switchOn = adaptive(light: ns(0.204, 0.780, 0.349), dark: ns(0.188, 0.820, 0.345))
+    /// The lit stop at the top of the on track, which keeps it from reading as
+    /// a flat rectangle of colour.
+    static let switchOnTop = adaptive(light: ns(0.286, 0.855, 0.427), dark: ns(0.271, 0.878, 0.435))
+    /// The hairline around the on track.
+    static let switchOnEdge = adaptive(light: black(0.16), dark: white(0.22))
+
+    /// The track of a switch that is off: the paper's own warm edge, and a veil
+    /// of white on ink. Never black, and never white.
+    static let switchOff = adaptive(light: ns(0.890, 0.878, 0.855), dark: white(0.16))
+    /// The hairline around the off track.
+    static let switchOffEdge = adaptive(light: black(0.13), dark: white(0.14))
+    /// The veil that lifts either track under the pointer.
+    static let switchHoverLift = adaptive(light: white(0.18), dark: white(0.12))
+
+    /// The knob is porcelain in both appearances: the track carries the state.
+    static let switchKnob = Color.white
+    /// The shadow that seats the knob on its track.
+    static let switchKnobShadow = adaptive(light: black(0.26), dark: black(0.55))
+
+    // MARK: - Action
+
+    /// The fill of the primary action.
+    ///
+    /// Amber, the product's one warm action colour, in both appearances. The
+    /// graphite accent is the mark's colour and the sidebar's; as a button fill
+    /// it turned into a second, unrelated identity in dark mode.
+    static let actionFill = adaptive(light: ns(0.961, 0.725, 0.267), dark: ns(0.976, 0.784, 0.365))
+    /// The primary fill under the pointer.
+    static let actionFillHover = adaptive(light: ns(0.976, 0.780, 0.365), dark: ns(0.988, 0.827, 0.435))
+    /// The primary fill while pressed.
+    static let actionFillPressed = adaptive(light: ns(0.918, 0.659, 0.196), dark: ns(0.937, 0.722, 0.302))
+    /// The label on the primary fill: warm graphite in both appearances,
+    /// because the fill is light in both.
+    static let onAction = adaptive(light: ns(0.129, 0.102, 0.063), dark: ns(0.114, 0.090, 0.051))
+    /// The highlight along the top of the primary fill.
+    static let actionEdge = adaptive(light: white(0.42), dark: white(0.30))
+    /// The seat under the primary fill.
+    static let actionShadow = adaptive(light: ns(0.482, 0.325, 0.075, 0.26), dark: black(0.45))
+
+    /// The quiet button fill under the pointer.
+    static let secondaryFillHover = adaptive(light: white(0.74), dark: white(0.105))
+    /// The quiet button border under the pointer.
+    static let secondaryBorderHover = adaptive(light: black(0.30), dark: white(0.26))
+
+    /// The fill of a selected indicator: the same green a switch uses when it is
+    /// on, so "chosen" and "on" are one colour rather than two.
+    static let selectionFill = switchOn
+    /// The mark drawn on a selected indicator.
+    static let onSelection = Color.white
 
     /// The focus ring around a control.
     static let focusRing = adaptive(light: black(0.45), dark: white(0.60))
-    /// The unfilled track of a slider.
-    static let sliderTrack = adaptive(light: black(0.16), dark: white(0.18))
+    /// The unfilled track of a slider: the same warm grey the off state of a
+    /// switch uses, so a row of controls reads as one family.
+    static let sliderTrack = adaptive(light: ns(0.890, 0.878, 0.855), dark: white(0.16))
     /// The ring of an unselected radio indicator.
     static let selectionRing = adaptive(light: black(0.20), dark: white(0.28))
 
@@ -262,37 +309,6 @@ struct DotCard<Content: View>: View {
     }
 }
 
-/// A piece of advice, drawn as advice.
-///
-/// It is deliberately not a card. A tip inside a card has the same fill, the
-/// same border and the same weight as a control, so a page of settings and
-/// suggestions stops telling the difference between what can be changed and
-/// what is worth knowing. A tip is quiet type with a small glyph and nothing
-/// else around it.
-struct DotTip: View {
-    /// The glyph that names the kind of advice.
-    let symbol: String
-    /// The advice itself.
-    let text: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(DotTheme.ink3)
-                .frame(width: 13, height: 13)
-                .padding(.top, 1)
-            Text(text)
-                .font(.system(size: 10.5))
-                .foregroundStyle(DotTheme.ink3)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .padding(.leading, 2)
-        .accessibilityElement(children: .combine)
-    }
-}
-
 /// The title row, with room for the native traffic lights at the left.
 struct DotWindowHeader<Trailing: View>: View {
     let title: String
@@ -332,36 +348,116 @@ extension DotWindowHeader where Trailing == EmptyView {
     }
 }
 
-/// The solid button used for the primary action: clean, minimal, and crisp with zero glowing bloom.
+/// The solid button used for the primary action.
+///
+/// Amber on paper and amber on ink: one action colour that does not change
+/// identity with the appearance. The press scale and the hover lift are what
+/// make it feel like a physical key rather than a painted rectangle.
 struct DotPrimaryButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
     func makeBody(configuration: Configuration) -> some View {
+        DotPrimaryButtonBody(configuration: configuration)
+    }
+}
+
+private struct DotPrimaryButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
+    private var fill: Color {
+        if configuration.isPressed {
+            return DotTheme.actionFillPressed
+        }
+        return isHovering ? DotTheme.actionFillHover : DotTheme.actionFill
+    }
+
+    private var scale: CGFloat {
+        guard isEnabled, !reducesMotion else { return 1 }
+        if configuration.isPressed {
+            return 0.97
+        }
+        return isHovering ? 1.015 : 1
+    }
+
+    private var reducesMotion: Bool {
+        reduceMotion || DotMotion.reducesMotion
+    }
+
+    var body: some View {
         configuration.label
             .font(.system(size: 12.5, weight: .semibold))
-            .foregroundStyle(DotTheme.onAccent)
+            .foregroundStyle(DotTheme.onAction)
             .padding(.horizontal, 18)
             .padding(.vertical, 8)
             .background(
                 Capsule(style: .continuous)
-                    .fill(DotTheme.accent)
+                    .fill(fill)
                     .overlay(
                         Capsule(style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.75)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.white.opacity(0.28), .clear],
+                                    startPoint: .top,
+                                    endPoint: .center
+                                )
+                            )
+                    )
+                    .overlay(
+                        // The rim is a lit top edge, not a ring around the whole
+                        // capsule: a full ring bled a hairline of white onto the
+                        // paper at the two sides of the button.
+                        Capsule(style: .continuous)
+                            .strokeBorder(
+                                LinearGradient(
+                                    colors: [DotTheme.actionEdge, .clear],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                ),
+                                lineWidth: 0.75
+                            )
                     )
             )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
-            .offset(y: configuration.isPressed ? 0.5 : 0)
-            .opacity(isEnabled ? 1 : 0.55)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .shadow(
+                color: DotTheme.actionShadow,
+                radius: isHovering ? 7 : 4,
+                x: 0,
+                y: isHovering ? 3 : 2
+            )
+            .scaleEffect(scale)
+            .opacity(isEnabled ? 1 : 0.5)
+            .animation(
+                reducesMotion ? .easeOut(duration: 0.10) : .spring(response: 0.24, dampingFraction: 0.72),
+                value: configuration.isPressed
+            )
+            .animation(.easeOut(duration: 0.16), value: isHovering)
+            .onHover { inside in
+                isHovering = isEnabled && inside
+            }
     }
 }
 
-/// The secondary button on paper: clean minimal capsule with crisp hairline border.
+/// The secondary button on paper: a quiet capsule that answers the pointer
+/// without ever competing with the primary action.
 struct DotSecondaryButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
     func makeBody(configuration: Configuration) -> some View {
+        DotSecondaryButtonBody(configuration: configuration)
+    }
+}
+
+private struct DotSecondaryButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
+    private var reducesMotion: Bool {
+        reduceMotion || DotMotion.reducesMotion
+    }
+
+    var body: some View {
         configuration.label
             .font(.system(size: 12.5, weight: .medium))
             .foregroundStyle(isEnabled ? DotTheme.ink : DotTheme.ink3)
@@ -369,16 +465,29 @@ struct DotSecondaryButtonStyle: ButtonStyle {
             .padding(.vertical, 8)
             .background(
                 Capsule(style: .continuous)
-                    .fill(DotTheme.secondaryFill)
+                    .fill(isHovering && isEnabled ? DotTheme.secondaryFillHover : DotTheme.secondaryFill)
                     .overlay(
                         Capsule(style: .continuous)
-                            .strokeBorder(DotTheme.secondaryBorder, lineWidth: 1)
+                            .strokeBorder(
+                                isHovering && isEnabled
+                                    ? DotTheme.secondaryBorderHover
+                                    : DotTheme.secondaryBorder,
+                                lineWidth: 1
+                            )
                     )
             )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
-            .offset(y: configuration.isPressed ? 0.5 : 0)
+            .scaleEffect(
+                configuration.isPressed && isEnabled && !reducesMotion ? 0.97 : 1
+            )
             .opacity(isEnabled ? 1 : 0.62)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(
+                reducesMotion ? nil : .spring(response: 0.22, dampingFraction: 0.74),
+                value: configuration.isPressed
+            )
+            .animation(.easeOut(duration: 0.16), value: isHovering)
+            .onHover { inside in
+                isHovering = isEnabled && inside
+            }
     }
 }
 
@@ -431,19 +540,21 @@ struct DotFieldStyle: ViewModifier {
     }
 }
 
-/// A switch styled after the tactile "happy-warthog-87" slider from Uiverse,
-/// tailored with Dot's own theme palette.
+/// The switch.
 ///
-/// Features a recessed capsule track with an inset shadow, a pure porcelain
-/// knob with 3D drop shadow that glides smoothly and squishes on active press,
-/// and transitions into Dot's active theme accent when switched on.
+/// The state is carried by colour and by motion, not by the two extremes: a
+/// graphite track with a black knob on paper and a bone track with a black knob
+/// on ink were two different controls, and neither of them said "on". The track
+/// is green when the switch is on, the warm grey of the paper's own edge when it
+/// is off, and the porcelain knob slides between the two on a spring, stretching
+/// the way a physical switch does while it is held.
 struct DotToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
-        DotToggleBody(configuration: configuration)
+        DotSwitch(configuration: configuration)
     }
 }
 
-private struct DotToggleBody: View {
+private struct DotSwitch: View {
     let configuration: ToggleStyle.Configuration
 
     @Environment(\.isEnabled) private var isEnabled
@@ -452,80 +563,143 @@ private struct DotToggleBody: View {
     @State private var isHovering = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 9) {
             configuration.label
             Button {
                 configuration.isOn.toggle()
             } label: {
-                track
+                EmptyView()
             }
-            .buttonStyle(DotTogglePressStyle(isOn: configuration.isOn))
+            .buttonStyle(
+                DotSwitchStyle(
+                    isOn: configuration.isOn,
+                    hovering: isHovering && isEnabled,
+                    focused: isFocused,
+                    reduceMotion: reduceMotion || DotMotion.reducesMotion
+                )
+            )
             .focusEffectDisabled()
             .focused($isFocused)
             .disabled(!isEnabled)
             .accessibilityValue(configuration.isOn ? "On" : "Off")
-            .animation(motion, value: configuration.isOn)
             .onHover { inside in
                 isHovering = inside
             }
         }
-        .opacity(isEnabled ? 1 : 0.55)
-    }
-
-    private var track: some View {
-        ZStack(alignment: configuration.isOn ? .trailing : .leading) {
-            // Minimal modern track
-            Capsule(style: .continuous)
-                .fill(
-                    configuration.isOn
-                        ? DotTheme.accent
-                        : (isHovering ? Color.white.opacity(0.18) : Color.white.opacity(0.12))
-                )
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(
-                            configuration.isOn
-                                ? DotTheme.accent.opacity(0.40)
-                                : Color.white.opacity(0.08),
-                            lineWidth: 0.75
-                        )
-                )
-
-            // Minimal precision porcelain knob with high contrast in both states
-            Circle()
-                .fill(
-                    configuration.isOn
-                        ? Color(white: 0.12)
-                        : Color.white.opacity(0.92)
-                )
-                .shadow(color: Color.black.opacity(0.24), radius: 1.5, x: 0, y: 0.75)
-                .padding(2)
-        }
-        .frame(width: 36, height: 20)
-        .overlay(
-            Capsule(style: .continuous)
-                .strokeBorder(isFocused ? DotTheme.focusRing : .clear, lineWidth: 1.5)
-                .padding(-2)
-        )
-        .contentShape(Capsule(style: .continuous))
-    }
-
-    private var motion: Animation? {
-        reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.22, dampingFraction: 0.80)
+        .opacity(isEnabled ? 1 : 0.45)
     }
 }
 
-private struct DotTogglePressStyle: ButtonStyle {
+/// Draws the track, because only a button style is told when the control is held.
+private struct DotSwitchStyle: ButtonStyle {
     let isOn: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let hovering: Bool
+    let focused: Bool
+    let reduceMotion: Bool
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1.0)
-            .animation(
-                reduceMotion ? nil : .spring(response: 0.18, dampingFraction: 0.8),
-                value: configuration.isPressed
-            )
+        DotSwitchTrack(
+            isOn: isOn,
+            hovering: hovering,
+            pressed: configuration.isPressed,
+            focused: focused,
+            reduceMotion: reduceMotion
+        )
+    }
+}
+
+private struct DotSwitchTrack: View {
+    let isOn: Bool
+    let hovering: Bool
+    let pressed: Bool
+    let focused: Bool
+    let reduceMotion: Bool
+
+    static let width: CGFloat = 40
+    static let height: CGFloat = 23
+    static let inset: CGFloat = 2
+    /// How much wider the knob grows while the switch is held.
+    static let stretch: CGFloat = 5
+
+    private var knobHeight: CGFloat { Self.height - Self.inset * 2 }
+    private var knobWidth: CGFloat {
+        pressed && !reduceMotion ? knobHeight + Self.stretch : knobHeight
+    }
+
+    private var onFill: LinearGradient {
+        LinearGradient(
+            colors: [DotTheme.switchOnTop, DotTheme.switchOn],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    private var knobSlide: Animation {
+        reduceMotion ? .easeOut(duration: 0.14) : .spring(response: 0.28, dampingFraction: 0.78)
+    }
+
+    private var trackFade: Animation {
+        reduceMotion ? .easeOut(duration: 0.14) : .easeInOut(duration: 0.22)
+    }
+
+    private var knobStretch: Animation? {
+        reduceMotion ? nil : .spring(response: 0.20, dampingFraction: 0.70)
+    }
+
+    var body: some View {
+        ZStack(alignment: isOn ? .trailing : .leading) {
+            Capsule(style: .continuous)
+                .fill(DotTheme.switchOff)
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(DotTheme.switchOffEdge, lineWidth: 0.75)
+                )
+
+            Capsule(style: .continuous)
+                .fill(onFill)
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(DotTheme.switchOnEdge, lineWidth: 0.75)
+                )
+                .opacity(isOn ? 1 : 0)
+
+            Capsule(style: .continuous)
+                .fill(DotTheme.switchHoverLift)
+                .opacity(hovering ? 1 : 0)
+
+            Circle()
+                .fill(DotTheme.switchKnob)
+                .shadow(color: DotTheme.switchKnobShadow, radius: 2, x: 0, y: 1)
+                .frame(width: knobWidth, height: knobHeight)
+                .padding(Self.inset)
+                .animation(knobSlide, value: isOn)
+                .animation(knobStretch, value: pressed)
+        }
+        .frame(width: Self.width, height: Self.height)
+        .animation(trackFade, value: isOn)
+        .animation(.easeOut(duration: 0.16), value: hovering)
+        .contentShape(Capsule(style: .continuous))
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(focused ? DotTheme.focusRing : Color.clear, lineWidth: 1.5)
+                .padding(-2.5)
+                .animation(.easeOut(duration: 0.12), value: focused)
+        )
+        .accessibilityHidden(true)
+    }
+}
+
+/// The motion answers that are not in the SwiftUI environment.
+enum DotMotion {
+    /// Whether the person asked the system to reduce motion.
+    ///
+    /// SwiftUI carries the same answer in `accessibilityReduceMotion`, but a
+    /// view can be built before the environment reaches it - an offscreen
+    /// render, or a control in a window that does not exist yet - so the
+    /// workspace setting is read as well. Either one is enough to still a
+    /// spring.
+    static var reducesMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 }
 
@@ -651,36 +825,6 @@ struct DotSignalMark: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-    }
-}
-
-/// The smooth signal wave, the same shape as the app icon.
-struct SignalWave: Shape {
-    /// The moment the still line draws.
-    ///
-    /// A swatch is a picture, not a live meter, so the moment is fixed; what it
-    /// shows is a voice, because a sine draws a wave with every crest identical
-    /// and the preview then advertises nothing the card actually does.
-    var moment: Double = 2.4
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let count = 120
-        for index in 0...count {
-            let t = Double(index) / Double(count)
-            let x = rect.minX + rect.width * t
-            // Quiet at both ends, present in the middle, and irregular in
-            // between, the way a voice is.
-            let taper = sin(Double.pi * t)
-            let voice = SpeechShape.value(at: t, time: moment) * 2 - 1
-            let y = rect.midY - rect.height * 0.5 * taper * voice
-            if index == 0 {
-                path.move(to: CGPoint(x: x, y: y))
-            } else {
-                path.addLine(to: CGPoint(x: x, y: y))
-            }
-        }
-        return path
     }
 }
 

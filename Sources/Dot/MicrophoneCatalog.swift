@@ -26,6 +26,21 @@ enum MicrophoneCatalog {
         }
     }
 
+    /// The UID of the microphone a recording would use right now.
+    ///
+    /// A configured device is used as it is. The system default is resolved to
+    /// the device the HAL says would record, because a calibration belongs to
+    /// the microphone that produced the take and "system default" is a choice,
+    /// not a device. A HAL that cannot answer leaves the UID unknown, and an
+    /// unknown UID simply means nothing is learned or applied for that take.
+    ///
+    /// - Parameter configured: the device the configuration names, or `nil`.
+    static func recordingDeviceUID(configured: String?) -> String? {
+        let trimmed = configured?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty { return trimmed }
+        return CoreAudioInput.defaultInputUID()
+    }
+
     /// The inputs a person can pick.
     static func microphones() -> [MenuMicrophone] {
         MicrophoneDirectory.offered(devices()).map {
@@ -61,6 +76,26 @@ private enum CoreAudioInput {
             uids.insert(uid)
         }
         return uids
+    }
+
+    /// The UID of the input the system would record from, or `nil`.
+    static func defaultInputUID() -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var device: AudioDeviceID = 0
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &size,
+            &device
+        ) == noErr, device != 0 else { return nil }
+        return string(device, kAudioDevicePropertyDeviceUID)
     }
 
     /// The devices the HAL lists right now.

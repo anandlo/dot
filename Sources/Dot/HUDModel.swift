@@ -29,6 +29,21 @@ final class HUDModel: ObservableObject {
     @Published var content: Double = 0
     /// The level of the voice, from `0` to `1`.
     @Published var level: Double = 0
+    /// The loudest moment of the recording so far, from `0` to `1`.
+    ///
+    /// It is the adaptive ceiling the visualiser draws a peak against, released
+    /// slowly so a loud word does not make the rest of the take look quiet. It
+    /// never normalises the heights: a bar's height is always the absolute level
+    /// on the dBFS scale, and only the warmth of the colour knows about it.
+    @Published var ceiling: Double = 1
+    /// The height of every bar of the visualiser, from `0` to `1`, left to right.
+    ///
+    /// It is computed once per tick by ``VisualizerBars`` into a buffer the HUD
+    /// keeps, so the canvas draws measurements instead of a single level
+    /// repeated across the card.
+    @Published var bars: [Double] = []
+    /// How much of the shape has arrived, from `0` to `1`.
+    @Published var reveal: Double = 0
     /// The half height of every column of the waveform, in points.
     @Published var halfHeights: [CGFloat] = []
     /// The raw 60 Hz envelope history, oldest first (`0` to `1`).
@@ -56,7 +71,7 @@ final class HUDModel: ObservableObject {
     /// The service dictation is currently going to, named the way the person
     /// picked it. The ready card shows this instead of teaching the shortcut:
     /// knowing which service is active is more useful than being told again how
-    /// to hold a key.
+    /// to start a recording.
     @Published var activeService: String = ""
 
     /// A masked hint of the key in use, e.g. `sk-p…1234`, or empty when the
@@ -66,13 +81,35 @@ final class HUDModel: ObservableObject {
     /// Which control button the pointer is currently hovering over, if any.
     @Published var hoveredAction: HUDAction? = nil
 
+    /// The titled button the message card offers, when the message is asking
+    /// for something rather than only reporting.
+    ///
+    /// A message that reports carries only Close. A message that says a
+    /// permission is missing carries the work that fixes it, so the card can be
+    /// acted on where it is read instead of sending the person to a menu.
+    @Published var messageAction: HUDMessageAction? = nil
+
+    /// The grammar that rewrote the transcript that is on screen, when one did.
+    ///
+    /// A chip in the card's header names it, so the person always knows their
+    /// words were transformed rather than wondering why the punctuation moved.
+    @Published var grammar: DictationTarget?
+
+    /// Whether the rewrite flagged the text as longer than its surface wants.
+    @Published var grammarWasLong: Bool = false
+
     /// Whether the user is editing the transcript directly inside the HUD island.
     @Published var isEditingTranscript: Bool = false
 
     /// Updates the transcript text in place while editing inline on the HUD island.
     func updateTranscriptText(_ newText: String) {
-        if case .transcript(_, let delivery, let elapsed) = mode {
-            mode = .transcript(text: newText, delivery: delivery, elapsed: elapsed)
+        if case .transcript(_, let delivery, let elapsed, let destination) = mode {
+            mode = .transcript(
+                text: newText,
+                delivery: delivery,
+                elapsed: elapsed,
+                destination: destination
+            )
         }
     }
 

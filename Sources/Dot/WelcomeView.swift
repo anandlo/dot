@@ -20,6 +20,10 @@ struct WelcomeView: View {
     let microphoneStatus: String
     let accessibilityGranted: Bool
     let shortcutLabel: String
+    /// How the record shortcut starts and ends a recording. The tour teaches
+    /// this and nothing else, so it is the person's chosen mode, not the
+    /// shipped one.
+    let recordingMode: RecordingMode
     let onEnableMicrophone: () async -> String
     let onChangeShortcut: () -> Void
     let onOpenSettings: () -> Void
@@ -48,6 +52,7 @@ struct WelcomeView: View {
         microphoneStatus: String,
         accessibilityGranted: Bool,
         shortcutLabel: String,
+        recordingMode: RecordingMode = .toggle,
         onEnableMicrophone: @escaping () async -> String,
         onChangeShortcut: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void,
@@ -72,6 +77,7 @@ struct WelcomeView: View {
         self.microphoneStatus = microphoneStatus
         self.accessibilityGranted = accessibilityGranted
         self.shortcutLabel = shortcutLabel
+        self.recordingMode = recordingMode
         self.onEnableMicrophone = onEnableMicrophone
         self.onChangeShortcut = onChangeShortcut
         self.onOpenSettings = onOpenSettings
@@ -94,6 +100,7 @@ struct WelcomeView: View {
                 WelcomeTourPage(
                     step: tourStep,
                     shortcutLabel: shortcutLabel,
+                    recordingMode: recordingMode,
                     animated: animated,
                     phase: tourPhase,
                     onBack: { move(by: -1) },
@@ -135,7 +142,7 @@ struct WelcomeView: View {
             DotSignalMark(size: 52, animated: animated)
                 .accessibilityHidden(true)
 
-            Text("Write as fast as you can think.")
+            Text(ProductLinks.tagline)
                 .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(DotTheme.ink)
                 .padding(.top, 16)

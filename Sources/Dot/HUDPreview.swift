@@ -22,9 +22,10 @@ enum HUDPreview {
 
     /// The argument that renders the card and exits.
     static let argument = "--render-hud"
-    /// The environment variable that does the same. The old spelling is still
-    /// accepted; ``DotMigration/environment(_:in:)`` reads both.
-    static let environmentKey = DotMigration.environmentPrefix + "RENDER_HUD"
+    /// The environment variable that does the same, named without the product
+    /// prefix that ``DotMigration/environment(_:in:)`` adds. That reader accepts
+    /// the pre-rename spelling of the prefix as well.
+    static let environmentKey = "RENDER_HUD"
 
     /// The text of the transcript render.
     static let transcript = "Dot is working end to end. It records the microphone, transcribes the words and pastes them back where you were."
@@ -45,7 +46,7 @@ enum HUDPreview {
     /// The partial the live render shows.
     /// Long enough to scroll: the card keeps the newest words in view, so a
     /// render of it has to show the end of the text and not its beginning.
-    static let livePartial = "Dot keeps listening while you hold the shortcut, so the words arrive as you speak and the card grows to make room for them. The newest words stay in view, which means the beginning of a long thought scrolls up out of the card while the person is still talking."
+    static let livePartial = "Dot keeps listening while the recording runs, so the words arrive as you speak and the card grows to make room for them. The newest words stay in view, which means the beginning of a long thought scrolls up out of the card while the person is still talking."
 
     /// The shortcut the launch render shows.
     static let readyShortcut = "⌥⌘D"
@@ -75,7 +76,7 @@ enum HUDPreview {
         if let index = arguments.firstIndex(of: argument), index + 1 < arguments.count {
             return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
         }
-        if let value = DotMigration.environment("RENDER_HUD", in: environment) {
+        if let value = DotMigration.environment(Self.environmentKey, in: environment) {
             return URL(fileURLWithPath: value, isDirectory: true)
         }
         return nil
@@ -192,22 +193,33 @@ enum HUDPreview {
     }
 
     /// The model of one state, with a signal that looks like speech.
+    ///
+    /// Every value a recording still draws comes from one ``VoiceMeter`` fed the
+    /// synthetic voice of ``SpeechEnvelope``: the history, the level, the
+    /// adaptive ceiling and the bars. A still that set the level to a constant
+    /// would prove only that the canvas can draw a constant, and the render is
+    /// how the shape is reviewed.
     static func makeModel(state: State) -> HUDModel {
         let model = HUDModel()
+        let voice = voiceSample()
         model.isVisible = true
         model.presence = 1
         model.content = 1
-        model.level = 0.62
+        model.level = voice.level
+        model.ceiling = voice.ceiling
+        model.reveal = 1
         model.pulse = 0.32
         model.shimmer = 0.45
         model.time = 2.4
         model.phase = 0.35
-        model.history = SpeechSchedule.history(endingAt: 2.35)
-        model.halfHeights = syntheticHeights()
+        model.history = voice.history
+        model.bars = voice.bars
+        model.halfHeights = voice.halfHeights
+        model.spectrumHistory = spectrumHistory(for: voice.history)
 
         switch state {
         case .recording:
-            model.cardSize = CGSize(width: HUDState.recordingWidth, height: HUDState.recordingHeight)
+            model.cardSize = HUDState.recordingCard.size
             model.mode = .recording(elapsed: "0:07")
         case .live:
             model.cardSize = HUDState.liveCard.size
@@ -221,10 +233,20 @@ enum HUDPreview {
             model.workingDetail = HUDProgress.detail(done: 1, total: 3)
         case .transcript:
             model.cardSize = HUD.transcriptSize(text: transcript)
-            model.mode = .transcript(text: transcript, delivery: .pasted, elapsed: "0:07")
+            model.mode = .transcript(
+                text: transcript,
+                delivery: .pasted,
+                elapsed: "0:07",
+                destination: "Mail"
+            )
         case .transcriptLong:
             model.cardSize = HUD.transcriptSize(text: longTranscript)
-            model.mode = .transcript(text: longTranscript, delivery: .pasted, elapsed: "4:18")
+            model.mode = .transcript(
+                text: longTranscript,
+                delivery: .pasted,
+                elapsed: "4:18",
+                destination: "Mail"
+            )
         case .message:
             let text = "Dot needs the microphone."
             model.cardSize = CGSize(width: HUD.messageWidth(text: text), height: HUDState.recordingHeight)
@@ -240,21 +262,77 @@ enum HUDPreview {
         return model
     }
 
-    /// Three seconds of a voice, rendered once so the shape is deterministic.
-    private static func syntheticHeights() -> [CGFloat] {
+    /// Three seconds of a plausible voice, through the product's own meter.
+    ///
+    /// - Parameter moment: how far into the synthetic voice the still is drawn,
+    ///   in seconds. It is the moment where the drawn half second holds a pause
+    ///   and the syllable after it, so the still shows the shape the meter makes
+    ///   rather than one even arch: at `1.45 s` the bars fall through the pause
+    ///   and rise into the next word.
+    /// - Returns: the history, the level, the ceiling, the column heights and the
+    ///   bar heights the card draws, all from one meter.
+    static func voiceSample(
+        at moment: Double = 1.45
+    ) -> (history: [Double], level: Double, ceiling: Double, halfHeights: [CGFloat], bars: [Double]) {
         let meter = VoiceMeter()
-        var time: TimeInterval = 0
-        while time < 3.2 {
-            meter.push(decibels: 20 * log10(max(SpeechEnvelope.rms(at: time), 0.00001)), now: time)
+        // Three seconds before the moment as well as up to it, so the history
+        // is full: the visualisers that scroll draw the whole three seconds, and
+        // a still whose history began at zero draws a dead left half. Before the
+        // voice starts there is room, which is what a recording opens with.
+        var time: TimeInterval = moment - 3
+        while time <= moment {
+            let rms = max(SpeechEnvelope.rms(at: time), 0.00001)
+            meter.push(decibels: 20 * log10(rms), now: time)
             time += 1.0 / 60.0
         }
-        return Waveform.halfHeights(
-            history: meter.orderedHistory,
+        var history: [Double] = []
+        meter.copyOrderedHistory(into: &history)
+        var bars: [Double] = []
+        VisualizerBars.stretch(
+            into: &bars,
+            history: history,
+            spectrum: spectrumHistory(for: history),
+            reveal: 1
+        )
+        let heights = Waveform.halfHeights(
+            history: history,
             phase: meter.phase,
             count: Waveform.columnCount,
             maximum: HUDTheme.waveformHeight / 2,
             breath: 1.1
         )
+        return (history, meter.envelope, meter.ceiling, heights, bars)
+    }
+
+    /// The five bands the grid and the scrolling meter draw, for a still.
+    ///
+    /// A still has no audio tap, and the matrix is a picture of five bands, so
+    /// the bands have to come from the one signal the still does have. The
+    /// model is the honest one: a band carries the energy of the envelope, and
+    /// the bands above the fundamental are lifted where the envelope is rising,
+    /// which is where a sibilant sits in a word. It is the shape of a spectrum
+    /// rather than a spectrum, and it is drawn only by the documentation
+    /// renders.
+    ///
+    /// - Parameter history: the envelope history, oldest first.
+    /// - Returns: one frame per tick of the history, oldest first.
+    static func spectrumHistory(for history: [Double]) -> [AudioSpectrumFrame] {
+        var frames: [AudioSpectrumFrame] = []
+        frames.reserveCapacity(history.count)
+        for index in history.indices {
+            let energy = min(1, max(0, history[index]))
+            let before = history[max(0, index - 2)]
+            let onset = min(1, max(0, (energy - before) * 4))
+            // The fundamental is the chest at the bottom row, the sibilance the
+            // top row, and the middle three the vowel between them.
+            let chest = energy * 0.88
+            let vowel = energy * 0.94
+            let presence = energy * 0.80
+            let formant = min(1, energy * 0.62 + onset * 0.30)
+            let sibilance = min(1, energy * 0.35 + onset * 0.55)
+            frames.append(AudioSpectrumFrame(bands: (sibilance, formant, presence, vowel, chest)))
+        }
+        return frames
     }
 
     /// The render could not be made.

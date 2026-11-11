@@ -26,6 +26,7 @@ final class SettingsWindowController {
         onTest: @escaping (String) async -> Bool,
         onChangeShortcut: @escaping () -> Void,
         onChangePasteShortcut: @escaping () -> Void = {},
+        onChangePaletteShortcut: @escaping () -> Void = {},
         onOpenWelcome: @escaping () -> Void = {}
     ) {
         let host = existingHost()
@@ -41,6 +42,7 @@ final class SettingsWindowController {
                 onTest: onTest,
                 onChangeShortcut: onChangeShortcut,
                 onChangePasteShortcut: onChangePasteShortcut,
+                onChangePaletteShortcut: onChangePaletteShortcut,
                 onOpenWelcome: onOpenWelcome
             )
         }

@@ -4,32 +4,20 @@ import SwiftUI
 /// Owns the About window.
 ///
 /// Like the welcome, it keeps one `DotWindowHost` for its lifetime and
-/// replaces the content on every open. About is read-only: its only actions
-/// are the ones the caller supplies.
+/// replaces the content on every open. About is read-only: everything it shows
+/// comes from the bundle, ``ProductLinks`` and the update check, and the one
+/// action that leaves the window is the close.
 @MainActor
 final class AboutWindowController {
     private var host: DotWindowHost?
 
     /// Shows About, creating the window the first time.
-    func show(
-        version: String,
-        onWelcome: @escaping () -> Void,
-        onOpenSettings: @escaping () -> Void,
-        onOpenLog: @escaping () -> Void,
-        onClose: @escaping () -> Void
-    ) {
+    func show() {
         let host = existingHost()
         host.present {
-            AboutView(
-                version: version,
-                onWelcome: onWelcome,
-                onOpenSettings: onOpenSettings,
-                onOpenLog: onOpenLog,
-                onClose: { [weak self] in
-                    onClose()
-                    self?.close()
-                }
-            )
+            AboutView(onClose: { [weak self] in
+                self?.close()
+            })
         }
     }
 
@@ -42,10 +30,7 @@ final class AboutWindowController {
         if let host {
             return host
         }
-        let host = DotWindowHost(
-            title: "About Dot",
-            size: CGSize(width: 520, height: 368)
-        )
+        let host = DotWindowHost(title: "About Dot", size: AboutView.size)
         self.host = host
         return host
     }

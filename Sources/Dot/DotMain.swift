@@ -58,6 +58,19 @@ enum DotMain {
             }
         }
 
+        // The card is drawn as a film and the process exits: one deterministic
+        // frame per tick of a fixed clock, so the recording needs no screen.
+        if let directory = DemoRender.requestedDirectory() {
+            application.setActivationPolicy(.prohibited)
+            do {
+                try DemoRender.renderAll(to: directory)
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data("Demo render failed: \(error)\n".utf8))
+                exit(1)
+            }
+        }
+
         // The light windows are rendered to a directory and the process exits.
         if let directory = UIPreview.requestedDirectory() {
             application.setActivationPolicy(.prohibited)
@@ -66,6 +79,20 @@ enum DotMain {
                 exit(0)
             } catch {
                 FileHandle.standardError.write(Data("UI render failed: \(error)\n".utf8))
+                exit(1)
+            }
+        }
+
+        // The app icon and the menu bar glyph are rendered to a directory and
+        // the process exits. `scripts/render-icon.sh` is the only caller.
+        if let directory = IconRender.requestedDirectory() {
+            application.setActivationPolicy(.prohibited)
+            let mark = IconRender.requestedMark()
+            do {
+                try IconRender.renderAll(to: directory, mark: mark)
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data("Icon render failed: \(error)\n".utf8))
                 exit(1)
             }
         }

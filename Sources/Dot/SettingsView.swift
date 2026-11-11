@@ -31,6 +31,8 @@ struct SettingsView: View {
     private let onChangeShortcut: () -> Void
     /// Opens the shortcut recorder for the paste shortcut.
     private let onChangePasteShortcut: () -> Void
+    /// Opens the shortcut recorder for the palette shortcut.
+    private let onChangePaletteShortcut: () -> Void
     /// Opens the welcome window.
     private let onOpenWelcome: () -> Void
     /// Whether the provider list starts open. Headless renders set it so the
@@ -40,9 +42,14 @@ struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.settingsHeadless) private var headless
     @Environment(\.settingsVersionOverride) private var versionOverride
+    @Environment(\.settingsDefaultInputUID) private var defaultInputUIDOverride
 
     @State private var selected: Page
     @State private var hoveredPage: Page?
+    /// The space the selection pill travels in, so a change of page reads as the
+    /// pill moving down the list instead of one pill vanishing and another
+    /// appearing.
+    @Namespace private var sidebarPillSpace
     /// Counts the writes this view makes to its own configuration.
     ///
     /// `config` is a binding whose value lives on a plain property outside
@@ -53,6 +60,10 @@ struct SettingsView: View {
     /// a participant in its own change again.
     @State private var revision = 0
     @State private var microphoneDevices: [MicrophoneDevice] = []
+    /// The UID the system default microphone resolves to, read when the window
+    /// appears. A calibration is keyed by device, and "system default" names
+    /// whichever device is first today.
+    @State private var defaultInputUID: String?
     @State private var primaryKey = ""
     @State private var keyStatus: KeyStatus?
     @State private var savedProviders: Set<String> = []
@@ -65,6 +76,8 @@ struct SettingsView: View {
     @State private var availableModels: [AvailableModel] = []
     @State private var isLoadingModels = false
     @State private var isCustomModelSelected = false
+    /// The bundle identifier typed into the add row of the output-grammar list.
+    @State private var newOverrideBundleID = ""
     @FocusState private var focusedField: Field?
 
     /// Creates the settings.
@@ -81,6 +94,7 @@ struct SettingsView: View {
     ///   - onTest: Checks whether a provider can transcribe right now.
     ///   - onChangeShortcut: Opens the record-shortcut recorder.
     ///   - onChangePasteShortcut: Opens the paste-shortcut recorder.
+    ///   - onChangePaletteShortcut: Opens the palette-shortcut recorder.
     ///   - onOpenWelcome: Opens the welcome window.
     ///   - providerMenuOpen: Whether the provider list starts open. `nil` keeps
     ///     it closed; only an offscreen render asks for the open state.
@@ -95,6 +109,7 @@ struct SettingsView: View {
         onTest: @escaping (String) async -> Bool,
         onChangeShortcut: @escaping () -> Void,
         onChangePasteShortcut: @escaping () -> Void = {},
+        onChangePaletteShortcut: @escaping () -> Void = {},
         onOpenWelcome: @escaping () -> Void = {},
         providerMenuOpen: Bool? = nil
     ) {
@@ -109,6 +124,7 @@ struct SettingsView: View {
         self.onTest = onTest
         self.onChangeShortcut = onChangeShortcut
         self.onChangePasteShortcut = onChangePasteShortcut
+        self.onChangePaletteShortcut = onChangePaletteShortcut
         self.onOpenWelcome = onOpenWelcome
         self.providerMenuOpen = providerMenuOpen ?? false
         _liveDwellSeconds = State(initialValue: config.wrappedValue.hudDwellSeconds)
@@ -141,6 +157,12 @@ struct SettingsView: View {
             select(page)
         }
         .onAppear {
+            // A render supplies the default input rather than enumerating the
+            // machine's audio devices; the real window asks the system.
+            if defaultInputUID == nil {
+                defaultInputUID = defaultInputUIDOverride
+                    ?? (headless ? nil : MicrophoneCatalog.recordingDeviceUID(configured: nil))
+            }
             guard !headless else { return }
             launchAtLogin = LaunchAtLogin.isEnabled
             if microphoneDevices.isEmpty {
@@ -219,27 +241,15 @@ struct SettingsView: View {
             }
             .padding(.horizontal, 11)
             .frame(height: 33)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(
-                        isSelected
-                            ? DotTheme.sidebarSelectedFill
-                            : DotTheme.sidebarHoverFill.opacity(isHovered ? 1 : 0)
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(
-                        isSelected ? DotTheme.sidebarSelectedBorder : .clear,
-                        lineWidth: 1
-                    )
-            )
-            .shadow(
-                color: isSelected ? DotTheme.cardShadow : .clear,
-                radius: 6,
-                x: 0,
-                y: 2
-            )
+            .background {
+                if isSelected {
+                    sidebarPill
+                        .matchedGeometryEffect(id: "sidebar-pill", in: sidebarPillSpace)
+                } else if isHovered {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(DotTheme.sidebarHoverFill)
+                }
+            }
             .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -255,6 +265,18 @@ struct SettingsView: View {
         .accessibilityLabel(page.title)
         .accessibilityHint("Shows the \(page.title) settings.")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    /// The selection pill itself, matched across rows so it travels rather than
+    /// blinking from one item to the next.
+    private var sidebarPill: some View {
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(DotTheme.sidebarSelectedFill)
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(DotTheme.sidebarSelectedBorder, lineWidth: 1)
+            )
+            .shadow(color: DotTheme.cardShadow, radius: 5, x: 0, y: 1)
     }
 
     // MARK: - Page
@@ -341,8 +363,11 @@ struct SettingsView: View {
     private var generalPage: some View {
         VStack(alignment: .leading, spacing: 12) {
             recordingCard
+                .dotSelectLayer()
             deliveryCard
             inputCard
+                .dotSelectLayer()
+            grammarCard
                 .dotSelectLayer()
             updatesCard
             revealLogLink
@@ -356,7 +381,7 @@ struct SettingsView: View {
                     title: "Record",
                     keycap: config.hotkey.keycapLabel,
                     action: onChangeShortcut,
-                    hint: "Opens the recorder. Escape cancels."
+                    hint: "Starts and stops a recording. Escape cancels."
                 )
                 cardDivider
                 shortcutRow(
@@ -365,8 +390,40 @@ struct SettingsView: View {
                     action: onChangePasteShortcut,
                     hint: "Opens the recorder for the paste shortcut."
                 )
+                cardDivider
+                recordingModeRow
             }
         }
+    }
+
+    /// The interaction the record shortcut uses to start and end a recording.
+    ///
+    /// The line under the picker is the selected mode's own sentence, so the row
+    /// answers "what will the key do now" without the list being opened. The
+    /// choice is written straight into the configuration, which is what the
+    /// running app reads on the next press: no relaunch is involved.
+    private var recordingModeRow: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Start and stop")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(DotTheme.ink)
+                Text(config.recordingMode.detail)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(DotTheme.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            DotSelect(
+                label: "Start and stop",
+                options: RecordingMode.allCases.map { mode in
+                    DotSelectOption(value: mode, title: mode.title, detail: mode.detail)
+                },
+                selection: recordingModeBinding,
+                width: 168
+            )
+        }
+        .padding(.vertical, 5)
     }
 
     private var deliveryCard: some View {
@@ -431,23 +488,91 @@ struct SettingsView: View {
 
     private var inputControl: some View {
         settingsCard("Input", symbol: "mic") {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Microphone")
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(DotTheme.ink)
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Microphone")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(DotTheme.ink)
+                    }
+                    Spacer(minLength: 12)
+                    DotSelect(
+                        label: "Microphone",
+                        options: microphoneOptions,
+                        selection: microphoneBinding,
+                        placeholder: "System Default",
+                        width: 210
+                    )
                 }
-                Spacer(minLength: 12)
-                DotSelect(
-                    label: "Microphone",
-                    options: microphoneOptions,
-                    selection: microphoneBinding,
-                    placeholder: "System Default",
-                    width: 210
-                )
+                if let calibration = selectedCalibration {
+                    cardDivider
+                    calibrationRow(calibration)
+                }
             }
             .dotSelectLayer()
         }
+    }
+
+    /// What Dot learned about the microphone the picker selects.
+    ///
+    /// With the system default chosen, the row describes the device that would
+    /// record right now, which is the device a new take would teach. A UID the
+    /// system cannot resolve has no row: there is nothing to describe.
+    private var selectedCalibration: MicrophoneCalibration? {
+        MicrophoneCalibrationBook.calibration(
+            for: calibrationDeviceUID,
+            in: config.microphoneCalibration
+        )
+    }
+
+    /// The device the calibration row is about: the chosen one, or the one the
+    /// system default resolves to.
+    private var calibrationDeviceUID: String? {
+        configurationDeviceUID ?? defaultInputUID
+    }
+
+    private var configurationDeviceUID: String? {
+        let trimmed = config.microphoneDeviceUID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// The line that says what the meter knows about this microphone, and the
+    /// way to forget it.
+    private func calibrationRow(_ calibration: MicrophoneCalibration) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(calibrationObservedText(calibration.observedSamples))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(DotTheme.ink)
+                Text("The level meter starts from this microphone's own room.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(DotTheme.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            Button("Reset") {
+                resetCalibration()
+            }
+            .buttonStyle(DotSecondaryButtonStyle())
+            .accessibilityLabel("Reset microphone calibration")
+            .accessibilityHint("Forgets what Dot learned about this microphone.")
+        }
+        .padding(.vertical, 5)
+    }
+
+    /// How many recordings the entry was learned from.
+    private func calibrationObservedText(_ count: Int) -> String {
+        count == 1 ? "Learned from 1 recording" : "Learned from \(count) recordings"
+    }
+
+    /// Forgets one device, and only that device.
+    private func resetCalibration() {
+        guard let device = calibrationDeviceUID else { return }
+        let next = MicrophoneCalibrationBook.resetting(config.microphoneCalibration, device: device)
+        guard next != config.microphoneCalibration else { return }
+        config.microphoneCalibration = next
+        revision &+= 1
+        onChange()
     }
 
     /// The inputs the microphone list offers: the system default, the device a
@@ -461,6 +586,154 @@ struct SettingsView: View {
         ).map { option in
             DotSelectOption(value: option.uid, title: option.name)
         }
+    }
+
+    /// The output grammar: opt-in, and never silent about which app it is for.
+    private var grammarCard: some View {
+        settingsCard("Output grammar", symbol: "text.badge.checkmark") {
+            VStack(spacing: 0) {
+                toggleRow(
+                    title: "Rewrite for the app",
+                    subtitle: "Adjusts punctuation and line breaks for the app you dictate into. History and the clipboard keep your original words.",
+                    isOn: grammarEnabledBinding
+                )
+                if config.outputGrammarEnabled {
+                    cardDivider
+                    overrideList
+                    cardDivider
+                    addOverrideRow
+                }
+            }
+        }
+    }
+
+    /// One row per app the person has corrected, and nothing when there are
+    /// none: the table already covers the common apps.
+    @ViewBuilder
+    private var overrideList: some View {
+        let keys = config.outputGrammarTargets.keys.sorted()
+        if keys.isEmpty {
+            HStack(spacing: 6) {
+                Text("No per-app overrides. Dot uses its built-in table.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(DotTheme.ink3)
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 6)
+        } else {
+            VStack(spacing: 0) {
+                ForEach(keys, id: \.self) { bundleID in
+                    overrideRow(bundleID)
+                    if bundleID != keys.last { cardDivider }
+                }
+            }
+        }
+    }
+
+    private func overrideRow(_ bundleID: String) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(bundleID)
+                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(DotTheme.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let derived = DictationTarget.table(for: bundleID) {
+                    Text("Built in: \(derived.title)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(DotTheme.ink3)
+                }
+            }
+            Spacer(minLength: 8)
+            DotSelect(
+                label: "Grammar for \(bundleID)",
+                options: grammarOptions,
+                selection: overrideBinding(for: bundleID),
+                placeholder: DictationTarget.plain.title,
+                width: 118
+            )
+            Button {
+                removeOverride(bundleID)
+            } label: {
+                Image(systemName: "minus.circle")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(DotTheme.ink2)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove the grammar override for \(bundleID)")
+        }
+        .padding(.vertical, 5)
+    }
+
+    private var addOverrideRow: some View {
+        HStack(spacing: 8) {
+            TextField("com.example.app", text: $newOverrideBundleID)
+                .modifier(DotFieldStyle(focused: false))
+                .accessibilityLabel("Bundle identifier")
+                .accessibilityHint("The app whose grammar you want to choose.")
+            Button("Add") {
+                addOverride()
+            }
+            .buttonStyle(DotSecondaryButtonStyle())
+            .disabled(trimmedNewOverride.isEmpty)
+            .accessibilityLabel("Add the app override")
+        }
+        .padding(.vertical, 5)
+    }
+
+    private var trimmedNewOverride: String {
+        newOverrideBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var grammarOptions: [DotSelectOption<DictationTarget>] {
+        DictationTarget.allCases.map { target in
+            DotSelectOption(value: target, title: target.title, detail: target.detail)
+        }
+    }
+
+    private var grammarEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { config.outputGrammarEnabled },
+            set: { value in
+                guard config.outputGrammarEnabled != value else { return }
+                config.outputGrammarEnabled = value
+                revision &+= 1
+                onChange()
+            }
+        )
+    }
+
+    private func overrideBinding(for bundleID: String) -> Binding<DictationTarget> {
+        Binding(
+            get: {
+                config.outputGrammarTargets[bundleID]
+                    ?? DictationTarget.resolved(bundleIdentifier: bundleID)
+            },
+            set: { value in
+                guard config.outputGrammarTargets[bundleID] != value else { return }
+                config.outputGrammarTargets[bundleID] = value
+                revision &+= 1
+                onChange()
+            }
+        )
+    }
+
+    private func addOverride() {
+        let id = trimmedNewOverride
+        guard !id.isEmpty, config.outputGrammarTargets[id] == nil else { return }
+        // The row starts on what the app would get today, so adding an app is
+        // about correcting a decision rather than making one up.
+        config.outputGrammarTargets[id] = config.dictationTarget(for: id)
+        newOverrideBundleID = ""
+        revision &+= 1
+        onChange()
+    }
+
+    private func removeOverride(_ bundleID: String) {
+        guard config.outputGrammarTargets[bundleID] != nil else { return }
+        config.outputGrammarTargets.removeValue(forKey: bundleID)
+        revision &+= 1
+        onChange()
     }
 
     private var updatesCard: some View {
@@ -686,9 +959,9 @@ struct SettingsView: View {
     /// The picker of the connect card: one row per service Dot can reach.
     ///
     /// The list is ``DotSelect``, the app's own control, not a system pop-up.
-    /// Its rows come from ``ProviderPreset/rows(for:)``, so a configuration
-    /// written before a row was retired is presented as the custom endpoint it
-    /// is — with its own provider id, so choosing it cannot re-point anything.
+    /// Its rows come from ``ProviderPreset/rows(for:)``, so an endpoint Dot ships
+    /// no row for is still presented — as the custom row, carrying its own
+    /// provider id and stored URL, so choosing it cannot re-point anything.
     private var serviceSelect: some View {
         DotSelect(
             label: "Service",
@@ -1609,7 +1882,7 @@ struct SettingsView: View {
                         title: "Record",
                         keycap: config.hotkey.keycapLabel,
                         action: onChangeShortcut,
-                        hint: "Opens the recorder. Escape cancels."
+                        hint: "Starts and stops a recording. Escape cancels."
                     )
                     cardDivider
                     shortcutRow(
@@ -1618,6 +1891,22 @@ struct SettingsView: View {
                         action: onChangePasteShortcut,
                         hint: "Opens the recorder for the paste shortcut."
                     )
+                    cardDivider
+                    shortcutRow(
+                        title: "Palette",
+                        keycap: config.paletteHotkey.keycapLabel,
+                        action: onChangePaletteShortcut,
+                        hint: "Opens the recorder for the dictation palette."
+                    )
+                }
+            }
+
+            settingsCard("Dictation palette", symbol: "rectangle.stack") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("A floating list of your recent dictations. Type to search, Return inserts the chosen one at the cursor, Shift-Return copies it, Escape closes.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(DotTheme.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -1844,7 +2133,7 @@ struct SettingsView: View {
 
     private var aboutPage: some View {
         VStack(alignment: .leading, spacing: 18) {
-            AboutIdentity(version: version, tagline: DotLinks.tagline)
+            AboutIdentity(version: version, tagline: ProductLinks.tagline)
 
             DotCard(padding: 8) {
                 VStack(spacing: 0) {
@@ -1854,14 +2143,14 @@ struct SettingsView: View {
                     aboutHairline
                     aboutRow(
                         "GitHub",
-                        detail: DotLinks.displayGitHub,
+                        detail: ProductLinks.displayGitHub,
                         symbol: "arrow.up.right"
                     ) {
-                        NSWorkspace.shared.open(DotLinks.github)
+                        NSWorkspace.shared.open(ProductLinks.github)
                     }
                     aboutHairline
-                    aboutRow("Website", detail: DotLinks.website.host, symbol: "globe") {
-                        NSWorkspace.shared.open(DotLinks.website)
+                    aboutRow("Website", detail: ProductLinks.displayWebsite, symbol: "globe") {
+                        NSWorkspace.shared.open(ProductLinks.website)
                     }
                     aboutHairline
                     aboutRow("Show welcome tour", symbol: "sparkles") {
@@ -1874,10 +2163,10 @@ struct SettingsView: View {
                     aboutHairline
                     aboutRow(
                         "Support Dot",
-                        detail: DotLinks.displayBuyMeACoffee,
+                        detail: ProductLinks.displaySupport,
                         symbol: "cup.and.saucer.fill"
                     ) {
-                        NSWorkspace.shared.open(DotLinks.buyMeACoffee)
+                        NSWorkspace.shared.open(ProductLinks.support)
                     }
                 }
             }
@@ -1990,7 +2279,7 @@ struct SettingsView: View {
     private func selectionIndicator(_ selected: Bool) -> some View {
         ZStack {
             Circle()
-                .fill(selected ? DotTheme.accent : Color.clear)
+                .fill(selected ? DotTheme.selectionFill : Color.clear)
             Circle()
                 .strokeBorder(
                     selected ? Color.clear : DotTheme.selectionRing,
@@ -1999,10 +2288,11 @@ struct SettingsView: View {
             if selected {
                 Image(systemName: "checkmark")
                     .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(DotTheme.onAccent)
+                    .foregroundStyle(DotTheme.onSelection)
             }
         }
         .frame(width: 16, height: 16)
+        .animation(.spring(response: 0.26, dampingFraction: 0.75), value: selected)
         .accessibilityHidden(true)
     }
 
@@ -2066,11 +2356,9 @@ struct SettingsView: View {
         }
         return "Custom endpoint"
     }
+    /// The version the page shows, unless a render supplies one.
     private var version: String {
-        if let versionOverride {
-            return versionOverride
-        }
-        return Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0-beta"
+        versionOverride ?? ProductVersion.current
     }
 
     private var currentLanguageID: String {
@@ -2111,6 +2399,18 @@ struct SettingsView: View {
             set: { value in
                 guard config.logTranscripts != value else { return }
                 config.logTranscripts = value
+                revision &+= 1
+                onChange()
+            }
+        )
+    }
+
+    private var recordingModeBinding: Binding<RecordingMode> {
+        Binding(
+            get: { config.recordingMode },
+            set: { value in
+                guard config.recordingMode != value else { return }
+                config.recordingMode = value
                 revision &+= 1
                 onChange()
             }
@@ -2672,22 +2972,50 @@ private struct HUDSwatchWaveform: View {
     }
 }
 
-/// An ultra-smooth, responsive modern macOS slider with continuous local dragging,
-/// tactile spring feedback, subtle gradient fill, and debounced commit.
+/// A slider in the app's own control family: the warm grey track and green fill
+/// of the switch, a porcelain knob with the same seat shadow, and a knob that
+/// grows under the pointer and further while it is held.
 private struct DotModernSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let step: Double
     let onCommit: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dragPosition: Double?
     @State private var isDragging: Bool = false
     @State private var isHovering: Bool = false
 
+    private var reducesMotion: Bool {
+        reduceMotion || DotMotion.reducesMotion
+    }
+
+    private var thumbDiameter: CGFloat { 15 }
+    private var trackHeight: CGFloat { 5 }
+
+    /// Writes through the binding and commits, so a change made from the
+    /// accessibility slider reaches the configuration the same way a drag does.
+    private var committedValue: Binding<Double> {
+        Binding(
+            get: { value },
+            set: { newValue in
+                value = newValue
+                onCommit()
+            }
+        )
+    }
+
+    private var knobScale: CGFloat {
+        guard !reducesMotion else { return 1 }
+        if isDragging {
+            return 1.14
+        }
+        return isHovering ? 1.06 : 1
+    }
+
     var body: some View {
         GeometryReader { proxy in
             let totalWidth = proxy.size.width
-            let thumbDiameter: CGFloat = 14
             let usableWidth = max(1, totalWidth - thumbDiameter)
             let currentValue = dragPosition ?? value
             let progress = max(0, min(1, (currentValue - range.lowerBound) / (range.upperBound - range.lowerBound)))
@@ -2695,28 +3023,36 @@ private struct DotModernSlider: View {
 
             ZStack(alignment: .leading) {
                 Capsule(style: .continuous)
-                    .fill(Color.white.opacity(0.10))
+                    .fill(DotTheme.sliderTrack)
                     .overlay(
                         Capsule(style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5)
+                            .strokeBorder(DotTheme.switchOffEdge, lineWidth: 0.5)
                     )
-                    .frame(height: 4)
+                    .frame(height: trackHeight)
 
                 Capsule(style: .continuous)
-                    .fill(DotTheme.accent)
-                    .frame(width: max(thumbDiameter / 2, thumbX + thumbDiameter / 2), height: 4)
+                    .fill(
+                        LinearGradient(
+                            colors: [DotTheme.switchOnTop, DotTheme.switchOn],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .frame(
+                        width: max(thumbDiameter / 2, thumbX + thumbDiameter / 2),
+                        height: trackHeight
+                    )
 
                 Circle()
-                    .fill(Color.white)
-                    .overlay(
-                        Circle()
-                            .strokeBorder(Color.white.opacity(0.9), lineWidth: 0.5)
-                    )
-                    .shadow(color: Color.black.opacity(isDragging ? 0.30 : 0.18), radius: isDragging ? 2.5 : 1.5, y: 0.75)
+                    .fill(DotTheme.switchKnob)
+                    .shadow(color: DotTheme.switchKnobShadow, radius: 2, x: 0, y: 1)
                     .frame(width: thumbDiameter, height: thumbDiameter)
-                    .scaleEffect(isDragging ? 1.08 : (isHovering ? 1.04 : 1.0))
+                    .scaleEffect(knobScale)
                     .offset(x: thumbX)
-                    .animation(.spring(response: 0.20, dampingFraction: 0.8), value: isDragging)
+                    .animation(
+                        reducesMotion ? nil : .spring(response: 0.20, dampingFraction: 0.80),
+                        value: isDragging
+                    )
                     .animation(.easeOut(duration: 0.12), value: isHovering)
             }
             .frame(height: proxy.size.height)
@@ -2751,6 +3087,9 @@ private struct DotModernSlider: View {
             )
         }
         .frame(height: 20)
+        .accessibilityRepresentation {
+            Slider(value: committedValue, in: range, step: step)
+        }
     }
 }
 
@@ -3050,6 +3389,21 @@ extension EnvironmentValues {
     var settingsHeadless: Bool {
         get { self[SettingsHeadlessKey.self] }
         set { self[SettingsHeadlessKey.self] = newValue }
+    }
+}
+
+/// The device the system default microphone would resolve to, for an offscreen
+/// render. A render must not enumerate audio devices, and a page that names a
+/// device it cannot resolve shows the placeholder instead of the real row.
+private struct SettingsDefaultInputKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+    /// The UID an offscreen render treats as the system default input.
+    var settingsDefaultInputUID: String? {
+        get { self[SettingsDefaultInputKey.self] }
+        set { self[SettingsDefaultInputKey.self] = newValue }
     }
 }
 

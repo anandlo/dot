@@ -3,20 +3,39 @@ import ServiceManagement
 
 /// Whether Dot starts with the Mac.
 ///
-/// Supports both `SMAppService.mainApp` and the user LaunchAgent plist
-/// (`~/Library/LaunchAgents/com.local.dot.plist`) installed by `scripts/install.sh`.
-/// When running an ad-hoc signed build or a bundle outside `/Applications`,
-/// `SMAppService.mainApp.register()` either throws or leaves the service in
-/// `.requiresApproval`; falling back to the LaunchAgent plist ensures the
-/// Launch at Login toggle in Settings and the menu bar always works reliably.
+/// Two mechanisms are used together. `SMAppService.mainApp` is the supported
+/// one; an ad-hoc signed build, or a bundle outside `/Applications`, either
+/// throws on `register()` or leaves the service in `.requiresApproval`, so the
+/// user LaunchAgent plist that `scripts/install.sh` also writes is the fallback.
+/// Whichever of the two is in place, the Settings toggle and the menu reflect it.
 enum LaunchAtLogin {
-    /// The LaunchAgent label used by `scripts/install.sh`.
-    static let agentLabel = "com.local.dot"
+    /// The LaunchAgent label, which is the app's bundle identifier.
+    ///
+    /// `scripts/build.sh` writes the identifier from `scripts/config.sh` into
+    /// the bundle, and `scripts/install.sh` names the agent after the same
+    /// value, so the app and its agent can never carry two identities. The
+    /// fallback is for a binary with no bundle — `swift run` — where there is no
+    /// identifier to read.
+    static var agentLabel: String {
+        Bundle.main.bundleIdentifier ?? "com.anandlo.dot"
+    }
 
-    /// Default path to `~/Library/LaunchAgents/com.local.dot.plist`.
+    /// The labels this app wrote its agent under before the identity was
+    /// unified.
+    ///
+    /// Their plists are removed whenever the current one is written or removed:
+    /// an upgrade must not leave a second agent starting the same app.
+    static let legacyAgentLabels = ["com.local.dot"]
+
+    /// Default path to the LaunchAgent plist this build uses.
     static var defaultAgentURL: URL {
+        agentURL(for: agentLabel)
+    }
+
+    /// The plist path of a given agent label.
+    private static func agentURL(for label: String) -> URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/\(agentLabel).plist")
+            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
     }
 
     /// Whether Dot is registered to start at login.
@@ -29,6 +48,7 @@ enum LaunchAtLogin {
 
     /// Turns the login item on or off.
     static func set(_ enabled: Bool) throws {
+        defer { removeLegacyAgents() }
         if enabled {
             if SMAppService.mainApp.status != .enabled {
                 try? SMAppService.mainApp.register()
@@ -42,6 +62,16 @@ enum LaunchAtLogin {
                 try? SMAppService.mainApp.unregister()
             }
             try removeAgent(at: defaultAgentURL)
+        }
+    }
+
+    /// Removes the agents written under an earlier label.
+    ///
+    /// A stale plist both lies about the state of the toggle and starts the app
+    /// a second time at login, so it goes with every change to the current one.
+    static func removeLegacyAgents() {
+        for label in legacyAgentLabels where label != agentLabel {
+            try? removeAgent(at: agentURL(for: label))
         }
     }
 

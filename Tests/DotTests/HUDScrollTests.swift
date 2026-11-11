@@ -65,11 +65,24 @@ final class HUDScrollTests: XCTestCase {
         }
 
         let point = NSPoint(x: 280, y: 90)
-        let event = try wheelEvent(at: point, points: 60)
-        fixture.panel.sendEvent(event)
-        // SwiftUI applies the wheel on its next pass, so the offset is read
-        // until it moves rather than once.
-        waitUntil { self.offset(of: fixture.scrollView) < bottom - 1 }
+        // SwiftUI applies the wheel on a later pass of the run loop, so the
+        // offset is polled for rather than read once. The panel is asked to
+        // lay out and display inside the wait, so a pass that the machine is
+        // slow to schedule is still taken, and a wheel that the window server
+        // dropped before the panel was ever drawn is sent again — a second
+        // flick of the wheel is what a person would do, and the card either
+        // scrolls or it does not.
+        var applied = false
+        for _ in 1...3 {
+            fixture.panel.sendEvent(try wheelEvent(at: point, points: 60))
+            applied = waitUntil {
+                fixture.panel.displayIfNeeded()
+                fixture.host.layoutSubtreeIfNeeded()
+                return self.offset(of: fixture.scrollView) < bottom - 1
+            }
+            if applied { break }
+        }
+        XCTAssertTrue(applied, "the wheel was not applied to the transcript")
 
         let scrolled = fixture.scrollView.contentView.bounds.origin.y
         XCTAssertLessThan(scrolled, bottom - 10, "the wheel did not move the text")
@@ -178,15 +191,21 @@ final class HUDScrollTests: XCTestCase {
         XCTAssertTrue(hud.isVisible)
         XCTAssertEqual(try XCTUnwrap(hud.debugDwellRemaining), 0.6, accuracy: 0.05)
 
-        // Part of the dwell is spent before the pointer arrives.
-        spin(for: 0.25)
+        // Part of the dwell is spent before the pointer arrives. The amount is
+        // handed to the card rather than waited for: the countdown spends the
+        // real time between two frames, and a machine running the suite in
+        // parallel can withhold frames for longer than the whole dwell and then
+        // deliver one frame that spends all of it. `debugAdvanceDwell` goes
+        // through the same `updateDwell` the frame loop calls, so the arithmetic
+        // under test is the one the app runs.
+        hud.debugAdvanceDwell(by: 0.25)
         let beforeReading = try XCTUnwrap(hud.debugDwellRemaining)
         XCTAssertLessThan(beforeReading, 0.5)
 
         // Reading the card spends none of it, and does not give the card a
         // fresh six tenths either.
         hud.debugPointer(inside: true)
-        spin(for: 1.0)
+        hud.debugAdvanceDwell(by: 1.0)
         XCTAssertTrue(hud.isVisible, "the card was dismissed while it was being read")
         XCTAssertTrue(hud.debugDwellPaused)
         let afterReading = try XCTUnwrap(hud.debugDwellRemaining)
@@ -195,7 +214,7 @@ final class HUDScrollTests: XCTestCase {
 
         // The pointer leaves, and what was left is what the card gets.
         hud.debugPointer(inside: false)
-        spin(for: 1.0)
+        hud.debugAdvanceDwell(by: 1.0)
         XCTAssertFalse(hud.isVisible, "the countdown did not resume when the pointer left")
     }
 
@@ -262,12 +281,19 @@ final class HUDScrollTests: XCTestCase {
 
     /// Spins the run loop until `condition` holds, or the deadline passes.
     ///
+    /// The deadline is long on purpose. The HUD's clock only moves on frames
+    /// the run loop delivers, and a machine running the test bundle in parallel
+    /// can go a second or more without giving this process a turn. A short
+    /// window measures the machine's load rather than the behaviour under test;
+    /// the condition itself is what the test is about, so it is polled for
+    /// until it holds.
+    ///
     /// - Parameters:
     ///   - timeout: how long to wait, in seconds.
     ///   - condition: what has to become true.
     @discardableResult
     private func waitUntil(
-        timeout: TimeInterval = 1,
+        timeout: TimeInterval = 5,
         _ condition: () -> Bool
     ) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)

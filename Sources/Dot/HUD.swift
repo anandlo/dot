@@ -29,11 +29,10 @@ final class HUDHostingView: NSHostingView<AnyView> {
 
 /// The heads-up display: the card at the top of the screen.
 ///
-/// The panel is a fixed size; only its frame is placed. The card animates
-/// *inside* it, so the window server never sees a transparent window change
-/// size — the thing that used to leave a grey edge around the shape. The card
-/// itself is one SwiftUI surface, so there is no second material and no second
-/// shadow.
+/// The panel has one fixed size and only its frame is placed. The card animates
+/// *inside* that frame, so the window server never sees a transparent window
+/// change size, which is what leaves a grey edge around a shape. The card is a
+/// single SwiftUI surface, so there is no second material and no second shadow.
 @MainActor
 final class HUD {
     /// The size of the panel. It is large enough for the biggest card plus
@@ -53,6 +52,12 @@ final class HUD {
     private let panel: HUDPanel
     private let model = HUDModel()
     private let meter = VoiceMeter()
+    /// What Dot learned about the microphone that is recording.
+    ///
+    /// The meter's floor is seeded from it and the level scale is drawn on the
+    /// window it produces. It never reaches the audio: ``Recorder`` hands the
+    /// WAV to the provider untouched.
+    private var calibration: MicrophoneCalibration?
     /// Whether the panel stays off screen. Set by the headless test; the app
     /// never asks for it.
     private let offscreen: Bool
@@ -98,6 +103,20 @@ final class HUD {
     private var spectrumSmoothed: AudioSpectrumFrame = .zero
     private var spectrumClock: Double = 0
     private var isPreviewingVisualizer = false
+    /// The envelope history of the meter, kept between frames.
+    ///
+    /// The card reads this sixty times a second. Reading it through a property
+    /// that built a new array every time put two allocations and a concatenation
+    /// on every frame of the render loop; this buffer is filled in place.
+    private var historyBuffer: [Double] = []
+    /// The bar heights of the visualiser, kept between frames.
+    private var barsBuffer: [Double] = []
+    /// How much of the shape has arrived, from `0` to `1`.
+    ///
+    /// It rises when a recording starts and falls when it ends, so the shape
+    /// grows out of the axis and settles back into it instead of appearing at
+    /// whatever height the last frame of the last take left behind.
+    private var reveal: Double = 0
     /// How present the card is, in screen space.
     private var presenceSpring = Spring(value: 0, target: 0, duration: 0.36, bounce: 0.16)
     /// How settled the content of the card is.
@@ -200,6 +219,17 @@ final class HUD {
         set { model.visualizer = newValue }
     }
 
+    /// Tells the card which microphone is about to record, so the meter starts
+    /// from what is known about it.
+    ///
+    /// - Parameter calibration: the entry for the recording device, or `nil`
+    ///   for a device Dot has no history with. A missing entry keeps the fixed
+    ///   window, which is what shipped.
+    func setCalibration(_ calibration: MicrophoneCalibration?) {
+        self.calibration = calibration?.clamped
+        meter.setCalibration(calibration)
+    }
+
     /// What material the HUD island is made of: .glass or .black.
     var material: HUDMaterial {
         get { model.material }
@@ -219,18 +249,26 @@ final class HUD {
     // MARK: - States
 
     /// Shows the recording state.
+    ///
+    /// - Parameter elapsed: the clock of the recording.
     func showRecording(elapsed: String) {
         isPreviewingVisualizer = false
         model.clearLiveText()
+        model.grammar = nil
+        model.grammarWasLong = false
         recordingStartedAt = CACurrentMediaTime()
         meter.reset()
+        // The floor and the window are known before the first buffer arrives,
+        // so the first syllable is drawn at the level the room really has
+        // instead of at the level a blind meter guessed from one frame.
+        meter.setCalibration(calibration)
+        meter.seed(floor: calibration?.noiseFloorDBFS)
         spectrumRing = Array(repeating: .zero, count: VoiceMeter.historyLength)
         spectrumSmoothed = .zero
         spectrumClock = 0
-        setMode(
-            .recording(elapsed: elapsed),
-            size: CGSize(width: HUDState.recordingWidth, height: HUDState.recordingHeight)
-        )
+        reveal = 0
+        model.reveal = 0
+        setMode(.recording(elapsed: elapsed), size: HUDState.recordingCard.size)
         present()
     }
 
@@ -269,6 +307,8 @@ final class HUD {
     func showTranscribing(done: Int = 0, total: Int = 0) {
         isPreviewingVisualizer = false
         model.clearLiveText()
+        model.grammar = nil
+        model.grammarWasLong = false
         model.workingDetail = HUDProgress.detail(done: done, total: total)
         setMode(
             .working,
@@ -282,7 +322,24 @@ final class HUD {
     /// The countdown starts here, when the transcript lands, and not when the
     /// card is ordered front: the dwell is the time the user gets to read the
     /// words, and it must not be eaten by the opening animation.
-    func showTranscript(text: String, delivery: HUDDelivery, elapsed: String) {
+    ///
+    /// - Parameters:
+    ///   - text: the words that were transcribed.
+    ///   - delivery: how the words were delivered.
+    ///   - elapsed: the clock of the recording they came from.
+    ///   - destination: the localized name of the application the words were
+    ///     pasted into, when it is known. The header names it; a missing name
+    ///     leaves the plain delivery word.
+    ///   - grammar: the grammar the words were rewritten for, when one was.
+    ///   - grammarWasLong: whether that rewrite flagged the words as long.
+    func showTranscript(
+        text: String,
+        delivery: HUDDelivery,
+        elapsed: String,
+        destination: String? = nil,
+        grammar: DictationTarget? = nil,
+        grammarWasLong: Bool = false
+    ) {
         isPreviewingVisualizer = false
         model.clearLiveText()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -290,8 +347,17 @@ final class HUD {
             showMessage(text: "Nothing was heard.", symbol: "waveform.slash")
             return
         }
+        // The chip belongs to the transcript, so it is set with it and cleared
+        // by every other state.
+        model.grammar = grammar
+        model.grammarWasLong = grammarWasLong
         setMode(
-            .transcript(text: trimmed, delivery: delivery, elapsed: elapsed),
+            .transcript(
+                text: trimmed,
+                delivery: delivery,
+                elapsed: elapsed,
+                destination: destination
+            ),
             size: Self.transcriptSize(text: trimmed)
         )
         present()
@@ -309,26 +375,61 @@ final class HUD {
         ])
     }
 
-    /// Shows a message.
+    /// Shows a message, with a titled button when there is something to do
+    /// about it.
+    ///
+    /// - Parameters:
+    ///   - action: the title of the button, or `nil` for a message that only
+    ///     reports.
+    ///   - actionHandler: what the button does. A title without a handler is
+    ///     dropped, because a button that does nothing is worse than no button:
+    ///     the message then reads as a plain report.
     func showMessage(text: String, action: String? = nil, actionHandler: (() -> Void)? = nil) {
-        _ = actionHandler
-        let symbol = action == nil ? "info.circle" : "exclamationmark.circle"
-        showMessage(text: text, symbol: symbol)
+        let title = action?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let handler = (title?.isEmpty == false) ? actionHandler : nil
+        let symbol = handler == nil ? "info.circle" : "exclamationmark.circle"
+        showMessage(
+            text: text,
+            symbol: symbol,
+            action: handler == nil ? nil : title,
+            actionHandler: handler
+        )
     }
 
     /// Shows a message with a symbol.
     ///
     /// - Parameters:
+    ///   - action: the title of the button the message offers, or `nil` for a
+    ///     message that only reports.
+    ///   - actionHandler: what the button does.
     ///   - dwell: how long to leave it up, when the message is not a report but
     ///     a preview of something the person is choosing. A material has no
     ///     other way to be seen: the card only names it.
-    func showMessage(text: String, symbol: String, dwell: TimeInterval? = nil) {
+    func showMessage(
+        text: String,
+        symbol: String,
+        action: String? = nil,
+        actionHandler: (() -> Void)? = nil,
+        dwell: TimeInterval? = nil
+    ) {
         isPreviewingVisualizer = false
         model.clearLiveText()
+        model.grammar = nil
+        model.grammarWasLong = false
         setMode(
             .message(text: text, symbol: symbol),
-            size: CGSize(width: Self.messageWidth(text: text), height: HUDState.recordingHeight)
+            size: CGSize(
+                width: Self.messageWidth(text: text, actionTitle: action),
+                height: HUDState.recordingHeight
+            )
         )
+        // Set after the mode, so the state change cannot clear the button that
+        // belongs to the message it just moved to.
+        if let action, let actionHandler {
+            model.messageAction = HUDMessageAction(title: action, handler: actionHandler)
+        } else {
+            model.messageAction = nil
+        }
         present()
         scheduleDismiss(in: dwell)
     }
@@ -346,6 +447,9 @@ final class HUD {
         model.visualizer = visualizer
         model.clearLiveText()
         isPreviewingVisualizer = true
+        // The preview draws a simulated voice, not a microphone: a calibration
+        // left over from the last take would put it on the wrong scale.
+        meter.setCalibration(nil)
         let now = CACurrentMediaTime()
         recordingStartedAt = now
         meter.reset()
@@ -375,14 +479,11 @@ final class HUD {
         scheduleDismiss(in: 2.6)
     }
 
-    /// Shows the launch card: Dot is up and waiting for the shortcut.
+    /// Tells the launch card which service dictation goes to, and a masked hint
+    /// of the key in use.
     ///
-    /// Names the service dictation goes to, and a masked hint of the key.
-    ///
-    /// The ready card shows this instead of teaching the shortcut, so the card
-    /// answers "what is my speech going to right now". Both values are already
-    /// safe to display: the name comes from the chosen row and the hint is
-    /// produced by ``MaskedKey``, never from the secret itself.
+    /// Both values are safe to display: the name comes from the chosen row, and
+    /// the hint is produced by ``MaskedKey`` and never from the secret itself.
     ///
     /// - Parameters:
     ///   - service: the service name, as the picker shows it.
@@ -393,16 +494,17 @@ final class HUD {
         model.activeKeyHint = keyHint
     }
 
-    /// The card is a greeting, not a notification: it never replaces a
-    /// recording, a transcription or a transcript that is already on screen.
-    /// A message is kept too, because a warning at launch is more useful than
-    /// the greeting that would hide it.
+    /// Shows the launch card unless the card is already showing something more
+    /// urgent: it never replaces a recording, a transcription, a transcript or a
+    /// message that is on screen.
     ///
     /// - Parameter shortcut: the label of the record shortcut.
     func showReady(shortcut: String) {
         guard Self.canShowReady(over: model.mode, visible: model.isVisible) else { return }
         isPreviewingVisualizer = false
         model.clearLiveText()
+        model.grammar = nil
+        model.grammarWasLong = false
         setMode(
             .ready(shortcut: shortcut),
             size: CGSize(width: HUDState.readyWidth, height: HUDState.readyHeight)
@@ -454,8 +556,11 @@ final class HUD {
     func hide() {
         isPreviewingVisualizer = false
         model.clearLiveText()
+        model.grammar = nil
+        model.grammarWasLong = false
         model.isEditingTranscript = false
         model.hoveredAction = nil
+        model.messageAction = nil
         panel.allowsKey = false
         dismissTimer?.invalidate()
         dismissTimer = nil
@@ -488,6 +593,17 @@ final class HUD {
 
     /// Whether the card is on screen.
     var isVisible: Bool { model.isVisible }
+
+    /// The grammar the transcript card is naming. The headless test reads it to
+    /// prove the chip is attached to the text it describes; the app never does.
+    var debugGrammar: DictationTarget? { model.grammar }
+
+    /// Whether the grammar flagged the transcript as long.
+    var debugGrammarWasLong: Bool { model.grammarWasLong }
+
+    /// The titled button the current message offers, if any. The test reads it
+    /// to prove the handler reached the card; the app never does.
+    var debugMessageAction: HUDMessageAction? { model.messageAction }
 
     /// How present the card is. The headless test reads it through the real
     /// render loop.
@@ -531,6 +647,20 @@ final class HUD {
         isPointerInside = inside
     }
 
+    /// Moves the transcript's countdown by a known amount of time.
+    ///
+    /// The countdown runs on the frames the render loop delivers and spends
+    /// whatever time passed between two of them. A machine running the test
+    /// bundle in parallel can withhold frames for longer than the dwell itself
+    /// and then deliver one frame that carries all of it, which is a property of
+    /// the machine and not of the countdown. The headless test therefore moves
+    /// the clock itself, through the same `updateDwell` the frame loop calls;
+    /// the app never does.
+    func debugAdvanceDwell(by seconds: CFTimeInterval) {
+        guard let clock = dwellClock else { return }
+        updateDwell(now: clock.advancedAt + seconds)
+    }
+
     // MARK: - The loop
 
     private func present() {
@@ -538,9 +668,8 @@ final class HUD {
         hideTask = nil
         dismissTimer?.invalidate()
         dismissTimer = nil
-        // A card that replaces another one gets its own countdown: the dwell of
-        // the transcript that was on screen must not dismiss a message or a
-        // recording that arrived after it.
+        // Each card gets its own countdown: the dwell of the transcript that was
+        // replaced must not dismiss the message or recording that replaced it.
         dwellClock = nil
         stopPointerTracking()
 
@@ -627,8 +756,9 @@ final class HUD {
         if let override = debugPointerOverride {
             isPointerInside = override
         } else if !offscreen {
-            // Verify real screen pointer position on every frame so a pointer that moved
-            // away while global monitors coalesced events never leaves the island stuck.
+            // The pointer is read again on every frame: a global monitor coalesces
+            // events, and a pointer that left between two of them would otherwise
+            // leave the countdown suspended for good.
             updatePointer(at: NSEvent.mouseLocation)
         }
         let interacting = model.isEditingTranscript || panel.isKeyWindow || HUDDwell.isInteracting(
@@ -709,8 +839,8 @@ final class HUD {
                 if model.isEditingTranscript || panel.isKeyWindow {
                     endInlineEditing()
                 } else if var clock = dwellClock, clock.remaining > 0.8 {
-                    // Clicking outside into another app signals the user has moved on:
-                    // smoothly expire the dwell in 0.8s rather than lingering.
+                    // A click outside the card means the person has moved on, so
+                    // the remaining dwell is cut to 0.8 s rather than left running.
                     clock.advance(to: now + (clock.remaining - 0.8), interacting: false)
                     dwellClock = clock
                 }
@@ -785,7 +915,17 @@ final class HUD {
         let size = HUDTheme.actionSize
         let spacing: CGFloat = 4
         let totalWidth = CGFloat(items.count) * size + CGFloat(max(0, items.count - 1)) * spacing
-        let startX = card.maxX - HUDTheme.padding - totalWidth
+        // A message that offers a titled button draws it to the left of the
+        // icon buttons, so the run of icons starts that much further left. The
+        // titled button names itself and needs no tooltip, so a pointer over it
+        // reports no action.
+        let titleWidth: CGFloat
+        if case .message = model.mode, let action = model.messageAction {
+            titleWidth = HUDView.messageActionWidth(title: action.title)
+        } else {
+            titleWidth = 0
+        }
+        let startX = card.maxX - HUDTheme.padding - titleWidth - totalWidth
         let relX = screenPoint.x - startX
         guard relX >= -2, relX <= totalWidth + 2 else { return nil }
         let step = size + spacing
@@ -897,7 +1037,7 @@ final class HUD {
                     dividingBy: max(1.0, SpeechSchedule.spoken)
                 )
                 let voice = SpeechSchedule.level(at: previewTime)
-                meter.push(decibels: -52.0 + voice * 42.0, now: now)
+                meter.push(decibels: -58.0 + voice * 50.0, now: now)
                 model.level = meter.envelope
                 let b0 = min(1.0, max(0.0, voice * (0.45 + 0.55 * abs(sin(now * 9.3)))))
                 let b1 = min(1.0, max(0.0, voice * (0.55 + 0.45 * abs(cos(now * 6.7)))))
@@ -909,15 +1049,14 @@ final class HUD {
             } else {
                 // The recorder reports the RMS of the last block of audio; the
                 // meter works in dBFS, which is the only domain in which a voice
-                // has a range instead of a spiky 0-1 value.
+                // has a range instead of a spiky 0-1 value. One measurement, one
+                // window, one envelope: the card used to take the larger of the
+                // smoothed envelope and a second unsmoothed level from the
+                // calibration window, which put a single loud frame at the top of
+                // the shape before the attack had moved at all.
                 let rms = levelProvider?() ?? 0
-                let db = AudioLevel.decibels(rms)
-                meter.push(decibels: db, now: now)
-                // Use the fixed dBFS scale directly (without a rising room floor) so
-                // continuous speech stays just as bright at the end of a long sentence
-                // as at the very beginning!
-                let fixedLevel = LevelScale.level(decibels: db, floor: LevelScale.floorDBFS)
-                model.level = max(meter.envelope, fixedLevel)
+                meter.push(decibels: AudioLevel.decibels(rms), now: now)
+                model.level = meter.envelope
                 let rawSpec = spectrumProvider?() ?? .zero
                 advanceSpectrum(target: rawSpec, dt: dt)
                 updateRecording(elapsed: HUDClock.string(for: now - recordingStartedAt))
@@ -927,18 +1066,29 @@ final class HUD {
             model.level = max(0, model.level - dt * 3)
         }
 
-        let ordered = meter.orderedHistory
-        model.history = ordered
+        // The shape arrives when a recording starts and settles when it ends.
+        // Reduce Motion keeps the fade and drops the growth, which is the part
+        // that moves.
+        var revealTarget: Double = 0
+        if case .recording = model.mode { revealTarget = 1 }
+        let revealTau = revealTarget > reveal ? 0.10 : 0.22
+        reveal += (revealTarget - reveal) * (1 - exp(-dt / revealTau))
+        if abs(revealTarget - reveal) < 0.002 { reveal = revealTarget }
+        model.reveal = reduceMotion ? revealTarget : reveal
+
+        meter.copyOrderedHistory(into: &historyBuffer)
+        model.history = historyBuffer
         model.spectrumHistory = spectrumRing
         model.phase = meter.phase
+        model.ceiling = meter.ceiling
         model.time = reduceMotion ? 1.8 : now
-        model.halfHeights = Waveform.halfHeights(
-            history: ordered,
-            phase: meter.phase,
-            count: Waveform.columnCount,
-            maximum: HUDTheme.waveformHeight / 2,
-            breath: reduceMotion ? 0 : now * 0.35
+        VisualizerBars.stretch(
+            into: &barsBuffer,
+            history: historyBuffer,
+            spectrum: spectrumRing,
+            reveal: model.reveal
         )
+        model.bars = barsBuffer
         model.pulse = reduceMotion ? 0 : now.truncatingRemainder(dividingBy: 1.1) / 1.1
         model.shimmer = reduceMotion ? 0 : now.truncatingRemainder(dividingBy: 1.4) / 1.4
         updateDwell(now: now)
@@ -975,8 +1125,16 @@ final class HUD {
         model.mode = mode
         model.cardSize = size
         if changed {
+            // A chip belongs to the transcript card that carried it.
+            if case .transcript = mode {} else {
+                model.grammar = nil
+                model.grammarWasLong = false
+            }
             model.isEditingTranscript = false
             model.hoveredAction = nil
+            // A button belongs to the message that offered it. Leaving the
+            // closure behind would let a card that cannot show it run it.
+            model.messageAction = nil
             panel.allowsKey = false
         }
         guard changed else { return }
@@ -1006,11 +1164,11 @@ final class HUD {
 
     /// Puts the panel at the top centre of the screen the user is on.
     ///
-    /// The screen under the pointer wins, because that is the display the user
-    /// is looking at. `NSScreen.main` is next, and the first screen is the
-    /// last resort. The frame is clamped by `HUDPlacement`, so the panel can
-    /// never be placed outside every screen — the bug that left the card at
-    /// x = 1956 on a 1470-point display.
+    /// The screen under the pointer wins, because that is the display the person
+    /// is looking at; `NSScreen.main` is next and the first screen is the last
+    /// resort. `HUDPlacement` clamps the frame, so the panel cannot be placed
+    /// outside every screen even when a display is unplugged between two
+    /// presentations.
     private func placePanel() {
         if offscreen {
             panel.setFrame(
@@ -1131,20 +1289,29 @@ final class HUD {
     }
 
     /// The width a message needs.
-    static func messageWidth(text: String) -> CGFloat {
+    ///
+    /// - Parameters:
+    ///   - text: the message.
+    ///   - actionTitle: the title of the button the message offers, when it has
+    ///     one. The card has to be wide enough for it, or the button would push
+    ///     the text out of the card instead of sitting beside it.
+    static func messageWidth(text: String, actionTitle: String? = nil) -> CGFloat {
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 13, weight: .medium),
         ]
         let textWidth = (text as NSString).size(withAttributes: attributes).width
+        let actionWidth = actionTitle.map { HUDView.messageActionWidth(title: $0) } ?? 0
         let width = HUDTheme.padding * 2
             + 15
             + 10
             + textWidth
             + 10
+            + actionWidth
             + 8
             + 10
             + HUDTheme.actionSize
             + 6
-        return min(max(width, 280), 480)
+        return min(max(width, 280), 560)
     }
+
 }

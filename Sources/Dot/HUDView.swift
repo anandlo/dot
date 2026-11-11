@@ -20,8 +20,6 @@ struct HUDActions {
     var history: (() -> Void)? = nil
     /// Opens the settings window.
     var settings: (() -> Void)? = nil
-    /// Corrects the transcript before it is used again.
-    var edit: (() -> Void)? = nil
     /// Begins inline editing of the transcript right inside the HUD island.
     var beginInlineEdit: (() -> Void)? = nil
     /// Concludes inline editing of the transcript inside the HUD island.
@@ -112,8 +110,13 @@ struct HUDView: View {
             recording(elapsed: elapsed)
         case .working:
             working
-        case .transcript(let text, let delivery, let elapsed):
-            transcript(text: text, delivery: delivery, elapsed: elapsed)
+        case .transcript(let text, let delivery, let elapsed, let destination):
+            transcript(
+                text: text,
+                delivery: delivery,
+                elapsed: elapsed,
+                destination: destination
+            )
         case .message(let text, let symbol):
             message(text: text, symbol: symbol)
         case .ready(let shortcut):
@@ -153,7 +156,10 @@ struct HUDView: View {
                     phase: model.phase,
                     time: model.time,
                     level: model.level,
-                    pulse: model.pulse
+                    pulse: model.pulse,
+                    ceiling: model.ceiling,
+                    bars: model.bars,
+                    reveal: model.reveal
                 )
                 .frame(maxWidth: .infinity)
                 .frame(height: HUDTheme.waveformHeight)
@@ -231,7 +237,12 @@ struct HUDView: View {
 
     // MARK: - Transcript
 
-    private func transcript(text: String, delivery: HUDDelivery, elapsed: String) -> some View {
+    private func transcript(
+        text: String,
+        delivery: HUDDelivery,
+        elapsed: String,
+        destination: String?
+    ) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 ZStack {
@@ -243,16 +254,40 @@ struct HUDView: View {
                         .foregroundStyle(delivery.color)
                 }
 
-                Text(delivery.title)
+                // The application the words went into, when there is one. The
+                // title is already cut to the room the header has, so a long
+                // name can never push the clock or the buttons out of the card.
+                Text(HUDHeader.title(delivery: delivery, destination: destination))
                     .font(HUDTheme.labelFont)
                     .tracking(HUDTheme.labelTracking)
                     .foregroundStyle(delivery.color)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: HUDHeader.maximumTitleWidth, alignment: .leading)
+                    .accessibilityLabel(Text(
+                        HUDHeader.accessibilityLabel(
+                            delivery: delivery,
+                            destination: destination
+                        )
+                    ))
+
+                // The surface the words were written for, named on the card.
+                // The rewrite changes the inserted text, so it has to be
+                // visible that it ran; a longer commit subject says so too,
+                // because the words were not cut.
+                if let grammar = model.grammar {
+                    GrammarChip(
+                        title: grammar.title,
+                        wasLong: model.grammarWasLong
+                    )
+                }
 
                 Spacer(minLength: 8)
 
                 Text(elapsed)
                     .font(HUDTheme.clockFont)
                     .foregroundStyle(HUDTheme.ink2)
+                    .fixedSize()
 
                 controlsSection([.copy, .paste, .history, .settings, .close])
             }
@@ -327,10 +362,28 @@ struct HUDView: View {
 
             Spacer(minLength: 8)
 
+            if let action = model.messageAction {
+                HUDMessageActionButton(title: action.title, perform: action.handler)
+                    .padding(.trailing, HUDTheme.messageActionGap)
+            }
+
             controlsSection([.close])
         }
         .padding(.horizontal, HUDTheme.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    /// The width the titled button of a message occupies, gap included.
+    ///
+    /// The card's size and the pointer's hit test are computed without laying
+    /// the view out, so both read the measurement from here and cannot disagree
+    /// about where the button is.
+    static func messageActionWidth(title: String) -> CGFloat {
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(
+            ofSize: 11.5, weight: .medium
+        )]
+        let text = (title as NSString).size(withAttributes: attributes).width
+        return ceil(text) + HUDTheme.messageActionHPadding * 2 + HUDTheme.messageActionGap
     }
 
     // MARK: - Ready
@@ -462,12 +515,54 @@ struct HUDView: View {
         case .cancel: actions.cancel?()
         case .copy: actions.copy?()
         case .paste: actions.paste?()
-        case .edit: actions.edit?()
         case .history: actions.history?()
         case .settings: actions.settings?()
         case .close: actions.close?()
         }
     }
+}
+
+/// The chip that names the grammar a transcript was written for.
+///
+/// It is a label, not a control: it answers "why is there no full stop" and it
+/// can be read without being clicked.
+private struct GrammarChip: View {
+    let title: String
+    let wasLong: Bool
+
+    var body: some View {
+        Text(wasLong ? "\(title) · long" : title)
+            .font(HUDTheme.labelFont)
+            .tracking(1.0)
+            .foregroundStyle(HUDTheme.ink2)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .frame(height: 18)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(HUDTheme.actionFill)
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(HUDTheme.actionBorder, lineWidth: 1)
+            )
+            .accessibilityLabel(
+                Text(wasLong ? "Rewritten for \(title), and longer than usual" : "Rewritten for \(title)")
+            )
+    }
+}
+
+/// The one titled button a message card can offer.
+///
+/// A message that reports shows only Close. A message that is asking for
+/// something — a missing microphone or Accessibility permission — carries the
+/// title and the work that fixes it, so the card can be acted on where it is
+/// read instead of naming a place to go.
+struct HUDMessageAction {
+    /// The text on the button, e.g. "Open Settings".
+    let title: String
+    /// What choosing the button does.
+    let handler: () -> Void
 }
 
 /// One icon of the card.
@@ -476,8 +571,6 @@ enum HUDAction: Hashable {
     case cancel
     case copy
     case paste
-    /// Corrects the transcript in a field of its own.
-    case edit
     case history
     case settings
     case close
@@ -498,7 +591,6 @@ enum HUDAction: Hashable {
         case .cancel: actions.cancel != nil
         case .copy: actions.copy != nil
         case .paste: actions.paste != nil
-        case .edit: actions.edit != nil
         case .history: actions.history != nil
         case .settings: actions.settings != nil
         case .close: actions.close != nil
@@ -512,7 +604,6 @@ enum HUDAction: Hashable {
         case .cancel, .close: "xmark"
         case .copy: "doc.on.doc"
         case .paste: "doc.on.clipboard"
-        case .edit: "pencil"
         case .history: "clock.arrow.circlepath"
         case .settings: "gearshape"
         }
@@ -525,7 +616,6 @@ enum HUDAction: Hashable {
         case .cancel: "Cancel recording"
         case .copy: "Copy transcript"
         case .paste: "Paste again"
-        case .edit: "Edit transcript"
         case .history: "History"
         case .settings: "Settings"
         case .close: "Close"
@@ -539,7 +629,6 @@ enum HUDAction: Hashable {
         case .cancel: "Cancel without transcribing"
         case .copy: "Copy transcript"
         case .paste: "Paste the transcript again"
-        case .edit: "Correct it before pasting"
         case .history: "Open history"
         case .settings: "Open settings"
         case .close: "Dismiss"
@@ -551,34 +640,50 @@ enum HUDAction: Hashable {
         switch self {
         case .stop: HUDTheme.live
         case .cancel, .close: HUDTheme.ink
-        case .copy, .paste, .edit, .history, .settings: HUDTheme.accent
+        case .copy, .paste, .history, .settings: HUDTheme.accent
         }
     }
 }
 
-/// The shortcut on the dark card.
+/// A small, quiet button that names the work it does.
 ///
-/// It is the HUD's keycap, not the paper keycap of the light windows: one
-/// quiet inset on the same surface, with no second material.
-private struct HUDKeycap: View {
-    let text: String
+/// It exists for the messages that ask for something — a permission Dot cannot
+/// grant itself — where an icon would be a guess and the title is the instruction.
+private struct HUDMessageActionButton: View {
+    let title: String
+    let perform: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovering = false
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-            .foregroundStyle(HUDTheme.ink)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color.white.opacity(0.075))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.11), lineWidth: 0.75)
-            )
-            .fixedSize()
-            .accessibilityLabel(Text(text))
+        Button(action: perform) {
+            Text(title)
+                .font(HUDTheme.messageActionFont)
+                .foregroundStyle(hovering ? HUDTheme.accentTip : HUDTheme.ink)
+                .lineLimit(1)
+                .padding(.horizontal, HUDTheme.messageActionHPadding)
+                .frame(height: HUDTheme.messageActionHeight)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(hovering ? HUDTheme.actionFillHover : HUDTheme.actionFill)
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(
+                            hovering ? HUDTheme.actionBorderHover : HUDTheme.actionBorder,
+                            lineWidth: 0.75
+                        )
+                )
+                .contentShape(Capsule(style: .continuous))
+                .animation(
+                    reduceMotion ? nil : .easeOut(duration: 0.14),
+                    value: hovering
+                )
+        }
+        .buttonStyle(HUDActionButtonStyle(reduceMotion: reduceMotion))
+        .onHover { hovering = $0 }
+        .accessibilityLabel(Text(title))
     }
 }
 
@@ -635,8 +740,7 @@ private struct HUDActionButton: View {
 
 /// A themed floating tooltip pill that sits cleanly above the HUD island's top edge
 /// when hovering over an action button, never overlapping the transcript text.
-private struct HUDActionTooltip: View {
-    let action: HUDAction
+private struct HUDActionTooltip: View {    let action: HUDAction
     var material: HUDMaterial = .glass
 
     var body: some View {
@@ -732,20 +836,42 @@ struct LiveDot: View {
     /// The phase of the pulse, from `0` to `1`.
     let pulse: Double
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// How loud the dot is drawn, from `0` to `1`.
+    ///
+    /// The dot follows the voice rather than a clock: a whisper leaves a small
+    /// warm dot and a word at the top of the person's range leaves a larger,
+    /// brighter one. It never reaches zero, because the dot is also the answer
+    /// to "is it recording", which has to be legible in silence.
+    private var presence: Double {
+        min(1, max(0, level))
+    }
+
+    private var core: Color {
+        HUDTheme.meter(0.42 + 0.58 * presence, ceiling: 1)
+    }
+
     var body: some View {
         ZStack {
-            Circle()
-                .stroke(HUDTheme.live.opacity(0.55 * (1 - pulse)), lineWidth: 1.5)
-                .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
-                .scaleEffect(1 + pulse * 1.3)
+            if !reduceMotion {
+                Circle()
+                    .stroke(HUDTheme.live.opacity((0.42 + 0.30 * presence) * (1 - pulse)), lineWidth: 1.5)
+                    .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
+                    .scaleEffect(1 + pulse * (1.15 + 0.45 * presence))
+            }
 
             Circle()
-                .fill(HUDTheme.live)
+                .fill(core)
                 .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
-                .scaleEffect(1 + level * 0.25)
-                .shadow(color: HUDTheme.live.opacity(0.55), radius: 4)
+                .scaleEffect(1 + presence * 0.26)
+                .shadow(
+                    color: HUDTheme.live.opacity(0.30 + 0.55 * presence),
+                    radius: 2.5 + 4.5 * presence
+                )
         }
         .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.09), value: presence)
     }
 }
 

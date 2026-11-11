@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var previewedMaterial: HUDMaterial?
     /// The visualizer last shown as a preview, so a re-render cannot re-show it.
     private var previewedVisualizer: HUDVisualizer?
+    /// The interaction last reported, so the log names a switch and not a redraw.
+    private var appliedRecordingMode: RecordingMode?
     /// Keeps the app out of App Nap, which would delay the hotkey.
     private var activity: NSObjectProtocol?
     /// Times a press from the mouse to the moment this app hears about it.
@@ -51,9 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeys: GlobalHotkeyManager?
     private var provider: (any Provider)?
     private var lastTranscript: String?
-    private var history = HistoryStore.load()
-    /// The window that corrects a transcript.
-    private let transcriptEditor = TranscriptEditorWindowController()
+    private var history = HistoryStore.loadEntries()
     private var providers: [MenuProvider] = []
     private var transcriptionTask: Task<Void, Never>?
     /// The loop that asks the provider for a live partial while recording.
@@ -69,18 +69,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsController = SettingsWindowController()
     private let welcomeController = WelcomeWindowController()
     private let historyController = HistoryWindowController()
+    /// The dictation palette: the recent transcripts, one keystroke away.
+    private let palette = PaletteController()
     private let aboutController = AboutWindowController()
     private var triggerTimer: Timer?
     private var triggerURL: URL?
     private var providerRefreshTimer: Timer?
     /// The application the user was in when the recording started.
     private var frontmostAtPress: String?
+    /// The localized name of that application, for the card's header.
+    private var frontmostNameAtPress: String?
     /// Whether the recording was asked for by the hot key.
     private var startedFromHotkey = false
     /// Whether Accessibility permission has already been prompted during this session.
     private var hasRequestedAccessibility = false
     /// How long the last recording was, in seconds.
     private var recordingElapsed: TimeInterval = 0
+    /// The microphone the running recording is using, as the calibration book
+    /// knows it. Resolved when the microphone starts, while the device is known
+    /// to be the one producing the take.
+    private var recordingDeviceUID: String?
     /// The credential migration that runs off the main actor at launch.
     private var migrationTask: Task<Void, Never>?
 
@@ -121,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The assertion is released by the system when the app quits.
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep],
-            reason: "Answer the push-to-talk key without waiting to be woken"
+            reason: "Answer the record key without waiting to be woken"
         )
         inputLatency.start()
         Log.shared.info("app.started", [
@@ -141,6 +149,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.dwell = config.hudDwellSeconds
         hud.visualizer = config.hudVisualizer
         hud.material = config.hudMaterial
+        applyCalibration(for: MicrophoneCatalog.recordingDeviceUID(
+            configured: config.microphoneDeviceUID
+        ))
         hud.setLevelProvider { [weak self] in
             self?.recorder.level ?? 0
         }
@@ -166,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         keyWatcher.onRelease = { [weak self] in
-            self?.stopRecording()
+            self?.recordKeyReleased()
         }
         keyWatcher.onBlocked = { [weak self] in
             self?.hotkeyBlocked()
@@ -174,15 +185,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Escape cancels a recording without transcribing it. It is watched
         // the same way as the record key, so it works without accessibility
-        // permission and without a focused window.
+        // permission and without a focused window. No hot key announces it, so
+        // the watcher has to trust the keyboard state on its own.
         cancelWatcher.onRelease = { [weak self] in
             self?.cancelRecording()
         }
 
         // The watcher reads the keyboard state from the start: it is the only
-        // way to see the release of the key.
+        // way to see the release of the key, and the only way to say that
+        // secure input swallowed the press.
         keyWatcher.watch(keyCode: config.hotkey.keyCode)
-        cancelWatcher.watch(keyCode: Self.escapeKeyCode)
+        cancelWatcher.watch(keyCode: Self.escapeKeyCode, reportsUnannouncedPresses: true)
         registerHotkeys()
         installTestTrigger()
         startProviderRefresh()
@@ -211,6 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         welcomeController.close()
         historyController.close()
         aboutController.close()
+        palette.dismiss(restoringFocus: false)
         settingsController.close()
         hud.hide()
         triggerTimer?.invalidate()
@@ -499,7 +513,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.isRecording = self.state == .recording
         state.recordShortcut = MenuShortcuts.shortcut(for: config.hotkey)
         state.pasteShortcut = MenuShortcuts.shortcut(for: config.pasteHotkey)
-        state.history = history
+        state.history = history.map(\.text)
         state.microphones = MicrophoneDirectory.options(
             devices: MicrophoneCatalog.devices(),
             configuredUID: config.microphoneDeviceUID
@@ -532,18 +546,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The hot key was pressed.
+    ///
+    /// The press is answered in both modes: it starts a recording when there is
+    /// none, and it stops one when there is. The mode only decides what a
+    /// *release* means, which is ``recordKeyReleased()``'s question.
     private func hotkeyPressed() {
-        Log.shared.info("hotkey.pressed", ["hotkey": .string(config.hotkey.label)])
+        Log.shared.info("hotkey.pressed", [
+            "hotkey": .string(config.hotkey.label),
+            "mode": .string(config.recordingMode.rawValue),
+        ])
         keyWatcher.noteHotkeyFired()
-        switch state {
-        case .idle:
+        switch RecordKeyInteraction.action(
+            for: .press,
+            mode: config.recordingMode,
+            phase: phase
+        ) {
+        case .start:
             startRecording(fromHotkey: true)
-        case .recording:
-            // The key is still down and the hot key fired again: the release
-            // was lost, so the recording is stopped here.
+        case .stop:
+            // The press stops the take in both modes. In hold mode this is the
+            // fallback for a release the keyboard state could not read; in
+            // toggle mode it is the normal way a recording ends.
             stopRecording()
-        case .working:
+        case .ignore:
             break
+        }
+    }
+
+    /// The hot key came back up.
+    ///
+    /// Only ``RecordingMode/hold`` acts on this: the key is the gesture, and
+    /// lifting it ends the take. In ``RecordingMode/toggle`` the release is not
+    /// an instruction, so a recording started by a press keeps running until
+    /// the next press, and the watcher is left running for the two things it
+    /// still owes: the secure-input report and the release of the fallback.
+    private func recordKeyReleased() {
+        guard RecordKeyInteraction.action(
+            for: .release,
+            mode: config.recordingMode,
+            phase: phase
+        ) == .stop else { return }
+        stopRecording()
+    }
+
+    /// The state the record key is answered in.
+    private var phase: RecordingPhase {
+        switch state {
+        case .idle: .idle
+        case .recording: .recording
+        case .working: .working
         }
     }
 
@@ -584,9 +635,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func beginRecording() {
-        // The press may already be over: the microphone prompt takes long
-        // enough for a quick tap to end while it is up.
-        if startedFromHotkey, !keyWatcher.isPressActive {
+        // The microphone prompt is answered on a path of its own, and the
+        // person may press the shortcut again while it is up. The second
+        // answer must not open a second recording over the first.
+        guard state == .idle else { return }
+        // In hold mode the press may already be over: the microphone prompt
+        // takes long enough for a quick tap to end while it is up, and a
+        // recording whose key was released can never be stopped by that key.
+        // In toggle mode the press that started the take *has* ended by design,
+        // so a tap that outruns the prompt is a recording like any other.
+        if startedFromHotkey, config.recordingMode == .hold, !keyWatcher.isPressActive {
             Log.shared.info("recording.skipped", ["reason": .string("the press was over")])
             startedFromHotkey = false
             return
@@ -603,9 +661,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         // The card only appears once the microphone really runs: a live-looking
-        // meter over a system dialog would be a lie.
+        // meter over a system dialog would be a lie. The device is resolved
+        // before the card exists, because the card seeds its meter from the
+        // calibration of the device that is recording. It is written directly
+        // rather than through ``applyCalibration(for:)``, which refuses to touch
+        // a take that is already running.
+        recordingDeviceUID = MicrophoneCatalog.recordingDeviceUID(
+            configured: config.microphoneDeviceUID
+        )
+        hud.setCalibration(
+            MicrophoneCalibrationBook.calibration(
+                for: recordingDeviceUID,
+                in: config.microphoneCalibration
+            )
+        )
         state = .recording
-        frontmostAtPress = Paste.frontmostBundleIdentifier
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        frontmostAtPress = frontmost?.bundleIdentifier
+        frontmostNameAtPress = frontmost?.localizedName
         hud.showRecording(elapsed: "0:00")
         startLiveTranscription()
         keyWatcher.watch(keyCode: config.hotkey.keyCode)
@@ -621,7 +694,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state = .working
 
         let samples = recording.sampleCount
-        let initialLedger = self.ledger ?? TranscriptLedger(commitSeconds: Live.commitSeconds)
+        let initialLedger = self.ledger
+            ?? TranscriptLedger(commitSeconds: maxSegmentSeconds(self.provider))
 
         Log.shared.info("recording.stopped", [
             "duration_s": .double(recording.duration),
@@ -640,6 +714,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        learn(from: recording)
         refreshMenu()
         let frontmostNow = Paste.frontmostBundleIdentifier
         let frontmostUnchanged = frontmostNow != nil && frontmostNow == frontmostAtPress
@@ -694,9 +769,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.handleTranscript(candidateText, frontmostUnchanged: frontmostUnchanged)
                     return
                 }
-            } else if uncoveredHasSpeech, let activeTask = inFlightLiveTask {
-                // Speech continued right to the stop; cancel the obsolete live task immediately
-                // so the final tail request is dispatched without waiting.
+                // The partial said nothing usable, so the tail below is the one
+                // that sends this audio. The live task must not commit a chunk
+                // the tail is about to send again, and it must not keep a
+                // connection open while the stop waits for its own.
+                activeTask.cancel()
+            } else if let activeTask = inFlightLiveTask {
+                // Speech continued right to the stop; cancel the obsolete live
+                // task immediately so the final tail request is dispatched
+                // without waiting for it.
                 activeTask.cancel()
             }
 
@@ -733,7 +814,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } catch is CancellationError {
                     self.finishWork()
                 } catch {
-                    // Never discard already-transcribed live speech if the final trailing tail had no speech!
+                    // The tail failed, but the audio the live loop already
+                    // committed is transcribed and final. Losing it because the
+                    // last few seconds failed would throw away the recording.
                     let fallback = currentLedger.displayText
                     if !fallback.isEmpty {
                         Log.shared.info("transcription.tail.fallbackToPrefix", [
@@ -761,12 +844,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.shared.info("recording.cancelled")
     }
 
+    // MARK: - Microphone calibration
+
+    /// Tells the card what is known about a microphone.
+    ///
+    /// A running take keeps the window of the device that is actually
+    /// recording: changing the picker while it is open must not rescale the
+    /// waveform halfway through. The next take picks the change up.
+    private func applyCalibration(for device: String?) {
+        guard state != .recording else { return }
+        hud.setCalibration(
+            MicrophoneCalibrationBook.calibration(for: device, in: config.microphoneCalibration)
+        )
+    }
+
+    /// Folds a finished take into the book of what is known about the
+    /// microphone that recorded it.
+    ///
+    /// Only measurements are folded: the room floor and the loudest moment. The
+    /// samples are never scaled, filtered or gated, so the WAV a provider
+    /// receives is byte for byte the WAV it would have received before the
+    /// calibration existed.
+    private func learn(from recording: Recorder.Recording) {
+        guard let device = recordingDeviceUID,
+              let observation = MicrophoneCalibrationBook.observation(
+                  samples: recording.samples,
+                  peakDBFS: recording.peakDBFS
+              )
+        else { return }
+        let book = MicrophoneCalibrationBook.folding(
+            config.microphoneCalibration,
+            observation: observation,
+            device: device,
+            now: Date()
+        )
+        guard book != config.microphoneCalibration else { return }
+        config.microphoneCalibration = book
+        saveConfiguration()
+        let entry = MicrophoneCalibrationBook.calibration(for: device, in: book)
+        Log.shared.info("microphone.calibration.learned", [
+            "recordings": .int(entry?.observedSamples ?? 0),
+            "floor_dbfs": .double(entry?.noiseFloorDBFS ?? 0),
+            "peak_dbfs": .double(entry?.peakDBFS ?? 0),
+        ])
+    }
+
     // MARK: - Live partial transcription
 
     /// The shape and the cadence of the live partial requests.
     private enum Live {
-        /// How long one committed chunk of audio is when speaking non-stop without a pause.
-        static let commitSeconds = 60
+        /// The most audio one committed chunk may hold, in seconds, however
+        /// long a request the provider accepts.
+        ///
+        /// A commit ends the open audio and starts a new request, so this
+        /// bounds how long the card can go without final text. It is a cadence
+        /// of the live loop, not a capability of a provider: the request itself
+        /// never carries more than ``maxSegmentSeconds(_:)``.
+        static let maximumCommitSeconds = 60
         /// How long the recording runs before the first request.
         static let initialDelay: Duration = .milliseconds(300)
         /// The pause after one request before the next one starts.
@@ -777,7 +911,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         static let minimumGrowth: Double = 1.1
         /// How many consecutive failures end the loop.
         static let failureLimit = 5
-        /// The longest error the log ever sees.
+        /// The longest error text that reaches the log, in characters.
+        ///
+        /// A service that answers with an HTML error page would otherwise put
+        /// kilobytes of markup on one line of a file a person has to read. The
+        /// head of the message carries the diagnosis; the rest does not.
         static let errorCharacters = 160
     }
 
@@ -785,9 +923,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///
     /// The loop does two things, in this order, one request at a time:
     ///
-    /// 1. **Commit.** When a whole ``Live/commitSeconds`` chunk of new audio is
-    ///    available it is sent once and its text becomes final. Committed audio
-    ///    is never sent again — not by the next partial, not by the stop.
+    /// 1. **Commit.** When a whole ``Live/maximumCommitSeconds`` chunk of new
+    ///    audio is available it is sent once and its text becomes final.
+    ///    Committed audio is never sent again, not by the next partial and not
+    ///    by the stop.
     /// 2. **Preview.** Otherwise it sends the tail that is still open, so the
     ///    card can show what the user just said. The partial never reaches back
     ///    into committed audio.
@@ -798,9 +937,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// finished buffer, so calling it every second would reserve and release the
     /// same assets over and over without producing a stream.
     ///
-    /// The loop sends one request at a time. A slow answer delays the next
-    /// attempt instead of overlapping it; cancellation is checked after every
-    /// await, so a late partial can never reach the card.
+    /// The loop sends one request at a time: a slow answer delays the next
+    /// attempt instead of overlapping it, and cancellation is checked after
+    /// every await, so a late partial never reaches the card.
     private func startLiveTranscription() {
         stopLiveTranscription()
         guard let provider, provider.id != ProviderIdentifier.apple else {
@@ -809,7 +948,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ledger = TranscriptLedger(commitSeconds: maxSegmentSeconds(provider))
             return
         }
-        let commitSeconds = min(Live.commitSeconds, maxSegmentSeconds(provider))
+        let commitSeconds = min(Live.maximumCommitSeconds, maxSegmentSeconds(provider))
         ledger = TranscriptLedger(commitSeconds: commitSeconds)
         let settings = config.settings(for: provider.id)
         liveTask = Task { @MainActor [weak self] in
@@ -965,14 +1104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The longest segment one request may carry, in seconds.
     ///
-    /// For Xiaomi ASR (`mimo-v2.5-asr`), the model natively handles 60-second
-    /// continuous audio clips (matching `mimocode`'s `maxSegmentS = 60`), which
-    /// avoids mid-sentence cuts and false boundary periods.
+    /// The length is a capability of the provider: it is what the service
+    /// accepts in one request, and it is declared there rather than here.
+    /// `config.maxSegmentSeconds` can lower it for every provider at once, and
+    /// a value of `0` leaves the provider's own capability in force.
     private func maxSegmentSeconds(_ provider: (any Provider)?) -> Int {
         guard let provider else { return Segmenter.defaultSegmentSeconds }
-        if provider.id == ProviderIdentifier.xiaomi {
-            return 60
-        }
         let configured = config.maxSegmentSeconds
         guard configured > 0 else { return provider.maxSegmentSeconds }
         return min(provider.maxSegmentSeconds, configured)
@@ -983,7 +1120,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopLiveTranscription()
         ledger = nil
         recorder.cancel()
-        keyWatcher.stop()
+        // The watcher keeps running: a failed take is not a reason to stop
+        // hearing the key. It still reports secure input, and in hold mode the
+        // next press must still be able to end the recording.
         state = .idle
         refreshMenu()
         hud.showMessage(text: message, action: nil)
@@ -992,19 +1131,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleTranscript(_ transcript: String, frontmostUnchanged: Bool) {
         lastTranscript = transcript
-        history = HistoryStore.adding(transcript, to: history)
-        HistoryStore.save(history)
+        history = HistoryStore.adding(transcript, at: Date(), to: history)
+        HistoryStore.saveEntries(history)
         refreshMenu()
+
+        // The history keeps the transcript and the clipboard keeps the
+        // transcript, whichever text the rewrite puts at the cursor.
+        let grammar = grammarResult(for: transcript)
+        let plan = TranscriptDelivery.plan(transcript: transcript, grammar: grammar)
 
         // The clipboard and the paste always carry the whole transcript, even
         // when the card only has room for the top of it.
-        Paste.copy(transcript)
+        Paste.copy(plan.clipboard)
         var delivery: HUDDelivery = .copied
         if config.autoPaste {
             let targetIsNotDot = Paste.frontmostBundleIdentifier != Bundle.main.bundleIdentifier
             if Paste.accessibilityGranted {
-                if (frontmostUnchanged || targetIsNotDot), Paste.pasteCommand() {
-                    delivery = .pasted
+                if frontmostUnchanged || targetIsNotDot {
+                    delivery = paste(plan)
                 }
             } else {
                 if !hasRequestedAccessibility {
@@ -1017,14 +1161,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.showTranscript(
             text: transcript,
             delivery: delivery,
-            elapsed: HUDClock.string(for: recordingElapsed)
+            elapsed: HUDClock.string(for: recordingElapsed),
+            destination: frontmostUnchanged ? frontmostNameAtPress : nil,
+            grammar: grammar?.target,
+            grammarWasLong: grammar?.wasLong ?? false
         )
+        if let grammar {
+            Log.shared.info("grammar.applied", [
+                "target": .string(grammar.target.rawValue),
+                "was_long": .bool(grammar.wasLong),
+                "characters": .int(grammar.text.count),
+            ])
+        }
         if config.logTranscripts {
             Log.shared.info("transcript", ["text": .string(transcript)])
         } else {
             Log.shared.info("transcript.received", ["characters": .int(transcript.count)])
         }
         finishWork()
+    }
+
+    /// The rewrite for this transcript, or `nil` when the rewrite is off.
+    ///
+    /// The target comes from the app that was frontmost when the recording
+    /// started, which is the app the words were meant for; an app Dot cannot
+    /// place is plain and gets no rewrite at all.
+    private func grammarResult(for transcript: String) -> OutputGrammar.Result? {
+        guard config.outputGrammarEnabled else { return nil }
+        let target = config.dictationTarget(for: frontmostAtPress)
+        guard target != .plain else { return nil }
+        return OutputGrammar.result(for: transcript, target: target)
+    }
+
+    /// Posts the planned insertion at the cursor.
+    ///
+    /// A rewritten transcript has to sit on the pasteboard while the keystroke
+    /// is posted, because that is how the frontmost app receives it. The
+    /// original words go back afterwards, so the clipboard never keeps the
+    /// rewrite and a copy the person makes in between wins.
+    ///
+    /// - Parameter plan: what to insert and what the clipboard keeps.
+    /// - Returns: how the card reports the delivery.
+    private func paste(_ plan: TranscriptDelivery) -> HUDDelivery {
+        let rewritten = plan.insertion != plan.clipboard
+        if rewritten {
+            Paste.copy(plan.insertion)
+        }
+        guard Paste.pasteCommand() else {
+            Paste.copy(plan.clipboard)
+            return .copied
+        }
+        if rewritten {
+            restoreClipboard(plan.clipboard, after: plan.insertion)
+        }
+        return .pasted
+    }
+
+    /// Puts the original text back once the paste has been read.
+    private func restoreClipboard(_ text: String, after insertion: String) {
+        Task { @MainActor in
+            // Long enough for the frontmost app to have read the pasteboard,
+            // which happens as it handles the keystroke.
+            try? await Task.sleep(for: .milliseconds(350))
+            Paste.restore(text, ifStill: insertion)
+        }
     }
 
     private func handleFailure(_ error: Error) {
@@ -1077,61 +1277,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.updateTranscriptText(newText)
         if !trimmed.isEmpty {
             Paste.copy(newText)
-            if let previous, let index = history.firstIndex(of: previous) {
-                history[index] = newText
+            if let previous, let index = history.firstIndex(where: { $0.text == previous }) {
+                history[index].text = newText
             } else if !history.isEmpty {
-                history[0] = newText
+                history[0].text = newText
             } else {
-                history = [newText]
+                history = [HistoryStore.Entry(text: newText, addedAt: Date())]
             }
-            HistoryStore.save(history)
+            HistoryStore.saveEntries(history)
             refreshMenu()
         }
     }
 
-    /// Corrects the last transcript before it is used again.
-    ///
-    /// The island cannot hold a cursor: it never becomes the key window, and it
-    /// dismisses itself while the person is thinking. So the correction happens
-    /// in a window of its own, and what it keeps becomes the transcript the paste
-    /// shortcut and the history use.
-    private func editTranscript() {
-        guard let original = lastTranscript ?? history.first, !original.isEmpty else {
-            hud.showMessage(text: "There is no transcript yet.", action: nil)
-            return
-        }
-        hud.hide()
-        transcriptEditor.show(
-            text: original,
-            onCopy: { text in
-                Paste.copy(text)
-                Log.shared.info("transcript.edited.copied")
-            },
-            onPaste: { [weak self] text in
-                self?.lastTranscript = text
-                Paste.copy(text)
-                if Paste.accessibilityGranted {
-                    _ = Paste.pasteCommand()
-                }
-            },
-            onCommit: { [weak self] text in
-                guard let self else { return }
-                let corrected = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                self.lastTranscript = corrected.isEmpty ? nil : corrected
-                if let index = self.history.firstIndex(of: original), !corrected.isEmpty {
-                    self.history[index] = corrected
-                } else if !corrected.isEmpty {
-                    self.history = HistoryStore.adding(corrected, to: self.history)
-                }
-                HistoryStore.save(self.history)
-                self.refreshMenu()
-                Log.shared.info("transcript.edited", ["characters": .int(corrected.count)])
-            }
-        )
-    }
-
     private func pasteLastTranscript() {
-        guard let transcript = lastTranscript ?? history.first, !transcript.isEmpty else {
+        guard let transcript = lastTranscript ?? history.first?.text, !transcript.isEmpty else {
             hud.showMessage(text: "There is no transcript yet.", action: nil)
             return
         }
@@ -1146,7 +1305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func copyLastTranscript() {
-        guard let transcript = lastTranscript ?? history.first, !transcript.isEmpty else {
+        guard let transcript = lastTranscript ?? history.first?.text, !transcript.isEmpty else {
             hud.showMessage(text: "There is no transcript yet.", action: nil)
             return
         }
@@ -1154,6 +1313,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Paste.copy(transcript)
         hud.showTranscript(text: transcript, delivery: .copied, elapsed: "0:00")
         Log.shared.info("transcript.copied.again")
+    }
+
+    // MARK: - Dictation palette
+
+    /// Shows the palette over the recent transcripts, or closes it.
+    private func showPalette() {
+        // The key that opens the palette also closes it: pressing it again is
+        // how a person changes their mind without reaching for Escape.
+        if palette.isVisible {
+            palette.dismiss()
+            return
+        }
+        // A recording owns the microphone and the card. The palette is about
+        // words that already exist, so it waits for the take to finish.
+        guard state == .idle else {
+            hud.showMessage(text: "Finish the recording first.", symbol: "waveform")
+            return
+        }
+        palette.show(
+            entries: history,
+            insert: { [weak self] text in self?.insertFromPalette(text) },
+            copy: { [weak self] text in self?.copyFromPalette(text) }
+        )
+    }
+
+    /// Inserts a transcript the person picked in the palette, at the cursor.
+    ///
+    /// The same path a dictation takes: the text goes on the clipboard and the
+    /// paste keystroke is posted. The palette has already closed itself, so the
+    /// application that was frontmost is the one receiving the paste.
+    private func insertFromPalette(_ text: String) {
+        lastTranscript = text
+        Paste.copy(text)
+        guard Paste.accessibilityGranted else {
+            if !hasRequestedAccessibility {
+                hasRequestedAccessibility = true
+                Paste.requestAccessibility()
+            }
+            hud.showTranscript(text: text, delivery: .copied, elapsed: "0:00")
+            Log.shared.warn("palette.inserted.copiedOnly")
+            return
+        }
+        Task { @MainActor in
+            // The palette closed itself before calling in, and the application
+            // that was frontmost is being activated again: the keystroke has to
+            // wait for it to be the one receiving keys.
+            try? await Task.sleep(for: .milliseconds(140))
+            let delivery: HUDDelivery = Paste.pasteCommand() ? .pasted : .copied
+            hud.showTranscript(text: text, delivery: delivery, elapsed: "0:00")
+            Log.shared.info("palette.inserted", [
+                "characters": .int(text.count),
+                "delivery": .string(delivery == .pasted ? "pasted" : "copied"),
+            ])
+        }
+    }
+
+    /// Copies a transcript the person picked in the palette, without inserting
+    /// it.
+    private func copyFromPalette(_ text: String) {
+        lastTranscript = text
+        Paste.copy(text)
+        hud.showTranscript(text: text, delivery: .copied, elapsed: "0:00")
+        Log.shared.info("palette.copied", ["characters": .int(text.count)])
     }
 
     private func copyHistory(_ text: String) {
@@ -1177,7 +1399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         history = []
-        HistoryStore.save(history)
+        HistoryStore.saveEntries(history)
         lastTranscript = nil
         refreshMenu()
         // An open history window must not keep showing transcripts that no
@@ -1451,7 +1673,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Shows the current history, replacing the content of an open window.
     private func presentHistory() {
         historyController.show(
-            history: history,
+            history: history.map(\.text),
             recordHotkey: config.hotkey,
             onCopy: { [weak self] text in self?.copyHistory(text) },
             onClear: { [weak self] in self?.confirmClearHistory(refreshingHistory: true) }
@@ -1478,6 +1700,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             microphoneStatus: Self.describe(AVCaptureDevice.authorizationStatus(for: .audio)),
             accessibilityGranted: Paste.accessibilityGranted,
             shortcutLabel: config.hotkey.keycapLabel,
+            recordingMode: config.recordingMode,
             onEnableMicrophone: { [weak self] in
                 guard let self else { return "unknown" }
                 return await self.requestMicrophoneAccess()
@@ -1553,26 +1776,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showAbout() {
-        aboutController.show(
-            version: Self.version,
-            onWelcome: { [weak self] in
-                self?.openWelcome()
-            },
-            onOpenSettings: { [weak self] in
-                self?.openSettings()
-            },
-            onOpenLog: {
-                SystemAction.revealLog()
-            },
-            onClose: { [weak self] in
-                self?.aboutController.close()
-            }
-        )
+        aboutController.show()
     }
 
-    private static var version: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0-beta"
-    }
+    /// The version this build reports, read from the bundle.
+    private static var version: String { ProductVersion.current }
 
     // MARK: - Settings
 
@@ -1596,6 +1804,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.hud.dwell = self.config.hudDwellSeconds
                 self.hud.visualizer = self.config.hudVisualizer
                 self.hud.material = self.config.hudMaterial
+                // The mode is read again on every press and release, so a switch
+                // needs no wiring to take effect; the line exists so a log can
+                // say which interaction was in force when a recording ran.
+                if self.appliedRecordingMode != self.config.recordingMode {
+                    self.appliedRecordingMode = self.config.recordingMode
+                    Log.shared.info("recording.mode.changed", [
+                        "mode": .string(self.config.recordingMode.rawValue),
+                    ])
+                }
+                self.applyCalibration(for: MicrophoneCatalog.recordingDeviceUID(
+                    configured: self.config.microphoneDeviceUID
+                ))
                 // Asking for a material or visualizer is asking to see it. Without
                 // this the tile only moves its own selection ring and the island,
                 // which is not on screen, is unchanged in every way a person can see.
@@ -1690,6 +1910,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onChangePasteShortcut: { [weak self] in
                 self?.choosePasteShortcut()
             },
+            onChangePaletteShortcut: { [weak self] in
+                self?.choosePaletteShortcut()
+            },
             onOpenWelcome: { [weak self] in
                 self?.openWelcome()
             }
@@ -1747,6 +1970,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.hotkeyPressed()
                 case GlobalHotkeyManager.pasteIdentifier:
                     self.pasteLastTranscript()
+                case GlobalHotkeyManager.paletteIdentifier:
+                    self.showPalette()
                 default:
                     break
                 }
@@ -1770,7 +1995,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             Log.shared.error("hotkey.register.failed", ["hotkey": .string(config.pasteHotkey.label)])
         }
+        if manager.register(config.paletteHotkey, identifier: GlobalHotkeyManager.paletteIdentifier) {
+            Log.shared.info("hotkey.registered", ["hotkey": .string(config.paletteHotkey.label), "role": .string("palette")])
+        } else {
+            Log.shared.error("hotkey.register.failed", ["hotkey": .string(config.paletteHotkey.label)])
+            Log.shared.warn("hotkey.role.unavailable", ["role": .string("palette")])
+        }
         hotkeys = manager
+        // The watcher reads the keyboard state of the key that was just bound.
+        // A rebind moves the key, so the watcher moves with it: otherwise the
+        // release of hold mode — and the secure-input report — would keep
+        // reading the combination the person no longer uses.
+        if state != .recording {
+            keyWatcher.watch(keyCode: config.hotkey.keyCode)
+        }
         refreshMenu()
     }
 
@@ -1778,11 +2016,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum ShortcutRole: Equatable {
         case record
         case paste
+        case palette
 
         var title: String {
             switch self {
             case .record: "Set Record Shortcut"
             case .paste: "Set Paste Shortcut"
+            case .palette: "Set Palette Shortcut"
             }
         }
 
@@ -1790,6 +2030,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch self {
             case .record: "record"
             case .paste: "paste"
+            case .palette: "palette"
+            }
+        }
+
+        var messageName: String {
+            switch self {
+            case .record: "Shortcut"
+            case .paste: "Paste shortcut"
+            case .palette: "Palette shortcut"
             }
         }
     }
@@ -1802,6 +2051,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         chooseShortcut(for: .paste)
     }
 
+    private func choosePaletteShortcut() {
+        chooseShortcut(for: .palette)
+    }
+
     /// Opens the shortcut recorder for one of the two global shortcuts.
     ///
     /// The other shortcut is refused while one is typed, so the record and
@@ -1812,7 +2065,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys?.unregisterAll()
         let recorder = ShortcutRecorder()
         recorder.title = role.title
-        recorder.inUse = [role == .record ? config.pasteHotkey : config.hotkey]
+        recorder.inUse = Self.otherHotkeys(than: role, config: config)
         shortcutRecorder = recorder
         recorder.completion = { [weak self] result in
             guard let self else { return }
@@ -1822,11 +2075,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch role {
                 case .record: self.config.hotkey = hotkey
                 case .paste: self.config.pasteHotkey = hotkey
+                case .palette: self.config.paletteHotkey = hotkey
                 }
                 self.saveConfiguration()
                 self.registerHotkeys()
-                let name = role == .record ? "Shortcut" : "Paste shortcut"
-                self.hud.showMessage(text: "\(name) set to \(hotkey.label)", action: nil)
+                self.hud.showMessage(
+                    text: "\(role.messageName) set to \(hotkey.label)",
+                    action: nil
+                )
                 Log.shared.info("hotkey.changed", [
                     "hotkey": .string(hotkey.label),
                     "role": .string(role.logName),
@@ -1842,6 +2098,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         recorder.begin()
+    }
+
+    /// The shortcuts a new one must not collide with.
+    ///
+    /// All three are Dot's, and two of them can be on the same combination
+    /// without Carbon telling anyone: the second registration simply never
+    /// fires.
+    private static func otherHotkeys(
+        than role: ShortcutRole,
+        config: DotConfig
+    ) -> [Hotkey] {
+        switch role {
+        case .record: [config.pasteHotkey, config.paletteHotkey]
+        case .paste: [config.hotkey, config.paletteHotkey]
+        case .palette: [config.hotkey, config.pasteHotkey]
+        }
     }
 
     // MARK: - Configuration
@@ -1955,6 +2227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "hud_dwell_revision": .int(config.hudDwellRevision),
             "max_segment_s": .int(config.maxSegmentSeconds),
             "material": .string(config.hudMaterial.rawValue),
+            "recording_mode": .string(config.recordingMode.rawValue),
             "accessibility": .bool(Paste.accessibilityGranted),
             "history": .int(history.count),
         ])

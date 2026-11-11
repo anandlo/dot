@@ -3,28 +3,55 @@ import SwiftUI
 
 /// The audio visualizer in the recording HUD card.
 ///
-/// Supports 5 distinct modern design styles configurable by the user:
-/// - `.stretch`: Resting dots that stretch into organic capsules on springs.
-/// - `.filament`: Precision discrete capsule bars scrolling in phase.
-/// - `.silk`: Multi-frequency harmonic braided ribbons.
-/// - `.matrix`: Real-time dot-matrix spectrogram.
-/// - `.haloEdge`: Minimal center line with perimeter conic aura.
+/// Five styles, chosen in Settings:
+///
+/// - `.stretch`: resting dots that stretch into capsules, one bar per moment of
+///   the last half second.
+/// - `.filament`: discrete capsule bars scrolling in phase.
+/// - `.silk`: braided harmonic ribbons whose amplitude is the voice itself.
+/// - `.matrix`: a dot-matrix spectrogram.
+/// - `.haloEdge`: a centre line with a conic aura around the card's perimeter.
+///
+/// Every style is driven by the same three inputs: the per-bar heights of the
+/// recent voice (``VisualizerBars``), the envelope history and the 5-band
+/// spectrum. Every bar is a measurement, so two bars of the same frame have
+/// different heights whenever the voice did; and every bar is drawn in the
+/// amber ramp of ``MeterRamp``, deep at the floor, the live amber at speech and
+/// warm at a peak. The shape rests at a hairline when nothing is being said, so
+/// the card is alive without pretending to hear a voice in an empty room.
 struct HUDWaveform: View {
     var visualizer: HUDVisualizer = .stretch
     /// The half height of every column, in points.
     let halfHeights: [CGFloat]
-    /// Raw 60 Hz envelope history (`0` to `1`), oldest first.
+    /// The 60 Hz envelope history, oldest first, each in `0...1`.
     var history: [Double] = []
-    /// Real-time 60 Hz 5-band acoustic spectrum history, oldest first.
+    /// The 60 Hz 5-band spectrum history, oldest first.
     var spectrumHistory: [AudioSpectrumFrame] = []
-    /// Sub-sample phase (`0` to `<1`) for sub-pixel scrolling.
+    /// Where inside one sample period the meter sits, in `0..<1`, so scrolling
+    /// moves by a fraction of a column instead of jumping a whole one.
     var phase: Double = 0
-    /// Continuous unwrapped time in seconds.
+    /// Unwrapped elapsed time, in seconds. It is never reduced modulo a loop, so
+    /// a harmonic style does not snap at a boundary.
     var time: Double = 0
     /// The voice level, from `0` to `1`.
     var level: Double = 0
     /// The phase of the live animation, from `0` to `1`.
     var pulse: Double = 0
+    /// The loudest moment of this take, from `0` to `1`, so a peak is drawn as a
+    /// peak of this voice rather than as a peak of any voice.
+    var ceiling: Double = 1
+    /// The per-bar heights this frame draws, from `0` to `1`, left to right.
+    ///
+    /// The card computes them once per tick into a buffer it keeps, so a frame
+    /// costs no allocation here. An empty value means the view was drawn on its
+    /// own, as a Settings swatch is, and the bars are computed from the history.
+    var bars: [Double] = []
+    /// How much of the shape has arrived, from `0` to `1`.
+    ///
+    /// It is what makes the shape grow out of the axis when a recording starts
+    /// and settle back into it when the recording ends, instead of appearing at
+    /// a full height it had from nowhere.
+    var reveal: Double = 1
 
     var body: some View {
         Canvas { context, size in
@@ -47,12 +74,11 @@ struct HUDWaveform: View {
 
     // MARK: - Helpers
 
-    /// Returns the `0...1` envelope sample `offsetFromNewest` ticks ago (`0` = newest).
+    /// The `0...1` envelope sample `offsetFromNewest` ticks ago, `0` being the
+    /// newest. It reads zero outside the history rather than trapping.
     private func sample(offsetFromNewest offset: Int) -> Double {
         if !history.isEmpty {
-            let idx = history.count - 1 - offset
-            guard idx >= 0, idx < history.count else { return 0 }
-            return min(1.0, max(0.0, history[idx]))
+            return VisualizerBars.sample(history: history, offsetFromNewest: offset)
         }
         guard !halfHeights.isEmpty else { return level }
         let idx = max(0, min(halfHeights.count - 1, halfHeights.count - 1 - offset))
@@ -60,73 +86,89 @@ struct HUDWaveform: View {
         return Double(min(1.0, max(0.0, (halfHeights[idx] - Waveform.minimumHalfHeight) / maxH)))
     }
 
+    private var shownReveal: Double { min(max(reveal, 0), 1) }
+
     private var effectiveTime: Double {
         time > 0 ? time : pulse * 4.4
+    }
+
+    /// The colour of one bar of this frame.
+    private func tint(_ value: Double) -> Color {
+        HUDTheme.meter(value, ceiling: ceiling)
+    }
+
+    /// The bars of the stretch shape, taken from the card or computed here.
+    private func stretchBars() -> [Double] {
+        if bars.count == VisualizerBars.stretchCount { return bars }
+        var computed: [Double] = []
+        VisualizerBars.stretch(
+            into: &computed,
+            history: history,
+            spectrum: spectrumHistory,
+            reveal: shownReveal
+        )
+        return computed
+    }
+
+    /// The bars of a scrolling meter, taken from the card or computed here.
+    private func scrollingBars(count: Int) -> [Double] {
+        if bars.count == count { return bars }
+        var computed: [Double] = []
+        VisualizerBars.scrolling(
+            into: &computed,
+            count: count,
+            history: history,
+            spectrum: spectrumHistory,
+            reveal: shownReveal
+        )
+        return computed
     }
 
     // MARK: - 02 Stretch (Hero Pick)
 
     private func drawStretch(context: GraphicsContext, size: CGSize) {
-        let count = 15
+        let values = stretchBars()
+        let count = values.count
+        guard count > 0 else { return }
         let bw: CGFloat = 3.0
         let gap: CGFloat = 4.0
         let total = CGFloat(count) * bw + CGFloat(count - 1) * gap
         let x0 = (size.width - total) / 2
         let mid = size.height / 2
-        let reach = mid - 1.2
-        let center = Double(count - 1) / 2.0
+        let reach = max(bw / 2, mid - 1.2)
 
-        // Extract real multi-band energies from the live microphone trajectory:
-        // - Low band (vowel body): smoothed over recent ~80ms
-        // - Mid band (formants): smoothed over recent ~50ms
-        // - High band (sibilants/transients): frame-to-frame voice flux + level
-        let s0 = sample(offsetFromNewest: 0)
-        let s1 = sample(offsetFromNewest: 2)
-        let s2 = sample(offsetFromNewest: 4)
-        let s3 = sample(offsetFromNewest: 6)
-        let s4 = sample(offsetFromNewest: 8)
-        let liveLevel = max(level, s0)
-        let lowBand = (s0 + s1 + s2 + s3 + s4) / 5.0
-        let midBand = (s0 + s1 + s2) / 3.0
-        let flux = min(1.0, abs(s0 - s1) * 2.2 + abs(s1 - s2) * 1.4)
-        let highBand = min(1.0, flux * 0.55 + liveLevel * 0.45)
+        // A bar that is a peak of this take gets a warm tip: a small bright cap
+        // at each end of the capsule. The cap is the only thing on the shape
+        // that does not move, and it is what makes a loud syllable read as loud
+        // even when the card is small.
+        let tipLevel = max(0.55, ceiling * MeterRamp.tipOnset)
 
         for index in 0..<count {
-            let distFromCenter = abs(index - count / 2)
-            let dist = center > 0 ? abs(Double(index) - center) / center : 0
-            let bell = exp(-dist * dist * 1.45)
-
-            // Each bar samples the actual live audio history radiating outward from center,
-            // so motion is 100% driven by real voice energy rather than a hardcoded oscillator.
-            let delayedSample = sample(offsetFromNewest: distFromCenter * 2)
-            let neighborSample = sample(offsetFromNewest: max(0, distFromCenter * 2 - 1))
-            let localVoice = 0.65 * delayedSample + 0.35 * neighborSample
-
-            // Blend low (center), mid (shoulders), and high (outer edges) with local voice history
-            let bandEnergy = bell * max(liveLevel, lowBand) * 0.65
-                + localVoice * 0.45
-                + (1.0 - abs(dist - 0.45)) * 0.30 * midBand
-                + pow(dist, 0.85) * 0.35 * highBand
-
-            // Subtle spatial formant contour per bar (static harmonic weighting, only active when speaking)
-            let harmonicWeight = 0.84 + 0.16 * cos(Double(index) * 1.15)
-            let drive = min(1.0, max(0.0, bandEnergy * harmonicWeight))
-            let curved = drive > 0.015 ? pow(CGFloat(drive), 0.85) : 0
-            let hh = max(bw / 2, bw / 2 + curved * (reach - bw / 2))
-
+            let value = CGFloat(min(1, max(0, values[index])))
+            // A resting bar is a dot: the shape is made of the same capsules at
+            // every height, so silence leaves a row of dots rather than nothing.
+            let hh = bw / 2 + value * (reach - bw / 2)
             let rect = CGRect(
                 x: x0 + CGFloat(index) * (bw + gap),
                 y: mid - hh,
                 width: bw,
                 height: hh * 2
             )
-            let path = Path(roundedRect: rect, cornerRadius: bw / 2)
+            context.fill(
+                Path(roundedRect: rect, cornerRadius: bw / 2),
+                with: .color(tint(Double(value)))
+            )
 
-            let alpha = 0.36 + 0.64 * Double(curved)
-            let color = curved > 0.74
-                ? HUDTheme.accentTip.opacity(alpha)
-                : HUDTheme.accent.opacity(alpha)
-            context.fill(path, with: .color(color))
+            if Double(value) >= tipLevel {
+                let cap = bw * 0.85
+                for y in [mid - hh, mid + hh - cap] {
+                    let capRect = CGRect(x: rect.minX, y: y, width: bw, height: cap)
+                    context.fill(
+                        Path(roundedRect: capRect, cornerRadius: cap / 2),
+                        with: .color(HUDTheme.meter(1, ceiling: ceiling))
+                    )
+                }
+            }
         }
     }
 
@@ -136,34 +178,25 @@ struct HUDWaveform: View {
         let bw: CGFloat = 2.4
         let pitch: CGFloat = 4.8
         let mid = size.height / 2
-        let reach = mid - 1.4
-        let bars = max(1, Int(ceil(size.width / pitch)))
-        let histCount = max(1, history.count)
+        let reach = max(bw / 2, mid - 1.4)
+        let count = max(1, Int(ceil(size.width / pitch)))
+        let values = scrollingBars(count: count)
 
-        for index in 0..<bars {
+        for index in 0..<count {
             let x = size.width - bw - CGFloat(index) * pitch
             if x < -bw { break }
+            guard index < values.count else { break }
 
-            // Direct 1-to-1 time-scroll mapping (2 ticks = 33ms per bar) so bars
-            // scroll naturally from right to left across the entire HUD island.
-            let centerOffset = min(max(0, histCount - 1), index * 2)
-            let a0 = sample(offsetFromNewest: centerOffset)
-            let a1 = sample(offsetFromNewest: min(histCount - 1, centerOffset + 1))
-            var raw = max(a0, (a0 + a1) * 0.5)
-            if !spectrumHistory.isEmpty {
-                let sIdx = max(0, spectrumHistory.count - 1 - min(spectrumHistory.count - 1, index * 2))
-                let sp = spectrumHistory[sIdx]
-                let specPeak = max(sp.bands.0, sp.bands.1, sp.bands.2, sp.bands.3, sp.bands.4)
-                raw = max(raw, specPeak)
-            }
-
-            let val = min(1.0, max(0.0, raw))
-            let hh = val > 0.015 ? max(1.2, pow(CGFloat(val), 0.85) * reach) : 1.2
-
+            // A bar that has not been spoken into is a dot, and a bar that has
+            // is a capsule: the meter grows out of a row of dots rather than
+            // out of nothing.
+            let val = CGFloat(min(1, max(0, values[index])))
+            let hh = bw / 2 + val * (reach - bw / 2)
             let rect = CGRect(x: x, y: mid - hh, width: bw, height: hh * 2)
-            let path = Path(roundedRect: rect, cornerRadius: bw / 2)
-            let opacity = val > 0.02 ? (0.65 + 0.35 * val) : 0.32
-            context.fill(path, with: .color(HUDTheme.accentTip.opacity(opacity)))
+            context.fill(
+                Path(roundedRect: rect, cornerRadius: bw / 2),
+                with: .color(tint(Double(val)))
+            )
         }
     }
 
@@ -171,21 +204,20 @@ struct HUDWaveform: View {
 
     private func drawSilk(context: GraphicsContext, size: CGSize) {
         let mid = size.height / 2
-        let reach = mid - 1.8
+        let reach = max(1, mid - 1.8)
         let t = effectiveTime
+        let count = history.count
 
-        let s0 = max(level, sample(offsetFromNewest: 0))
-        let s2 = sample(offsetFromNewest: 3)
-        let s5 = sample(offsetFromNewest: 7)
-        let flux = min(1.0, abs(s0 - s2) * 2.0 + s0 * 0.65)
-
-        // Ribbon amplitude is driven directly by live voice level (rests flat in silence),
-        // with calm, natural phase drift rather than fast hardcoded oscillation.
-        let ribbons: [(freq: Double, speed: Double, band: Double, isAmber: Bool, alpha: Double, width: CGFloat)] = [
-            (1.20, 0.42, s0 * 0.92, false, 0.78, 1.5),
-            (1.95, -0.50, (s0 + s2) * 0.48, false, 0.46, 1.15),
-            (2.85, 0.65, flux * 0.80, false, 0.34, 1.0),
-            (1.55, -0.35, (s0 + s5) * 0.52, true, 0.84, 1.4),
+        // Four ribbons, each at its own multiple of the voice's own shape. The
+        // shape is the envelope history read across the card, oldest at the left
+        // and newest at the right, so a ribbon is as wide as the syllable under
+        // it is loud. A ribbon drawn from the live level alone has the same width
+        // all the way across, which is a decoration rather than a meter.
+        let ribbons: [(freq: Double, speed: Double, lag: Double, alpha: Double, width: CGFloat)] = [
+            (1.20, 0.42, 0.00, 0.90, 1.5),
+            (1.95, -0.50, 0.10, 0.55, 1.15),
+            (2.85, 0.65, 0.22, 0.36, 1.0),
+            (1.55, -0.35, 0.05, 0.95, 1.4),
         ]
 
         var additive = context
@@ -194,17 +226,24 @@ struct HUDWaveform: View {
         let steps = max(24, Int(size.width / 2.0))
         for (idx, ribbon) in ribbons.enumerated() {
             var path = Path()
-            let amp = CGFloat(min(1.0, ribbon.band)) * reach
             let ph = t * ribbon.speed + Double(idx) * 1.1
 
             for s in 0...steps {
                 let u = Double(s) / Double(steps)
                 let x = CGFloat(u) * size.width
-                // Pinned at left and right edges with a smooth bell window
-                let win = pow(sin(Double.pi * u), 2.2)
+                // The voice at this point of the card. Each ribbon reads the same
+                // recording a little behind the one in front of it, which is what
+                // braids them: they are the same voice seen at four lags.
+                let position = min(1, max(0, u - ribbon.lag))
+                let voice: CGFloat = count > 1
+                    ? CGFloat(min(1, max(0, history[Int(position * Double(count - 1))])))
+                    : CGFloat(level)
+                // Tapered at the very edges so the ribbon leaves the card
+                // instead of being cut off by it.
+                let edge = 0.82 + 0.18 * pow(sin(Double.pi * u), 1.4)
                 let wave = 0.72 * sin(u * Double.pi * 2.0 * ribbon.freq * 2.0 + ph)
                     + 0.28 * cos(u * Double.pi * 3.4 - ph * 0.7)
-                let y = mid + amp * CGFloat(win * wave)
+                let y = mid + voice * CGFloat(edge * wave) * reach
 
                 if s == 0 {
                     path.move(to: CGPoint(x: x, y: y))
@@ -213,10 +252,9 @@ struct HUDWaveform: View {
                 }
             }
 
-            let color = ribbon.isAmber
-                ? HUDTheme.live.opacity(ribbon.alpha)
-                : HUDTheme.accent.opacity(ribbon.alpha)
-            additive.stroke(path, with: .color(color), lineWidth: ribbon.width)
+            let live = Double(min(1, max(0, sample(offsetFromNewest: 0))))
+            let colour = HUDTheme.meter(max(0.22, live), ceiling: ceiling)
+            additive.stroke(path, with: .color(colour.opacity(ribbon.alpha)), lineWidth: ribbon.width)
         }
     }
 
@@ -230,20 +268,15 @@ struct HUDWaveform: View {
         let histCount = max(1, history.count)
         let specCount = spectrumHistory.count
 
-        let brightCore = Color.white
-        let brightAmber = Color(red: 1.0, green: 0.80, blue: 0.28)
-        let brightPorcelain = Color(red: 1.0, green: 0.985, blue: 0.96)
-
         for col in 0..<cols {
             let x = size.width - colPitch / 2.0 - CGFloat(col) * colPitch
             if x < -colPitch { break }
 
-            // Direct 1-to-1 time-scroll mapping (2 ticks = 33ms per column) so every
-            // syllable scrolls naturally from right to left across the entire HUD island
-            // without warping when the HUD widens.
+            // Two ticks per column is 33 ms, so the grid scrolls at the rate the
+            // audio was recorded at whatever width the card takes.
             let baseOffset = min(max(0, histCount - 1), col * 2)
 
-            // Read the real 5-band acoustic spectrum frame recorded at this exact moment in time
+            // The spectrum frame recorded at this column's moment.
             let specFrame: AudioSpectrumFrame? = {
                 guard specCount > 0 else { return nil }
                 let idx = specCount - 1 - min(specCount - 1, col * 2)
@@ -270,10 +303,9 @@ struct HUDWaveform: View {
             for row in 0..<rows {
                 let y = rowPitch * (CGFloat(row) + 0.5)
 
-                // Use the genuine 5-band frequency spectrum from the microphone tap,
-                // where all 5 rows (0: high sibilance, 1: upper formants, 2: core presence,
-                // 3: vowel body, 4: chest fundamental) have equal opportunity to light up
-                // based on the actual pitch and consonant/vowel content of the user's voice!
+                // All five rows, sibilants at the top through the vowel body and the
+                // chest fundamental at the bottom, light on the same spectrum frame, so
+                // pitch and articulation decide which rows carry energy.
                 let bandWeight: Double
                 if let spec = specFrame, (spec.bands.0 + spec.bands.1 + spec.bands.2 + spec.bands.3 + spec.bands.4) > 0.01 {
                     bandWeight = spec[row]
@@ -294,9 +326,10 @@ struct HUDWaveform: View {
 
                 let rawEnergy = min(1.0, max(0.0, bandWeight))
                 let cellEnergy = CGFloat(rawEnergy > 0.02 ? pow(rawEnergy, 1.15) : 0.0)
-                let radius = 0.75 + cellEnergy * 1.35
+                let radius = 0.85 + cellEnergy * 1.55
 
-                // Soft luminous bloom behind peak resonant cells
+                // A cell at a formant peak glows: the same amber the shape is
+                // drawn in, never a second colour the card does not own.
                 if cellEnergy > 0.55 {
                     let glowRadius = radius * 1.85
                     let glowRect = CGRect(
@@ -305,38 +338,26 @@ struct HUDWaveform: View {
                         width: glowRadius * 2,
                         height: glowRadius * 2
                     )
-                    let glowPath = Path(ellipseIn: glowRect)
-                    let glowColor = cellEnergy > 0.72 ? brightAmber : brightPorcelain
-                    let glowAlpha = Double((cellEnergy - 0.40) * 0.40)
-                    context.fill(glowPath, with: .color(glowColor.opacity(glowAlpha)))
+                    let glowAlpha = Double((cellEnergy - 0.40) * 0.45)
+                    context.fill(
+                        Path(ellipseIn: glowRect),
+                        with: .color(HUDTheme.meter(Double(cellEnergy), ceiling: ceiling).opacity(glowAlpha))
+                    )
                 }
 
                 let rect = CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)
                 let path = Path(ellipseIn: rect)
 
-                if cellEnergy > 0.72 {
-                    // Formant harmonic peak: radiant amber/gold
-                    let alpha = Double(min(1.0, 0.85 + 0.15 * cellEnergy))
-                    context.fill(path, with: .color(brightAmber.opacity(alpha)))
-                    if cellEnergy > 0.86 {
-                        let coreR = radius * 0.48
-                        let coreRect = CGRect(x: x - coreR, y: y - coreR, width: coreR * 2, height: coreR * 2)
-                        context.fill(
-                            Path(ellipseIn: coreRect),
-                            with: .color(brightCore.opacity(0.95))
-                        )
-                    }
-                } else if cellEnergy > 0.35 {
-                    // Vocal presence & harmonics: warm bright ivory / cream
-                    let alpha = Double(min(1.0, 0.60 + 0.35 * cellEnergy))
-                    context.fill(path, with: .color(brightPorcelain.opacity(alpha)))
-                } else if cellEnergy > 0.12 {
-                    // Ambient voice activity & room decay: subtle porcelain
-                    let alpha = Double(min(1.0, 0.35 + 0.35 * cellEnergy))
-                    context.fill(path, with: .color(brightPorcelain.opacity(alpha)))
+                if cellEnergy <= 0.12 {
+                    // The resting grid: dim enough to be a grid, warm enough to
+                    // be the same material as the voice that lights it.
+                    context.fill(path, with: .color(HUDTheme.meter(0, ceiling: ceiling)))
                 } else {
-                    // Quiet resting grid dots
-                    context.fill(path, with: .color(brightPorcelain.opacity(0.20)))
+                    let alpha = Double(min(1.0, 0.68 + 0.32 * cellEnergy))
+                    context.fill(
+                        path,
+                        with: .color(HUDTheme.meter(Double(cellEnergy), ceiling: ceiling).opacity(alpha))
+                    )
                 }
             }
         }
@@ -346,38 +367,40 @@ struct HUDWaveform: View {
 
     private func drawHaloEdgeCenter(context: GraphicsContext, size: CGSize) {
         let mid = size.height / 2
-        let liveLevel = CGFloat(max(level, sample(offsetFromNewest: 0)))
+        // The newest envelope sample rather than the raw level: the history is
+        // the metered, ballistic value, and the raw level in a render is a
+        // constant that would draw a bright line on a silent card.
+        let liveLevel = CGFloat(history.isEmpty ? level : sample(offsetFromNewest: 0))
 
-        // Subtle axial hairline
+        // The axis hairline.
         var axis = Path()
         axis.move(to: CGPoint(x: 0, y: mid))
         axis.addLine(to: CGPoint(x: size.width, y: mid))
         context.stroke(axis, with: .color(HUDTheme.ink.opacity(0.14 + Double(liveLevel) * 0.14)), lineWidth: 1)
 
-        // Quiet micro-beads along the center axis driven purely by live audio history
+        // Beads along the axis, each at its own moment of the voice, oldest at
+        // the left so the line reads like the recording it is drawn from.
         let count = 13
         let step = size.width / CGFloat(count + 1)
-        let center = CGFloat(count + 1) / 2.0
+        let centre = CGFloat(count + 1) / 2.0
         for i in 1...count {
             let x = CGFloat(i) * step
-            let dist = abs(CGFloat(i) - center) / center
+            let dist = abs(CGFloat(i) - centre) / centre
             let bell = exp(-dist * dist * 1.6)
-            let localSample = CGFloat(sample(offsetFromNewest: abs(i - 7) * 2))
-            let energy = max(liveLevel * 0.6 + localSample * 0.4, localSample) * bell
-            let r = 0.9 + energy * 1.35
+            let local = CGFloat(sample(offsetFromNewest: (count - i) * 2))
+            let energy = CGFloat(min(1, Double(local * bell + liveLevel * 0.25 * bell)))
+            let r = 0.9 + energy * 1.5
             let dot = Path(ellipseIn: CGRect(x: x - r, y: mid - r, width: r * 2, height: r * 2))
-            let color = energy > 0.48
-                ? HUDTheme.live.opacity(0.45 + Double(energy) * 0.55)
-                : HUDTheme.accent.opacity(0.28 + Double(energy) * 0.60)
-            context.fill(dot, with: .color(color))
+            context.fill(dot, with: .color(HUDTheme.meter(Double(energy), ceiling: ceiling)))
         }
     }
 }
 
-/// The glowing conic perimeter border used by the Halo Edge visualizer.
+/// The conic perimeter border of the Halo Edge visualizer.
 ///
-/// Placed outside `.clipShape` on `HUDView` so the outer amber/porcelain bloom
-/// radiates cleanly around the island's silhouette and scales with voice level.
+/// It is applied outside `HUDView`'s `.clipShape`, so the bloom surrounds the
+/// island's silhouette instead of being cut off by it. Its intensity follows the
+/// voice level.
 struct HaloEdgeBorder: View {
     let time: Double
     let pulse: Double
@@ -397,9 +420,9 @@ struct HaloEdgeBorder: View {
             gradient: Gradient(stops: [
                 .init(color: HUDTheme.live.opacity(0.05 * intensity), location: 0.00),
                 .init(color: HUDTheme.live.opacity(0.98 * intensity), location: 0.15),
-                .init(color: HUDTheme.accent.opacity(0.90 * intensity), location: 0.30),
+                .init(color: HUDTheme.meter(0.88, ceiling: 1).opacity(0.92 * intensity), location: 0.30),
                 .init(color: HUDTheme.live.opacity(0.08 * intensity), location: 0.48),
-                .init(color: HUDTheme.accent.opacity(0.75 * intensity), location: 0.68),
+                .init(color: HUDTheme.meter(0.72, ceiling: 1).opacity(0.80 * intensity), location: 0.68),
                 .init(color: HUDTheme.live.opacity(0.92 * intensity), location: 0.85),
                 .init(color: HUDTheme.live.opacity(0.05 * intensity), location: 1.00),
             ]),
@@ -410,13 +433,13 @@ struct HaloEdgeBorder: View {
 
     var body: some View {
         ZStack {
-            // Soft outer & inner conic bloom
+            // The outer and inner conic bloom.
             RoundedRectangle(cornerRadius: HUDTheme.cornerRadius, style: .continuous)
                 .stroke(conicGradient, lineWidth: 2.2 + CGFloat(level) * 2.6)
                 .blur(radius: 3.5 + CGFloat(level) * 5.5)
                 .opacity(0.55 + level * 0.45)
 
-            // Crisp perimeter light filament
+            // The perimeter filament.
             RoundedRectangle(cornerRadius: HUDTheme.cornerRadius, style: .continuous)
                 .strokeBorder(conicGradient, lineWidth: 1.35 + CGFloat(level) * 1.05)
         }

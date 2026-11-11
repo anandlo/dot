@@ -4,20 +4,20 @@ import SwiftUI
 
 /// Renders the light windows without opening them.
 ///
-/// About is drawn with `ImageRenderer`; the welcome, settings and history pages
-/// use an offscreen `NSHostingView` because `ImageRenderer` does not draw
-/// secure fields or the content of a `ScrollView` reliably. Neither path
-/// creates a window, and nothing appears on screen. The preview frame adds the
-/// three traffic-light dots and the rounded corners that the window server
-/// normally draws, so the PNG reads like the window without teaching the real
-/// views any fake chrome.
+/// Every page is snapshotted from an offscreen `NSHostingView`: `ImageRenderer`
+/// does not draw secure fields, the content of a `ScrollView` or a text
+/// selection reliably. The hosting view is never placed in a window and nothing
+/// appears on screen. The preview frame adds the three traffic-light dots and
+/// the rounded corners that the window server normally draws, so the PNG reads
+/// like the window without teaching the real views any fake chrome.
 @MainActor
 enum UIPreview {
     /// The argument that renders the light windows and exits.
     static let argument = "--render-ui"
-    /// The environment variable that does the same. The old spelling is still
-    /// accepted; ``DotMigration/environment(_:in:)`` reads both.
-    static let environmentKey = DotMigration.environmentPrefix + "RENDER_UI"
+    /// The environment variable that does the same, named without the product
+    /// prefix that ``DotMigration/environment(_:in:)`` adds. That reader accepts
+    /// the pre-rename spelling of the prefix as well.
+    static let environmentKey = "RENDER_UI"
 
     /// The directory the render was asked for, if any.
     static func requestedDirectory(
@@ -27,7 +27,7 @@ enum UIPreview {
         if let index = arguments.firstIndex(of: argument), index + 1 < arguments.count {
             return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
         }
-        if let value = DotMigration.environment("RENDER_UI", in: environment) {
+        if let value = DotMigration.environment(Self.environmentKey, in: environment) {
             return URL(fileURLWithPath: value, isDirectory: true)
         }
         return nil
@@ -191,30 +191,33 @@ enum UIPreview {
             )
         }
 
-        let about = AboutView(
-            version: "1.0",
-            onWelcome: {},
-            onOpenSettings: {},
-            onOpenLog: {},
-            onClose: {}
-        )
-        let aboutSize = CGSize(width: 520, height: 368)
-        try write(
-            WindowPreview(size: aboutSize) {
-                about
-            },
-            size: aboutSize,
-            scheme: .light,
-            to: directory.appendingPathComponent("about.png")
-        )
-        try write(
-            WindowPreview(size: aboutSize) {
-                about
-            },
-            size: aboutSize,
-            scheme: .dark,
-            to: directory.appendingPathComponent("about-dark.png")
-        )
+        // The About window, in both appearances and with the update row in two
+        // of the states it can hold. The states are handed to the view rather
+        // than asked for, so a render never reaches GitHub.
+        let aboutSize = AboutView.size
+        let aboutStates: [(name: String, scheme: ColorScheme, update: AboutUpdateState?)] = [
+            ("about.png", .light, nil),
+            ("about-dark.png", .dark, nil),
+            ("about-update-checking.png", .light, .checking),
+            ("about-update-current.png", .light, .upToDate),
+            ("about-update-available.png", .light, .available(version: "0.2.0", page: nil)),
+            ("about-update-available-dark.png", .dark, .available(version: "0.2.0", page: nil)),
+        ]
+        for state in aboutStates {
+            try writeHosted(
+                WindowPreview(size: aboutSize) {
+                    AboutView(
+                        version: "1.0",
+                        build: "1",
+                        animated: false,
+                        previewUpdate: state.update
+                    )
+                },
+                size: aboutSize,
+                scheme: state.scheme,
+                to: directory.appendingPathComponent(state.name)
+            )
+        }
     }
 
     /// Renders the five settings pages into `directory`.
@@ -228,6 +231,25 @@ enum UIPreview {
 
         var sampleConfig = DotConfig.default
         ProviderPreset.openAI.apply(to: &sampleConfig)
+        // The input card's calibration line is part of the shipped surface, so
+        // the rendered General page carries a device Dot has learned rather than
+        // hiding the row behind a fresh install.
+        // The output-grammar card is opt-in, so the render turns it on and
+        // gives it two overrides: one that changes the table's answer and one
+        // that restores the plain text for an app the table knows.
+        sampleConfig.outputGrammarEnabled = true
+        sampleConfig.outputGrammarTargets = [
+            "com.tinyspeck.slackmacgap": .chat,
+            "com.apple.dt.Xcode": .plain,
+        ]
+        sampleConfig.microphoneCalibration = [
+            "DotRenderBuiltInMicrophone": MicrophoneCalibration(
+                noiseFloorDBFS: -62,
+                peakDBFS: -9,
+                observedSamples: 14,
+                updatedAt: Date(timeIntervalSinceReferenceDate: 0)
+            ),
+        ]
 
         // The same list the app builds, without asking the Keychain whether a
         // key is there: a render must not depend on the person's Keychain.
@@ -314,9 +336,9 @@ enum UIPreview {
             )
         }
 
-        // A configuration that names a provider whose row is no longer offered:
-        // the card presents it as the custom endpoint it is, with the stored
-        // endpoint and model in the fields.
+        // A configuration that names a provider through an endpoint Dot ships
+        // no row for: the card presents it as the custom endpoint it is, with the
+        // stored endpoint and model in the fields.
         var storedConfig = DotConfig.default
         storedConfig.provider = ProviderIdentifier.xiaomi
         try writeHosted(
@@ -382,6 +404,7 @@ enum UIPreview {
             providerMenuOpen: providerMenuOpen
         )
         .environment(\.settingsHeadless, true)
+        .environment(\.settingsDefaultInputUID, "DotRenderBuiltInMicrophone")
         .environment(\.settingsVersionOverride, "1.0")
     }
 
@@ -523,38 +546,6 @@ enum UIPreview {
         }
     }
 
-    /// The window a transcript is corrected in.
-    static let transcriptEditorSize = CGSize(width: 560, height: 380)
-
-    static func renderTranscriptEditor(to directory: URL) throws {
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true
-        )
-        let draft = TranscriptDraft(
-            text: "Remind me to send the notes before Friday, and ask Sam whether the "
-                + "numbers in the deck still match the ones in the sheet."
-        )
-        let view = TranscriptEditorView(
-            draft: draft,
-            onCopy: {},
-            onPaste: {},
-            onDone: {}
-        )
-        try writeHosted(
-            view,
-            size: transcriptEditorSize,
-            scheme: .light,
-            to: directory.appendingPathComponent("transcript-editor.png")
-        )
-        try writeHosted(
-            view,
-            size: transcriptEditorSize,
-            scheme: .dark,
-            to: directory.appendingPathComponent("transcript-editor-dark.png")
-        )
-    }
-
     static func renderHUDStates(to directory: URL) throws {
         try FileManager.default.createDirectory(
             at: directory,
@@ -620,36 +611,6 @@ enum UIPreview {
         bitmap.size = size
         hosting.cacheDisplay(in: NSRect(origin: .zero, size: size), to: bitmap)
 
-        guard let data = bitmap.representation(using: .png, properties: [:]) else {
-            throw RenderError.couldNotEncode
-        }
-        try data.write(to: url, options: .atomic)
-    }
-
-    /// Draws a view with `ImageRenderer`.
-    ///
-    /// `ImageRenderer` has no appearance of its own, so the application
-    /// appearance is switched for the duration of the draw and restored
-    /// afterwards. No window is created and nothing appears on screen.
-    private static func write<Content: View>(
-        _ view: Content,
-        size: CGSize,
-        scheme: ColorScheme,
-        to url: URL
-    ) throws {
-        let previous = NSApp.appearance
-        NSApp.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
-        defer { NSApp.appearance = previous }
-
-        let renderer = ImageRenderer(
-            content: view
-                .frame(width: size.width, height: size.height)
-                .environment(\.colorScheme, scheme)
-        )
-        renderer.scale = 2
-        renderer.isOpaque = false
-        guard let image = renderer.cgImage else { throw RenderError.couldNotRender }
-        let bitmap = NSBitmapImageRep(cgImage: image)
         guard let data = bitmap.representation(using: .png, properties: [:]) else {
             throw RenderError.couldNotEncode
         }

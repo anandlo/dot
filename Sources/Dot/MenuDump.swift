@@ -14,9 +14,9 @@ enum MenuDump {
 
     /// Prints the menu.
     static func run() {
-        // The dump shows what the app shows. A retired provider is corrected the
-        // same way the launch corrects it, but nothing is written back: a review
-        // tool never edits the user's configuration.
+        // The dump shows what the app shows. A provider id Dot cannot build is
+        // corrected the same way the launch corrects it, but nothing is written
+        // back: a review tool never edits the user's configuration.
         let config = ProviderMigration.loadConfiguration().config
         let providers = MenuBuilder.providerRows(config: config) { id in
             CredentialStore.hasKey(for: id)

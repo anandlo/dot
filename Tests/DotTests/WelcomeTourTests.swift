@@ -108,8 +108,10 @@ final class WelcomeTourTests: XCTestCase {
     }
 
     func testEveryStepSaysSomethingAndNoneOfThemRepeats() {
-        let titles = TourStep.allCases.map { $0.title(shortcut: Hotkey.defaultRecord.label) }
-        let details = TourStep.allCases.map(\.detail)
+        let titles = TourStep.allCases.map {
+            $0.title(shortcut: Hotkey.defaultRecord.label, mode: .toggle)
+        }
+        let details = TourStep.allCases.map { $0.detail(mode: .toggle) }
 
         for text in titles + details {
             XCTAssertGreaterThan(text.count, 12, "a tour line is too short to say anything: \(text)")
@@ -121,7 +123,30 @@ final class WelcomeTourTests: XCTestCase {
 
     func testTheShortcutInTheTitleFollowsARebind() {
         let rebound = "⌃⇧R"
-        XCTAssertTrue(TourStep.hold.title(shortcut: rebound).contains(rebound))
+        XCTAssertTrue(TourStep.hold.title(shortcut: rebound, mode: .toggle).contains(rebound))
+    }
+
+    /// The tour teaches the interaction the person chose.
+    ///
+    /// The middle step is where a recording ends, so it may not describe the
+    /// shipped mode to someone who picked the other one.
+    func testTheMiddleStepNamesTheChosenInteraction() {
+        let shortcut = Hotkey.defaultRecord.label
+        let toggle = TourStep.speak.detail(mode: .toggle)
+        let hold = TourStep.speak.detail(mode: .hold)
+
+        XCTAssertTrue(toggle.lowercased().contains("again"), toggle)
+        XCTAssertTrue(hold.lowercased().contains("let go"), hold)
+        XCTAssertNotEqual(toggle, hold)
+        // The one thing that may never be written out by hand is the shortcut
+        // itself, in either mode.
+        XCTAssertFalse(toggle.contains(shortcut), toggle)
+        XCTAssertFalse(hold.contains(shortcut), hold)
+    }
+
+    func testTheLastStepNamesTheChosenEnding() {
+        XCTAssertEqual(TourStep.paste.title(shortcut: "⇧F6", mode: .toggle), "Press again to paste")
+        XCTAssertEqual(TourStep.paste.title(shortcut: "⇧F6", mode: .hold), "Let go to paste")
     }
 
     // MARK: - The voice on the card is the island's voice
