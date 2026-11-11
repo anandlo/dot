@@ -37,6 +37,7 @@ enum UIPreview {
     static func renderAll(to directory: URL) throws {
         try renderWelcomeAndAbout(to: directory)
         try renderSettings(to: directory)
+        try renderSelectLists(to: directory)
         try renderHistory(to: directory)
         try renderPalette(to: directory)
     }
@@ -967,5 +968,193 @@ private struct WindowPreview<Content: View>: View {
             .overlay(
                 Circle().strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
             )
+    }
+}
+
+// MARK: - The open list
+
+extension UIPreview {
+    /// The size of one open-list sheet.
+    static let selectPreviewSize = CGSize(width: 620, height: 560)
+
+    /// Renders an open list beside its trigger, in both appearances.
+    ///
+    /// The list is a window of its own, and a window has no place in an
+    /// offscreen hosting view, so the sheet draws the list's own view and the
+    /// trigger's own view in the places the panel would put them. The trigger
+    /// and the card are the shipped views: only the two frames are composed
+    /// here.
+    static func renderSelectLists(to directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        var config = DotConfig.default
+        ProviderPreset.openAI.apply(to: &config)
+        let services = serviceRows(config: config)
+        let modes = RecordingMode.allCases.map { DotSelectRow(title: $0.title) }
+        let selectedMode = RecordingMode.allCases.firstIndex(of: config.recordingMode) ?? 0
+
+        let sheets: [(name: String, label: String, rows: [DotSelectRow], selected: Int, highlight: Int, width: CGFloat)] = [
+            (
+                "select-open-service",
+                "Service",
+                services,
+                services.firstIndex { $0.title == ProviderPreset.openAI.name } ?? 0,
+                2,
+                220
+            ),
+            (
+                "select-open-recording-mode",
+                "Recording mode",
+                modes,
+                selectedMode,
+                selectedMode == 0 ? 1 : 0,
+                210
+            ),
+        ]
+
+        for sheet in sheets {
+            for scheme in [ColorScheme.light, ColorScheme.dark] {
+                let suffix = scheme == .dark ? "-dark" : ""
+                try writeHosted(
+                    WindowPreview(size: selectPreviewSize) {
+                        DotSelectOpenPreview(
+                            label: sheet.label,
+                            rows: sheet.rows,
+                            selectedIndex: sheet.selected,
+                            highlight: sheet.highlight,
+                            triggerWidth: sheet.width
+                        )
+                    },
+                    size: selectPreviewSize,
+                    scheme: scheme,
+                    to: directory.appendingPathComponent("\(sheet.name)\(suffix).png")
+                )
+            }
+        }
+    }
+
+    /// The rows of the Service picker, with the line each one carries.
+    private static func serviceRows(config: DotConfig) -> [DotSelectRow] {
+        ProviderPreset.rows(for: config).map { preset in
+            let model = config.settings(for: preset.providerID).model?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let detail: String?
+            if !preset.hasEndpoint {
+                detail = "On this Mac"
+            } else if model.isEmpty {
+                detail = preset.key == .required ? "Requires API key" : nil
+            } else {
+                detail = ProviderModelCatalog.formattedName(for: model)
+            }
+            return DotSelectRow(title: preset.name, detail: detail, symbol: preset.symbol)
+        }
+    }
+}
+
+/// An open list drawn next to the trigger that opened it.
+///
+/// It is a page-like sheet rather than a window: a card holds one settings row,
+/// the trigger sits where the row's trailing control sits, and the list hangs
+/// from the trigger's leading edge with the gap the panel leaves.
+@MainActor
+private struct DotSelectOpenPreview: View {
+    let label: String
+    let rows: [DotSelectRow]
+    let selectedIndex: Int
+    let highlight: Int
+    let triggerWidth: CGFloat
+
+    private let pageInset: CGFloat = 16
+    private let rowInset: CGFloat = 18
+    private let cardHeight: CGFloat = 110
+    private let triggerHeight = DotSelectMetrics.height
+
+    private var cardSize: CGSize {
+        DotSelectPlacement.size(
+            triggerWidth: triggerWidth,
+            widestRow: DotSelectListMetrics.widestRow(rows),
+            rowHeights: rows.map { DotSelectPlacement.rowHeight(detail: $0.detail) }
+        )
+    }
+
+    var body: some View {
+        let size = UIPreview.selectPreviewSize
+        // The list may be wider than its trigger and hangs from its leading
+        // edge, so the trigger is placed where the wider of the two still ends
+        // inside the sheet.
+        let triggerX = size.width - pageInset - rowInset - max(triggerWidth, cardSize.width)
+        let triggerY = pageInset + (cardHeight - triggerHeight) / 2
+        ZStack(alignment: .topLeading) {
+            DotTheme.paper
+            pageCard(triggerX: triggerX)
+            Text(label)
+                .font(.system(size: 13))
+                .foregroundStyle(DotTheme.ink)
+                .offset(x: pageInset + rowInset, y: triggerY + 6)
+            DotSelectTriggerPreview(title: title, width: triggerWidth)
+                .offset(x: triggerX, y: triggerY)
+            DotSelectListCard(
+                rows: rows,
+                selectedIndex: selectedIndex,
+                highlight: highlight,
+                size: cardSize,
+                onHighlight: { _ in },
+                onChoose: { _ in }
+            )
+            .frame(width: cardSize.width, height: cardSize.height)
+            .offset(x: triggerX, y: triggerY + triggerHeight + DotSelectPlacement.gap)
+        }
+        .frame(width: size.width, height: size.height)
+    }
+
+    /// The words the trigger shows: the selected row's title.
+    private var title: String {
+        rows.indices.contains(selectedIndex) ? rows[selectedIndex].title : "Choose…"
+    }
+
+    private func pageCard(triggerX: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: DotTheme.cardCorner, style: .continuous)
+            .fill(DotTheme.cardFill)
+            .overlay(
+                RoundedRectangle(cornerRadius: DotTheme.cardCorner, style: .continuous)
+                    .strokeBorder(DotTheme.cardBorder, lineWidth: 1)
+            )
+            .frame(
+                width: triggerX + triggerWidth + rowInset - pageInset,
+                height: cardHeight
+            )
+            .offset(x: pageInset, y: pageInset)
+    }
+}
+
+/// The trigger as it draws when it is closed and at rest.
+@MainActor
+private struct DotSelectTriggerPreview: View {
+    let title: String
+    let width: CGFloat
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(DotSelectMetrics.titleFont)
+                .foregroundStyle(DotTheme.ink)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(DotTheme.ink3)
+                .fixedSize()
+        }
+        .padding(.horizontal, 10)
+        .frame(width: width, height: DotSelectMetrics.height)
+        .background(
+            RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous)
+                .fill(DotTheme.fieldFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous)
+                .strokeBorder(DotTheme.fieldBorder, lineWidth: 1)
+        )
     }
 }

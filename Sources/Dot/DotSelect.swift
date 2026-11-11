@@ -25,23 +25,43 @@ struct DotSelectOption<Value: Hashable> {
     }
 }
 
-/// A choice from a fixed list, drawn by the system.
+/// One row of an open list: the words, without the value behind them.
 ///
-/// The control is an `NSPopUpButton`: the list opens above the window, accepts
-/// the keyboard, type-selects by the first letters of a row and marks the
-/// current value with a checkmark without Dot drawing any of it. The button is
-/// sized by ``width`` so every picker in a column is the same drawn width on
-/// screen, not only the same proposed width.
+/// The trigger and the panel both draw a list of rows, and neither of them
+/// knows what a row is worth: the value stays with the `V` of a
+/// ``DotSelect`` and is written back by index.
+struct DotSelectRow: Equatable, Sendable {
+    let title: String
+    let detail: String?
+    let symbol: String?
+
+    init(title: String, detail: String? = nil, symbol: String? = nil) {
+        self.title = title
+        self.detail = detail
+        self.symbol = symbol
+    }
+}
+
+/// A choice from a fixed list, drawn by Dot.
+///
+/// The trigger is the same chrome as a text field - one fill, one border, one
+/// corner radius, 29 points tall - so a row that picks a value and a row that
+/// types one sit on the same line. A trigger whose row does not name a width
+/// draws the settings column, so every picker on a page starts and ends at the
+/// same place; a longer title truncates rather than widening its row. The list
+/// itself is a floating panel (``DotSelectPanel``) rather than a view inside the
+/// window: a list drawn in the window's own coordinate space cannot escape the
+/// scroll view and the card it is clipped by.
 @MainActor
 struct DotSelect<Value: Hashable>: View {
     /// What the control selects, e.g. "Microphone".
     let label: String
-    /// The choices, in the order the menu lists them.
+    /// The choices, in the order the list shows them.
     let options: [DotSelectOption<Value>]
     @Binding private var selection: Value?
     /// Shown when no row matches the selection.
     private let placeholder: String
-    /// The drawn width of the button; `nil` lets it hug the current title.
+    /// The drawn width of the trigger; `nil` draws the settings column.
     private let width: CGFloat?
     private let isEnabled: Bool
 
@@ -53,7 +73,8 @@ struct DotSelect<Value: Hashable>: View {
     ///   - selection: the chosen value.
     ///   - placeholder: the words shown when nothing is selected and no row
     ///     carries `nil`.
-    ///   - width: the drawn width of the button.
+    ///   - width: the drawn width of the trigger, or `nil` for the settings
+    ///     column.
     ///   - isEnabled: whether the control can be used.
     init(
         label: String,
@@ -98,39 +119,285 @@ struct DotSelect<Value: Hashable>: View {
     }
 
     var body: some View {
-        PopUpButton(
-            options: options,
-            selection: $selection,
-            placeholder: placeholder,
-            width: displayWidth,
+        DotSelectTrigger(
+            label: label,
+            title: currentOption?.title ?? placeholder,
+            rows: rows,
+            selectedIndex: selectedIndex,
+            width: width ?? DotSelectMetrics.settingsColumn,
             isEnabled: isEnabled
-        )
-        .frame(width: displayWidth, alignment: .trailing)
-        .accessibilityLabel(label)
-        .accessibilityValue(currentOption?.title ?? placeholder)
-        .accessibilityHint("Opens a list of \(options.count) choices.")
+        ) { index in
+            guard options.indices.contains(index) else { return }
+            selection = options[index].value
+        }
     }
 
     /// The row the selection points at, when a row carries it.
-    private var currentOption: DotSelectOption<Value>? {
-        options.first { $0.value == selection }
+    private var selectedIndex: Int? {
+        options.firstIndex { $0.value == selection }
     }
 
-    /// The width the button draws at.
-    ///
-    /// A fixed width is the Provider page's column. Without one the control
-    /// hugs the title it is showing, which is what a row in a list wants: the
-    /// menu may hold names that are far longer than the one selected.
-    private var displayWidth: CGFloat {
-        if let width { return width }
-        let font = NSFont.systemFont(ofSize: 13)
-        let text = (currentOption?.title ?? placeholder) as NSString
-        return ceil(text.size(withAttributes: [.font: font]).width) + 42
+    private var currentOption: DotSelectOption<Value>? {
+        selectedIndex.map { options[$0] }
+    }
+
+    private var rows: [DotSelectRow] {
+        options.map {
+            DotSelectRow(title: $0.title, detail: $0.detail, symbol: $0.symbol)
+        }
     }
 }
 
-/// The AppKit pop-up behind ``DotSelect``.
+/// The drawn trigger: one line of ink and a chevron on a field.
 ///
-/// An explicit intrinsic width is what makes the drawn bezel the same for
-/// "JSON" and "Authorization: Bearer": the SwiftUI menu picker hugs its title,
-/// so two rows in one card came out at different widths.
+/// It is deliberately not a button style of its own: the fill, the border and
+/// the ring are the field's, and the open state is what turns the border into
+/// the focus ring, so an open list reads as the field being edited rather than
+/// as a second kind of control.
+@MainActor
+private struct DotSelectTrigger: View {
+    let label: String
+    let title: String
+    let rows: [DotSelectRow]
+    let selectedIndex: Int?
+    let width: CGFloat
+    let isEnabled: Bool
+    let onSelect: (Int) -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+    @FocusState private var isFocused: Bool
+    @State private var isHovering = false
+    @State private var isOpen = false
+    @State private var anchor = DotSelectAnchor()
+
+    var body: some View {
+        content
+            .accessibilityHidden(true)
+            .padding(.horizontal, 10)
+            .frame(height: DotSelectMetrics.height)
+            .frame(width: width)
+            .background(
+                RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous)
+                    .fill(isHovering && isEnabled ? DotTheme.fieldFillFocused : DotTheme.fieldFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous)
+                    .strokeBorder(borderColour, lineWidth: isFocused || isOpen ? 1.5 : 1)
+            )
+            .background(DotSelectAnchorReporter(anchor: anchor))
+            .contentShape(RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous))
+            .onTapGesture(perform: toggle)
+            .focusable()
+            .focusEffectDisabled()
+            .focused($isFocused)
+            .onKeyPress(.space) { activate(); return .handled }
+            .onKeyPress(.return) { activate(); return .handled }
+            .onKeyPress(.downArrow) { activate(); return .handled }
+            .onHover { inside in
+                isHovering = inside && isEnabled
+            }
+            .onDisappear {
+                if isOpen { DotSelectListController.shared.close() }
+            }
+            .opacity(isEnabled ? 1 : 0.45)
+            .background(
+                DotSelectAccessibilityElement(
+                    label: label,
+                    value: title,
+                    isEnabled: isEnabled,
+                    onOpen: activate
+                )
+            )
+    }
+
+    private var content: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(DotSelectMetrics.titleFont)
+                .foregroundStyle(DotTheme.ink)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(DotTheme.ink3)
+                .fixedSize()
+        }
+    }
+
+    private var borderColour: Color {
+        isFocused || isOpen ? DotTheme.focusRing : DotTheme.fieldBorder
+    }
+
+    /// Opens the list, or closes the one this trigger owns.
+    private func toggle() {
+        guard isEnabled else { return }
+        if isOpen {
+            DotSelectListController.shared.close()
+            return
+        }
+        guard !DotSelectListController.shared.takeSuppressedOpening() else { return }
+        guard anchor.window != nil else { return }
+        let opened = DotSelectListController.shared.present(
+            anchor: anchor,
+            rows: rows,
+            selectedIndex: selectedIndex,
+            title: label,
+            scheme: colorScheme,
+            onSelect: onSelect,
+            onClose: { isOpen = false }
+        )
+        isOpen = opened
+    }
+
+    /// A key that opens the list, which is also a click on the trigger.
+    private func activate() {
+        guard isEnabled, !isOpen else { return }
+        toggle()
+    }
+}
+
+/// The numbers the trigger draws at.
+enum DotSelectMetrics {
+    /// The drawn height, which is the height of a ``DotFieldStyle`` field.
+    static let height: CGFloat = 29
+    /// The width a trigger draws at when its row does not name one.
+    ///
+    /// One width on every row of a page: a picker that grew with its longest
+    /// title left the pickers above and below it at other widths, which reads
+    /// as an unfinished page rather than as three of the same control.
+    static let settingsColumn: CGFloat = 240
+    /// The corner radius of a field.
+    static let corner: CGFloat = 8
+    static let titleFont = Font.system(size: 12.5, weight: .regular)
+}
+
+/// The trigger's frame, in the coordinates a panel is placed in.
+///
+/// A SwiftUI view cannot ask for its own window, and a panel is placed in screen
+/// coordinates, so a bare `NSView` behind the trigger records both: the window
+/// it ended up in and the frame it occupies in screen space.
+@MainActor
+final class DotSelectAnchor {
+    weak var window: NSWindow?
+    var screenFrame: NSRect = .zero
+
+    func record(_ view: NSView) {
+        window = view.window
+        guard let window else { return }
+        screenFrame = window.convertToScreen(view.convert(view.bounds, to: nil))
+    }
+}
+
+private struct DotSelectAnchorReporter: NSViewRepresentable {
+    let anchor: DotSelectAnchor
+
+    func makeNSView(context: Context) -> AnchorReportingView {
+        let view = AnchorReportingView()
+        view.anchor = anchor
+        return view
+    }
+
+    func updateNSView(_ view: AnchorReportingView, context: Context) {
+        view.anchor = anchor
+        view.record()
+    }
+}
+
+private final class AnchorReportingView: NSView {
+    var anchor: DotSelectAnchor?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        record()
+    }
+
+    override func layout() {
+        super.layout()
+        record()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        record()
+    }
+
+    func record() {
+        anchor?.record(self)
+    }
+}
+
+/// The accessibility element of the trigger: a pop-up button, in AppKit terms.
+///
+/// SwiftUI has no pop-up button role, and the trigger is a drawing rather than a
+/// platform control, so the one `NSView` it owns is the element VoiceOver reads.
+private struct DotSelectAccessibilityElement: NSViewRepresentable {
+    let label: String
+    let value: String
+    let isEnabled: Bool
+    let onOpen: () -> Void
+
+    func makeNSView(context: Context) -> DotSelectAccessibilityView {
+        let view = DotSelectAccessibilityView()
+        view.apply(label: label, value: value, isEnabled: isEnabled, onOpen: onOpen)
+        return view
+    }
+
+    func updateNSView(_ view: DotSelectAccessibilityView, context: Context) {
+        view.apply(label: label, value: value, isEnabled: isEnabled, onOpen: onOpen)
+    }
+}
+
+final class DotSelectAccessibilityView: NSView {
+    private var label = ""
+    private var value = ""
+    private var enabled = true
+    private var onOpen: (() -> Void)?
+
+    func apply(label: String, value: String, isEnabled: Bool, onOpen: @escaping () -> Void) {
+        self.label = label
+        self.value = value
+        self.enabled = isEnabled
+        self.onOpen = onOpen
+        setAccessibilityElement(true)
+        setAccessibilityRole(.popUpButton)
+        setAccessibilityLabel(label)
+        setAccessibilityValue(value)
+        setAccessibilityEnabled(isEnabled)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func isAccessibilityElement() -> Bool {
+        true
+    }
+
+    override func accessibilityRole() -> NSAccessibility.Role? {
+        .popUpButton
+    }
+
+    override func accessibilityLabel() -> String? {
+        label
+    }
+
+    override func accessibilityValue() -> Any? {
+        value
+    }
+
+    override func isAccessibilityEnabled() -> Bool {
+        enabled
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard enabled else { return false }
+        onOpen?()
+        return true
+    }
+}

@@ -36,9 +36,6 @@ enum ProductLinks {
     /// Who made the app, as the About window credits them.
     static let author = "Anand Lo"
 
-    /// The copyright line, kept in step with `LICENSE`.
-    static let copyright = "© 2026 Anand Lo"
-
     /// The GitHub Releases endpoint the update check reads.
     ///
     /// It leaves prereleases out, so a release that is one is not this URL's

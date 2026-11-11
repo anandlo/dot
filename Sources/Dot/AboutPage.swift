@@ -89,7 +89,6 @@ struct AboutPage: View {
             header
             destinations
             actions
-            footer
         }
         .frame(maxWidth: .infinity)
     }
@@ -301,30 +300,5 @@ struct AboutPage: View {
                 .buttonStyle(.plain)
             }
         }
-    }
-
-    // MARK: Footer
-
-    /// What a take does, in four claims the code keeps.
-    private var footer: some View {
-        VStack(spacing: 6) {
-            Text(privacy)
-                .font(.system(size: 11))
-                .foregroundStyle(DotTheme.ink3)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 420)
-
-            Text(ProductLinks.copyright)
-                .font(.system(size: 11))
-                .foregroundStyle(DotTheme.ink3)
-        }
-        .padding(.top, 2)
-        .padding(.bottom, 8)
-    }
-
-    private var privacy: String {
-        "Audio goes only to the speech engine you choose. Apple Speech runs on this Mac. "
-            + "API keys are stored in the Keychain. History stays on this Mac."
     }
 }
