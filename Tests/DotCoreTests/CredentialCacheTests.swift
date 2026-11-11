@@ -1,3 +1,4 @@
+import os
 import XCTest
 
 @testable import DotCore
@@ -275,13 +276,14 @@ final class CredentialCacheTests: XCTestCase {
         // The second call runs off this thread, so the old behaviour fails the
         // test instead of hanging it: waiting is exactly the bug.
         let answered = expectation(description: "the second caller answered")
-        var second: String?
+        let second = OSAllocatedUnfairLock<String?>(initialState: nil)
         DispatchQueue.global().async {
-            second = cache.key(for: "xiaomi")
+            let value = cache.key(for: "xiaomi")
+            second.withLock { $0 = value }
             answered.fulfill()
         }
         wait(for: [answered], timeout: 1.0)
-        XCTAssertNil(second, "the key is not known yet")
+        XCTAssertNil(second.withLock { $0 }, "the key is not known yet")
 
         gate.signal()
 
