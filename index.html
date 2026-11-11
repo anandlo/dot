@@ -1,1270 +1,622 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Dot: Push-to-Talk Voice Dictation for macOS</title>
-  <meta name="description" content="Native push-to-talk voice dictation for macOS. Hardware-dormant audio gating, under 50ms stop latency, pure Swift 6 architecture, and zero subscriptions. 100% Free and Open Source.">
-  <link rel="icon" type="image/png" href="assets/icon.png">
-  <link rel="apple-touch-icon" href="assets/icon.png">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0a0a0b">
-  
-  <style>
-    :root {
-      --bg: #0a0a0b;
-      --surface: #121214;
-      --card-bg: #151518;
-      --card-hover: #1a1a1e;
-      --line: rgba(255, 255, 255, 0.08);
-      --line-strong: rgba(255, 255, 255, 0.16);
-      --fg: #f4f4f6;
-      --muted: #8e8e93;
-      --faint: #48484a;
-      --mint: #34d399;
-      --mint-glow: rgba(52, 211, 153, 0.18);
-      --amber: #fbbf24;
-      --coral: #ff453a;
-      --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
-      --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
-    }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-    html { scroll-behavior: smooth; }
-
-    body {
-      background: var(--bg);
-      color: var(--fg);
-      font-family: var(--sans);
-      line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-      overflow-x: hidden;
-    }
-
-    a { color: inherit; text-decoration: none; }
-    button { font: inherit; color: inherit; cursor: pointer; background: transparent; border: 0; }
-    kbd { font-family: var(--sans); }
-
-    /* Top Navigation */
-    .nav {
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      width: 100%;
-      backdrop-filter: blur(20px) saturate(180%);
-      -webkit-backdrop-filter: blur(20px) saturate(180%);
-      background: rgba(10, 10, 11, 0.78);
-      border-bottom: 1px solid var(--line);
-    }
-
-    .nav-inner {
-      max-width: 1140px;
-      margin: 0 auto;
-      padding: 13px 24px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .nav-brand {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-weight: 600;
-      font-size: 15px;
-      letter-spacing: -0.01em;
-    }
-
-    .nav-brand img {
-      width: 26px;
-      height: 26px;
-      border-radius: 6px;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
-    }
-
-    .nav-badge {
-      font-size: 11px;
-      font-family: var(--mono);
-      color: var(--muted);
-      background: rgba(255, 255, 255, 0.06);
-      padding: 2px 7px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-    }
-
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 22px;
-      font-size: 14px;
-      color: var(--muted);
-    }
-
-    .nav-links a {
-      transition: color 0.15s ease;
-    }
-
-    .nav-links a:hover {
-      color: var(--fg);
-    }
-
-    .nav-sponsor {
-      color: var(--amber) !important;
-      font-size: 13px;
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-    }
-
-    .nav-dl {
-      color: #0c0b0a !important;
-      background: #ffffff;
-      font-weight: 600;
-      font-size: 13px;
-      border-radius: 999px;
-      padding: 6px 14px;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      transition: opacity 0.15s ease, transform 0.15s ease;
-    }
-
-    .nav-dl:hover {
-      opacity: 0.92;
-      transform: translateY(-1px);
-    }
-
-    /* Hero Section */
-    .hero {
-      max-width: 1140px;
-      margin: 0 auto;
-      padding: 72px 24px 44px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      text-align: center;
-    }
-
-    .hero-tag {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--mint);
-      background: rgba(52, 211, 153, 0.08);
-      border: 1px solid rgba(52, 211, 153, 0.22);
-      padding: 5px 12px;
-      border-radius: 999px;
-      margin-bottom: 22px;
-    }
-
-    .hero-tag-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--mint);
-      box-shadow: 0 0 8px var(--mint);
-    }
-
-    .hero h1 {
-      font-size: 64px;
-      font-weight: 700;
-      letter-spacing: -0.04em;
-      line-height: 1.05;
-      color: #ffffff;
-      max-width: 820px;
-      margin-bottom: 18px;
-    }
-
-    @media (max-width: 720px) {
-      .hero h1 { font-size: 42px; }
-      .nav-links { display: none; }
-    }
-
-    .hero-lede {
-      font-size: 19px;
-      color: var(--muted);
-      max-width: 620px;
-      line-height: 1.5;
-      margin-bottom: 36px;
-    }
-
-    .hero-cta-group {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 14px;
-      width: 100%;
-      max-width: 480px;
-      margin-bottom: 48px;
-    }
-
-    .hero-actions {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      width: 100%;
-    }
-
-    @media (max-width: 520px) {
-      .hero-actions { flex-direction: column; }
-    }
-
-    .btn-hero-primary {
-      flex: 1.1;
-      background: #ffffff;
-      color: #0a0a0b;
-      font-size: 14.5px;
-      font-weight: 600;
-      padding: 13px 20px;
-      border-radius: 10px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      box-shadow: 0 4px 18px rgba(255, 255, 255, 0.12);
-      transition: all 0.16s ease;
-    }
-
-    .btn-hero-primary:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 6px 24px rgba(255, 255, 255, 0.2);
-    }
-
-    .hero-brew-box {
-      flex: 1;
-      display: inline-flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 12px 14px;
-      font-family: var(--mono);
-      font-size: 12px;
-      color: var(--muted);
-      cursor: pointer;
-      user-select: all;
-      transition: all 0.15s ease;
-    }
-
-    .hero-brew-box:hover {
-      border-color: var(--line-strong);
-      color: var(--fg);
-    }
-
-    .hero-meta {
-      font-size: 12px;
-      color: var(--faint);
-    }
-
-    /* Interactive Simulator Instrument */
-    .simulator-container {
-      width: 100%;
-      max-width: 1080px;
-      margin: 0 auto 72px;
-      padding: 0 24px;
-    }
-
-    .mac-window {
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.05);
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .mac-titlebar {
-      height: 42px;
-      background: #18181b;
-      border-bottom: 1px solid var(--line);
-      display: flex;
-      align-items: center;
-      padding: 0 16px;
-      position: relative;
-    }
-
-    .traffic-lights {
-      display: flex;
-      gap: 8px;
-    }
-
-    .light {
-      width: 11px;
-      height: 11px;
-      border-radius: 50%;
-    }
-    .light-close { background: #ff5f56; }
-    .light-min { background: #ffbd2e; }
-    .light-max { background: #27c93f; }
-
-    .titlebar-caption {
-      position: absolute;
-      left: 50%;
-      transform: translateX(-50%);
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--muted);
-    }
-
-    .titlebar-status {
-      margin-left: auto;
-      font-size: 11px;
-      font-family: var(--mono);
-      color: var(--mint);
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .sim-body {
-      padding: 36px 32px 40px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      background: radial-gradient(circle at 50% 20%, rgba(255, 255, 255, 0.03) 0%, transparent 60%);
-    }
-
-    /* Keycaps Bar */
-    .sim-keys-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 28px;
-    }
-
-    .sim-key {
-      min-width: 32px;
-      height: 34px;
-      padding: 0 14px;
-      background: linear-gradient(180deg, #2a2a2e 0%, #1c1c1f 100%);
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      border-bottom: 2px solid rgba(255, 255, 255, 0.06);
-      border-radius: 8px;
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 3px 6px rgba(0, 0, 0, 0.4);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-family: var(--mono);
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--fg);
-      cursor: pointer;
-      user-select: none;
-      transition: all 0.06s ease;
-    }
-
-    .sim-key:hover {
-      border-color: rgba(255, 255, 255, 0.28);
-    }
-
-    .sim-key.active, .sim-key:active {
-      transform: translateY(2px);
-      box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.6);
-      background: #161618;
-      border-color: rgba(255, 255, 255, 0.1);
-      color: var(--mint);
-    }
-
-    .sim-keys-hint {
-      font-size: 12px;
-      color: var(--faint);
-      margin-left: 8px;
-    }
-
-    @media (max-width: 600px) {
-      .sim-keys-hint { display: none; }
-    }
-
-    /* Dot Floating HUD Pill */
-    .hud-simulator {
-      width: 100%;
-      max-width: 480px;
-      height: 48px;
-      background: rgba(22, 22, 26, 0.94);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      border-radius: 999px;
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.06);
-      display: flex;
-      align-items: center;
-      padding: 0 14px;
-      gap: 12px;
-      margin-bottom: 28px;
-      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    .hud-simulator.recording {
-      border-color: rgba(52, 211, 153, 0.4);
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.7), 0 0 20px rgba(52, 211, 153, 0.15);
-    }
-
-    .hud-sim-icon {
-      width: 24px;
-      height: 24px;
-      border-radius: 6px;
-      flex-shrink: 0;
-    }
-
-    #hudWaveCanvas {
-      width: 100px;
-      height: 26px;
-      flex-shrink: 0;
-    }
-
-    .hud-sim-text {
-      font-size: 13px;
-      color: var(--fg);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      flex: 1;
-    }
-
-    .hud-caret {
-      display: inline-block;
-      width: 2px;
-      height: 14px;
-      background: var(--fg);
-      margin-left: 2px;
-      vertical-align: -2px;
-      animation: blink 0.8s infinite;
-    }
-
-    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
-
-    /* Target Code Editor Area */
-    .editor-box {
-      width: 100%;
-      max-width: 680px;
-      background: #0e0e10;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      overflow: hidden;
-      font-family: var(--mono);
-      font-size: 13px;
-      line-height: 1.6;
-    }
-
-    .editor-top {
-      padding: 8px 14px;
-      background: #141416;
-      border-bottom: 1px solid var(--line);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 11px;
-      color: var(--muted);
-    }
-
-    .editor-latency {
-      font-family: var(--mono);
-      color: var(--mint);
-      background: rgba(52, 211, 153, 0.1);
-      padding: 2px 7px;
-      border-radius: 4px;
-    }
-
-    .editor-content {
-      padding: 16px 20px;
-      min-height: 96px;
-      color: var(--muted);
-      word-break: break-word;
-    }
-
-    .editor-content .typed-text {
-      color: #ffffff;
-      font-weight: 500;
-    }
-
-    /* Split Sections (Scrawl Architectural Pattern) */
-    .split {
-      border-top: 1px solid var(--line);
-      max-width: 1140px;
-      margin: 0 auto;
-      padding: 64px 24px;
-      display: grid;
-      grid-template-columns: 300px 1fr;
-      gap: 48px;
-    }
-
-    @media (max-width: 820px) {
-      .split {
-        grid-template-columns: 1fr;
-        gap: 28px;
-        padding: 48px 20px;
-      }
-    }
-
-    .split-aside h2 {
-      font-size: 24px;
-      font-weight: 600;
-      letter-spacing: -0.02em;
-      margin-bottom: 8px;
-      color: #ffffff;
-    }
-
-    .split-aside p {
-      font-size: 14px;
-      color: var(--muted);
-      line-height: 1.55;
-    }
-
-    /* 2x2 Feature Cards Grid */
-    .feature-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 20px;
-    }
-
-    @media (max-width: 640px) {
-      .feature-grid { grid-template-columns: 1fr; }
-    }
-
-    .feature-card {
-      background: var(--card-bg);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      transition: border-color 0.15s ease, transform 0.15s ease;
-    }
-
-    .feature-card:hover {
-      border-color: var(--line-strong);
-      transform: translateY(-2px);
-    }
-
-    .feature-visual {
-      height: 130px;
-      background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.04) 0%, transparent 70%), #111114;
-      border-bottom: 1px solid var(--line);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      position: relative;
-    }
-
-    .feature-copy {
-      padding: 20px;
-    }
-
-    .feature-copy h3 {
-      font-size: 15px;
-      font-weight: 600;
-      color: #ffffff;
-      margin-bottom: 6px;
-      letter-spacing: -0.01em;
-    }
-
-    .feature-copy p {
-      font-size: 13px;
-      color: var(--muted);
-      line-height: 1.5;
-    }
-
-    /* Shortcuts List */
-    .shortcuts-list {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px 32px;
-      list-style: none;
-    }
-
-    @media (max-width: 640px) {
-      .shortcuts-list { grid-template-columns: 1fr; }
-    }
-
-    .shortcuts-list li {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 10px 0;
-      font-size: 14px;
-      color: var(--muted);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-    }
-
-    .shortcut-combo {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      min-width: 90px;
-    }
-
-    .shortcut-combo kbd {
-      min-width: 24px;
-      height: 24px;
-      padding: 0 6px;
-      background: linear-gradient(180deg, #2c2c2e 0%, #1f1f21 100%);
-      border-radius: 5px;
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 1px 2px #000;
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--fg);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    /* Honest Landscape Comparison Table */
-    .table-container {
-      width: 100%;
-      overflow-x: auto;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: var(--surface);
-    }
-
-    .comp-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-      text-align: left;
-    }
-
-    .comp-table th {
-      padding: 14px 16px;
-      font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      color: var(--faint);
-      background: rgba(255, 255, 255, 0.02);
-      border-bottom: 1px solid var(--line);
-    }
-
-    .comp-table td {
-      padding: 14px 16px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-      color: var(--muted);
-      vertical-align: middle;
-      line-height: 1.45;
-    }
-
-    .comp-table tr:last-child td {
-      border-bottom: 0;
-    }
-
-    .comp-table td.app-name {
-      font-weight: 600;
-      color: #ffffff;
-      white-space: nowrap;
-    }
-
-    .comp-table td.app-name small {
-      font-weight: normal;
-      color: var(--faint);
-      display: block;
-      font-size: 11px;
-    }
-
-    .comp-table tr.highlight-dot {
-      background: rgba(52, 211, 153, 0.04);
-    }
-
-    .comp-table tr.highlight-dot td {
-      color: #ffffff;
-    }
-
-    .comp-table tr.highlight-dot td.app-name {
-      color: var(--mint);
-    }
-
-    /* Code Blocks */
-    .code-grid {
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
-
-    .code-box {
-      background: #111113;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      overflow: hidden;
-      font-family: var(--mono);
-      font-size: 12.5px;
-    }
-
-    .code-header {
-      padding: 8px 14px;
-      background: #161618;
-      border-bottom: 1px solid var(--line);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 11px;
-      color: var(--muted);
-    }
-
-    .code-header button {
-      font-family: var(--sans);
-      font-size: 11px;
-      color: var(--muted);
-      padding: 2px 6px;
-      border-radius: 4px;
-      background: rgba(255, 255, 255, 0.06);
-      transition: all 0.15s ease;
-    }
-
-    .code-header button:hover {
-      background: rgba(255, 255, 255, 0.12);
-      color: var(--fg);
-    }
-
-    .code-body {
-      padding: 14px 16px;
-      color: var(--fg);
-      line-height: 1.5;
-      user-select: all;
-    }
-
-    .code-body .prompt { color: var(--faint); user-select: none; }
-
-    /* Minimalist Footer */
-    .foot {
-      max-width: 1140px;
-      margin: 0 auto;
-      padding: 36px 24px;
-      border-top: 1px solid var(--line);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 13px;
-      color: var(--faint);
-    }
-
-    @media (max-width: 600px) {
-      .foot {
-        flex-direction: column;
-        gap: 16px;
-        text-align: center;
-      }
-    }
-
-    .foot-left {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .foot-left img {
-      width: 18px;
-      height: 18px;
-      border-radius: 4px;
-    }
-
-    .foot-right {
-      display: flex;
-      align-items: center;
-      gap: 20px;
-    }
-
-    .foot-right a {
-      color: var(--muted);
-      transition: color 0.15s ease;
-    }
-
-    .foot-right a:hover {
-      color: var(--fg);
-    }
-
-    .foot-coffee {
-      color: var(--amber) !important;
-      font-size: 12.5px;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dot - Write as fast as you can think</title>
+<meta name="description" content="Press once, speak, press again. Dot types what you said at the cursor of whatever app is in front. Native macOS, MIT, eight engines, no servers.">
+<link rel="canonical" href="https://dot.anandlo.com/">
+<meta name="theme-color" content="#0B0A08">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="assets/icon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="assets/icon-180.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Dot - Write as fast as you can think">
+<meta property="og:description" content="Press once, speak, press again. Dot types what you said at the cursor of whatever app is in front.">
+<meta property="og:url" content="https://dot.anandlo.com/">
+<meta property="og:image" content="https://dot.anandlo.com/assets/icon.png">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Dot","description":"Press-to-start voice dictation for macOS that types at the cursor.","url":"https://dot.anandlo.com/","applicationCategory":"UtilitiesApplication","operatingSystem":"macOS 14 or later","softwareVersion":"0.1.0-beta","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://github.com/anandlo/dot/blob/main/LICENSE","author":{"@type":"Person","name":"Anand Lo"}}
+</script>
+<!--
+  The demonstration is a built stage, not a recording: every frame is a pure
+  function of one clock, so it plays, pauses and scrubs. The mark is a disc
+  larger than its plate, bled past the top-right corner and cut by the plate.
+-->
+<style>
+:root{
+  --ground:#0B0A08; --tile:#15120E; --tile-2:#1E1A15; --line:rgba(255,244,230,.09);
+  --ink:#FFF4E6; --ink-2:#B8B0A4; --ink-3:#7E776C;
+  --paper:#F8F4ED; --paper-ink:#131116; --paper-2:#6B655C;
+  --card:#33302C; --accent:#F5B944;
+  --display:ui-serif,'New York',Georgia,serif;
+  --text:-apple-system,BlinkMacSystemFont,'SF Pro Text',system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace; /* taste-skill-ignore mono: used only by real code blocks */
+  --margin:clamp(20px,3.4vw,44px);
+  --e-out:cubic-bezier(.22,1,.36,1);
+  --t-hover:160ms;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;color-scheme:dark;scroll-behavior:smooth}
+body{margin:0;background:var(--ground);color:var(--ink);
+  font:400 clamp(16px,1.1vw,17px)/1.55 var(--text);-webkit-font-smoothing:antialiased;overflow-x:clip}
+img,svg,canvas{display:block;max-width:100%}
+h1,h2,h3,p{margin:0}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+a{color:inherit;text-decoration:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+::selection{background:var(--accent);color:var(--paper-ink)}
+.wrap{width:100%;max-width:1200px;margin-inline:auto;padding-inline:var(--margin)}
+.skip{position:absolute;left:-9999px}
+.skip:focus{left:var(--margin);top:12px;z-index:9;padding:10px 14px;background:var(--ink);color:var(--paper-ink);border-radius:8px}
+
+/* nav */
+.nav{display:flex;align-items:center;gap:26px;padding-block:22px}
+.brand{display:flex;align-items:center;gap:10px;margin-right:auto;font-family:var(--display);font-size:21px;letter-spacing:-.01em}
+.nav a.lnk{color:var(--ink-2);transition:color var(--t-hover) var(--e-out)}
+.nav a.lnk:hover{color:var(--ink)}
+.nav .go{font-weight:500}
+@media (max-width:640px){ .nav a.lnk{display:none} .nav{gap:14px} }
+
+/* hero */
+.hero{display:flex;flex-direction:column;align-items:center;text-align:center;
+  gap:clamp(14px,2vh,22px);padding-block:clamp(28px,7vh,84px) clamp(30px,5vh,56px)}
+.hero h1{font-family:var(--display);font-weight:400;font-size:clamp(34px,5.4vw,72px);
+  line-height:1.02;letter-spacing:-.032em;max-width:16ch}
+.hero .lead{max-width:40ch;color:var(--ink-2);font-size:clamp(16px,1.35vw,19px)}
+.btn{display:inline-flex;align-items:center;height:46px;padding:0 24px;border-radius:10px;
+  background:var(--accent);color:var(--paper-ink);font:500 16px/1 var(--text);
+  transition:background var(--t-hover) var(--e-out),transform 45ms var(--e-out)}
+.btn:hover{background:#FFC955}
+.btn:active{transform:scale(.975)}
+.hero > *{opacity:0;transform:translateY(10px);animation:rise 700ms var(--e-out) forwards}
+.hero .lead{animation-delay:80ms}
+.hero .btn{animation-delay:160ms}
+@keyframes rise{to{opacity:1;transform:none}}
+
+/* demonstration frame */
+.demo{padding-bottom:clamp(56px,9vh,110px);perspective:1600px}
+.stage-wrap{position:relative;width:100%;aspect-ratio:5/3;border-radius:16px;overflow:hidden;
+  box-shadow:0 0 0 1px rgba(255,244,230,.1),0 50px 120px -30px rgba(0,0,0,.9); /* taste-skill-ignore shadow: the frame is a screen floating over the page */
+  transform-origin:50% 0;will-change:transform;cursor:pointer}
+.stage{position:absolute;top:0;left:0;width:1200px;height:720px;transform-origin:0 0;
+  overflow:hidden;font-family:var(--text);letter-spacing:-.003em;color:var(--paper-ink)}
+.wall{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.menubar{position:absolute;left:0;right:0;top:0;height:30px;display:flex;align-items:center;gap:20px;
+  padding:0 18px;font-size:13.5px;color:rgba(255,244,230,.92);background:rgba(16,12,9,.42);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)} /* taste-skill-ignore glass: the macOS menu bar inside the demonstration */
+.menubar b{font-weight:600}
+.menubar .r{margin-left:auto;display:flex;align-items:center;gap:16px}
+.menubar .mbmark{width:16px;height:16px;transition:transform .2s var(--e-out)}
+
+.win{position:absolute;left:200px;top:96px;width:800px;height:400px;border-radius:12px;background:var(--paper);
+  box-shadow:0 0 0 .5px rgba(0,0,0,.4),0 30px 80px -20px rgba(0,0,0,.75); /* taste-skill-ignore shadow: a macOS window on a desktop */
+  overflow:hidden}
+.win__bar{height:44px;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid rgba(19,17,22,.08)} /* taste-skill-ignore hairline: a mail window title bar */
+.win__bar i{width:12px;height:12px;border-radius:50%;background:rgba(19,17,22,.16)}
+.win__bar span{margin-left:auto;margin-right:auto;font-size:13px;font-weight:600;color:var(--paper-2);transform:translateX(-26px)}
+.win__send{position:absolute;right:16px;top:9px;height:26px;padding:0 13px;border-radius:7px;font-size:13px;font-weight:500;
+  display:flex;align-items:center;background:var(--paper-ink);color:var(--paper)}
+.field{display:flex;gap:10px;padding:11px 24px;border-bottom:1px solid rgba(19,17,22,.07);font-size:14.5px} /* taste-skill-ignore hairline: mail header fields */
+.field em{font-style:normal;color:var(--paper-2);width:60px}
+.body{padding:22px 24px;font-size:17px;line-height:1.6;color:var(--paper-ink)}
+.body .w{display:inline-block;white-space:pre}
+.caret{display:inline-block;width:2px;height:1.2em;margin-left:1px;vertical-align:-.22em;background:#2B6CF0}
+
+.island{position:absolute;left:600px;top:40px;width:316px;height:54px;transform:translateX(-50%);border-radius:17px;
+  background:linear-gradient(180deg,rgba(18,16,13,.985),rgba(8,7,6,.985));color:rgba(255,244,230,.95);overflow:hidden;white-space:nowrap; /* taste-skill-ignore gradient: HUDTheme surfaceTop to surfaceBottom */
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.12),inset 0 0 0 1px rgba(255,255,255,.04),0 10px 44px rgba(0,0,0,.55)} /* taste-skill-ignore shadow: the HUD's own surface, border and shadow from HUDTheme */
+.layer{position:absolute;inset:0}
+.hrow{display:flex;align-items:center;height:54px;padding:0 16px}
+.hlbl{font-size:10.5px;font-weight:600;letter-spacing:1.6px}
+.clk{font:500 12px/1 var(--mono);color:rgba(255,244,230,.55)} /* taste-skill-ignore mono: the HUD clock is monospaced */
+.ldot{position:relative;width:8px;height:8px;flex:0 0 auto}
+.ldot i,.ldot b{position:absolute;inset:0;border-radius:50%}
+.ldot b{background:#F5B944;box-shadow:0 0 8px rgba(245,185,68,.55)} /* taste-skill-ignore shadow: the live dot glows in the app */
+.ldot i{border:1.5px solid #F5B944}
+.hwave{flex:1;display:flex;justify-content:center;align-items:center;height:26px}
+.hwave canvas{width:120px;height:26px}
+.ctl{display:flex;align-items:center;gap:4px;margin-left:10px}
+.ctl .div{width:1px;height:14px;background:rgba(255,255,255,.075);margin-right:6px}
+.ctl .b{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.055);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.045)} /* taste-skill-ignore shadow: HUD action button border */
+.ctl svg{width:10px;height:10px}
+.hlive{position:absolute;left:16px;right:16px;top:40px;font-size:13px;line-height:17px;color:rgba(255,244,230,.55);white-space:normal}
+.hlive .w,.tbody .w{display:inline-block}
+.wdot{width:7px;height:7px;border-radius:50%;background:#A8A39A;box-shadow:0 0 4px rgba(168,163,154,.5);flex:0 0 auto} /* taste-skill-ignore shadow: working dot glow from HUDView */
+.spin{width:15px;height:15px;border-radius:50%;border:1.8px solid rgba(168,163,154,.10);border-top-color:#A8A39A;margin-left:auto}
+.thead{display:flex;align-items:center;gap:10px;height:44px;padding:0 16px}
+.badge{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;background:rgba(184,176,164,.14);color:#B8B0A4}
+.badge svg{width:10px;height:10px}
+.thead .hlbl{color:#B8B0A4}
+.thead .clk{margin-left:auto}
+.hair{height:1px;background:rgba(255,255,255,.075)} /* taste-skill-ignore hairline: the HUD's header rule */
+.tbody{padding:11px 20px;font-size:15px;line-height:22px;white-space:normal;color:rgba(255,244,230,.95)}
+.keys{position:absolute;left:600px;bottom:58px;transform:translateX(-50%);display:flex;gap:10px;align-items:flex-end}
+.key{min-width:64px;height:60px;padding:0 14px;border-radius:12px;display:flex;align-items:center;justify-content:center;
+  font-size:24px;color:var(--paper-ink);background:#F4EFE6;
+  box-shadow:0 0 0 1px rgba(0,0,0,.25),0 4px 0 #BDB4A6,0 10px 24px -8px rgba(0,0,0,.6)} /* taste-skill-ignore shadow: a keycap's travel */
+
+/* player controls */
+.controls{display:flex;align-items:flex-start;gap:16px;margin-top:16px}
+.icon-btn{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:var(--tile-2);
+  transition:background var(--t-hover) var(--e-out)}
+.icon-btn:hover{background:#2A251E}
+.icon-btn svg{width:14px;height:14px}
+.scrub{flex:1;min-width:0}
+.track{display:flex;gap:4px;height:18px;align-items:center;cursor:pointer}
+.seg{position:relative;height:4px;border-radius:2px;background:rgba(255,244,230,.12);overflow:hidden}
+.seg i{position:absolute;inset:0;background:var(--ink);transform-origin:0 0;transform:scaleX(0)}
+.beats{display:flex;gap:4px}
+.beats button{display:flex;gap:6px;padding:4px 0;font-size:12.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;
+  transition:color var(--t-hover) var(--e-out)}
+.beats button span{font-variant-numeric:tabular-nums;opacity:.7}
+.beats button em{font-style:normal}
+.beats button.on,.beats button:hover{color:var(--ink)}
+@media (max-width:640px){ .beats button em{display:none} }
+/* sections */
+.band{padding-block:clamp(56px,9vh,104px)}
+h2.sec{font-family:var(--display);font-weight:400;font-size:clamp(28px,3.4vw,46px);
+  letter-spacing:-.025em;line-height:1.06;max-width:18ch}
+.sec-lead{margin-top:12px;color:var(--ink-2);max-width:46ch}
+.cards{display:grid;gap:clamp(14px,1.6vw,20px);margin-top:clamp(28px,4vh,44px)}
+@media (min-width:700px){ .cards{grid-template-columns:repeat(2,minmax(0,1fr))} }
+@media (min-width:1000px){ .cards{grid-template-columns:repeat(3,minmax(0,1fr))} }
+.card{border-radius:16px;background:var(--tile);overflow:hidden}
+.viz{position:relative;height:210px;overflow:hidden;background:var(--tile-2)}
+.card .copy{padding:18px 20px 22px}
+.card h3{font-family:var(--display);font-weight:400;font-size:21px;letter-spacing:-.01em;line-height:1.2}
+.card p{margin-top:6px;color:var(--ink-2);font-size:16px}
+.viz *{animation-play-state:paused}
+.card.live .viz *{animation-play-state:running}
+
+/* 1: two presses span one recording */
+.v-span{position:absolute;left:28px;right:28px;top:50%;height:46px;transform:translateY(-50%)}
+.v-span .cap{position:absolute;top:0;width:62px;height:46px;border-radius:10px;background:#F4EFE6;color:var(--paper-ink);
+  display:grid;place-items:center;font-size:18px;box-shadow:0 3px 0 #BDB4A6; /* taste-skill-ignore shadow: keycap travel */
+  animation:cap 3.2s var(--e-out) infinite}
+.v-span .cap.b{right:0;animation-delay:1.75s}
+.v-span .run{position:absolute;left:74px;right:74px;top:21px;height:4px;border-radius:2px;background:rgba(255,244,230,.1);overflow:hidden}
+.v-span .run i{position:absolute;inset:0;background:var(--accent);transform-origin:0 0;animation:run 3.2s linear infinite}
+.v-span .lbl{position:absolute;left:74px;right:74px;top:34px;display:flex;justify-content:space-between;font-size:12px;color:var(--ink-3)}
+@keyframes cap{0%,4%{transform:translateY(0);box-shadow:0 3px 0 #BDB4A6}8%{transform:translateY(3px);box-shadow:0 0 0 #BDB4A6}14%,100%{transform:translateY(0);box-shadow:0 3px 0 #BDB4A6}} /* taste-skill-ignore shadow: keycap travel */
+@keyframes run{0%,6%{transform:scaleX(0)}62%{transform:scaleX(1)}88%{transform:scaleX(1);opacity:1}100%{transform:scaleX(1);opacity:0}}
+
+/* 2: chunks commit while you talk */
+.v-chunks{position:absolute;left:28px;right:28px;top:62px;display:flex;gap:6px}
+.v-chunks i{flex:1;height:44px;border-radius:6px;background:rgba(255,244,230,.08);animation:chunk 4s var(--e-out) infinite}
+.v-chunks i:last-child{flex:.35}
+.v-chunks i:nth-child(1){animation-delay:.3s}.v-chunks i:nth-child(2){animation-delay:.8s}
+.v-chunks i:nth-child(3){animation-delay:1.3s}.v-chunks i:nth-child(4){animation-delay:1.8s}
+.v-chunks i:nth-child(5){animation-delay:2.3s}.v-chunks i:nth-child(6){animation-delay:2.75s}
+.v-legend{position:absolute;left:28px;right:28px;top:122px;display:flex;justify-content:space-between;font-size:12px;color:var(--ink-3)}
+.v-legend b{font-weight:500;color:var(--accent)}
+@keyframes chunk{0%{background:rgba(255,244,230,.08)}8%,86%{background:var(--accent)}100%{background:rgba(255,244,230,.08)}}
+/* 3: it lands at the cursor */
+.v-field{position:absolute;left:24px;right:24px;top:50%;transform:translateY(-50%);padding:14px 16px;border-radius:10px;
+  background:var(--paper);color:var(--paper-ink);font-size:15px;line-height:1.5;min-height:76px}
+.v-field .w{display:inline-block;opacity:0;animation:word 5s var(--e-out) infinite}
+.v-field .caret{animation:blink 1.06s step-end infinite}
+@keyframes word{0%,22%{opacity:0;transform:translateY(4px);filter:blur(2px)}30%,88%{opacity:1;transform:none;filter:none}96%,100%{opacity:0}}
+@keyframes blink{50%{opacity:0}}
+
+/* 4: one engine at a time */
+.v-list{position:absolute;left:24px;right:24px;top:18px;bottom:18px;border-radius:10px;background:var(--tile);overflow:hidden}
+.v-list ul{list-style:none;margin:0;padding:6px;position:relative}
+.v-list li{position:relative;z-index:1;height:20px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;
+  font-size:12.5px;color:var(--ink-2)}
+.v-list li small{font-size:11px;color:var(--ink-2)}
+.v-list .sel{position:absolute;left:6px;right:6px;top:6px;height:20px;border-radius:6px;background:rgba(245,185,68,.18);
+  animation:sel 8s steps(1,end) infinite}
+@keyframes sel{0%{transform:translateY(0)}25%{transform:translateY(40px)}50%{transform:translateY(60px)}75%{transform:translateY(120px)}}
+
+/* 5: the key never touches disk */
+.v-kc{position:absolute;left:24px;right:24px;top:22px;display:grid;gap:10px}
+.v-kc pre{margin:0;padding:12px 14px;border-radius:10px;background:var(--tile);font-size:12px;line-height:1.6;color:var(--ink-2);overflow:hidden}
+.v-kc .k{color:var(--ink)}
+.v-kc .row{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:10px;background:var(--paper);color:var(--paper-ink);font-size:13px}
+.v-kc .row em{font-style:normal;margin-left:auto;font-size:12px;color:var(--paper-2)}
+.v-kc .row svg{width:14px;height:14px;flex:0 0 auto}
+.v-kc .row{animation:slot 4s var(--e-out) infinite}
+@keyframes slot{0%,8%{opacity:0;transform:translateY(-10px)}22%,90%{opacity:1;transform:none}100%{opacity:0}}
+
+/* 6: history, newest first */
+.v-hist{position:absolute;left:24px;right:24px;top:18px;display:grid;gap:8px}
+.v-hist div{display:flex;gap:12px;padding:9px 12px;border-radius:9px;background:var(--tile);font-size:12.5px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;animation:push 6s var(--e-out) infinite}
+.v-hist div b{font-weight:400;color:var(--ink-2);font-variant-numeric:tabular-nums;flex:0 0 auto}
+.v-hist div:first-child{color:var(--ink)}
+@keyframes push{0%{transform:translateY(-46px);opacity:.0}10%,100%{transform:none;opacity:1}}
+
+/* install */
+.two{display:grid;gap:clamp(22px,3vw,48px);margin-top:clamp(24px,4vh,36px)}
+@media (min-width:860px){ .two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)} }
+pre{font-family:var(--mono);background:var(--tile);color:var(--ink);border-radius:10px;padding:16px 18px;margin:0;
+  overflow-x:auto;font-size:14px;line-height:1.8}
+code{font-family:var(--mono)}
+.install p{color:var(--ink-2);max-width:54ch;font-size:16px}
+.install p + p{margin-top:14px}
+.install a{text-decoration:underline;text-decoration-color:var(--ink-3);text-underline-offset:3px}
+.install a:hover{text-decoration-color:var(--ink)}
+
+/* footer */
+.foot{display:flex;flex-wrap:wrap;gap:16px 24px;align-items:center;color:var(--ink-2);
+  font-size:14px;padding-block:clamp(32px,5vh,48px)}
+.foot .brandname{font-family:var(--display);font-size:18px;color:var(--ink)}
+.foot .right{margin-left:auto;display:flex;gap:22px;flex-wrap:wrap}
+.foot a:hover{color:var(--ink)}
+
+/* reveals */
+.rv{opacity:0;transform:translateY(24px);transition:opacity 600ms var(--e-out),transform 600ms var(--e-out)}
+.rv.in{opacity:1;transform:none}
+.cards .rv:nth-child(3n+2){transition-delay:70ms}
+.cards .rv:nth-child(3n){transition-delay:140ms}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition-duration:1ms!important}
+  .rv,.hero > *{opacity:1;transform:none}
+  .v-field .w{opacity:1}
+  html{scroll-behavior:auto}
+}
+</style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs><clipPath id="plate"><rect width="100" height="100" rx="22.5"/></clipPath></defs>
+  <symbol id="mark" viewBox="0 0 100 100"><g clip-path="url(#plate)"><rect width="100" height="100" fill="#1E1A15"/><circle cx="74.5" cy="25.5" r="33" fill="#FFF4E6"/></g></symbol>
+</svg>
+<a class="skip" href="#main">Skip to content</a>
+<header class="wrap">
+  <nav class="nav" aria-label="Main">
+    <a class="brand" href="#main"><svg width="26" height="26" aria-hidden="true"><use href="#mark"/></svg>Dot</a>
+    <a class="lnk" href="#how">How it works</a>
+    <a class="lnk" href="#install">Install</a>
+    <a class="go" href="https://github.com/anandlo/dot/releases/latest">Download</a>
+  </nav>
+</header>
+<main id="main">
+  <section class="wrap hero">
+    <h1>Write as fast as you can think.</h1>
+    <p class="lead">Press once, speak, press again. The words are at the cursor of whatever app is in front.</p>
+    <a class="btn" href="https://github.com/anandlo/dot/releases/latest">Download for macOS</a>
+  </section>
 
-  <!-- Top Sticky Navigation Bar -->
-  <header class="nav">
-    <div class="nav-inner">
-      <a href="#" class="nav-brand">
-        <img src="assets/icon.png" alt="Dot">
-        <span>Dot</span>
-        <span class="nav-badge">v0.1.0-beta</span>
-      </a>
-
-      <nav class="nav-links">
-        <a href="#features">Features</a>
-        <a href="#controls">Controls</a>
-        <a href="#landscape">Landscape</a>
-        <a href="#install">Install</a>
-        <a href="https://github.com/anandlo/dot" target="_blank" rel="noopener">GitHub</a>
-        <a href="https://buymeacoffee.com/anandlo" target="_blank" rel="noopener" class="nav-sponsor">☕ Sponsor</a>
-        <a href="https://github.com/anandlo/dot/releases/latest" class="nav-dl">
-          <svg width="13" height="13" viewBox="0 0 17 21" fill="currentColor" aria-hidden="true"><path d="M11.2 4.3c.6-.8 1-1.8.9-2.8-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.7-.9 2.7 1 .1 2-.5 2.6-1.3zM12.1 5.8c-1.4-.1-2.7.8-3.3.8-.7 0-1.7-.8-2.9-.8C4.4 5.9 3 6.8 2.2 8.1c-1.6 2.7-.4 6.8 1.1 9 .8 1.1 1.7 2.3 2.8 2.3 1.1 0 1.6-.7 2.9-.7 1.4 0 1.8.7 2.9.7 1.2 0 2-1.1 2.7-2.2.9-1.3 1.2-2.5 1.2-2.6 0 0-2.4-.9-2.4-3.6 0-2.2 1.8-3.3 1.9-3.4-1-1.5-2.6-1.7-3.2-1.7z"/></svg>
-          Download
-        </a>
-      </nav>
+  <section class="wrap demo" aria-label="Demonstration">
+    <div class="stage-wrap" id="frame" tabindex="0" data-ui
+         aria-label="Demonstration of Dot: a shortcut is pressed, a sentence is spoken, the shortcut is pressed again and the sentence appears in an email. Activate to pause or play.">
+      <div class="stage" id="stage" aria-hidden="true" inert>
+        <img class="wall" src="assets/wallpaper.webp" width="1600" height="960" alt="">
+        <div class="menubar"><b>Mail</b><span>File</span><span>Edit</span><span>View</span><span>Message</span>
+          <span class="r"><svg class="mbmark" id="mbmark"><use href="#mark"/></svg><span>Tue 9:41</span></span></div>
+        <div class="win">
+          <div class="win__bar"><i></i><i></i><i></i><span>Q3 numbers</span></div>
+          <div class="win__send">Send</div>
+          <div class="field"><em>To:</em>Priya Raman</div>
+          <div class="field"><em>Subject:</em>Q3 numbers</div>
+          <div class="body">Hi Priya,<br><br><span id="typed"></span><span class="caret" id="caret"></span></div>
+        </div>
+        <div class="island" id="island">
+          <div class="layer" id="l-rec"><div class="hrow" id="rec-row"><span class="ldot"><i id="ring"></i><b id="ldot"></b></span><span class="hlbl" style="margin-left:10px">REC</span><span class="clk" id="isl-clock" style="margin-left:10px">0:00</span><span class="hwave"><canvas id="wave" width="120" height="26"></canvas></span><span class="ctl"><span class="div"></span><span class="b"><svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="1.4" fill="rgba(242,237,229,.72)"/></svg></span><span class="b"><svg viewBox="0 0 10 10" fill="none" stroke="rgba(255,244,230,.95)" stroke-width="1.5" stroke-linecap="round"><path d="M2 2l6 6M8 2L2 8"/></svg></span></span></div><p class="hlive" id="live"></p></div>
+          <div class="layer" id="l-work"><div class="hrow"><span class="wdot" id="wdot"></span><span class="hlbl" style="margin-left:10px;color:rgba(255,244,230,.55)">TRANSCRIBING</span><span class="spin" id="spin"></span><span class="ctl"><span class="div"></span><span class="b"><svg viewBox="0 0 10 10" fill="none" stroke="rgba(255,244,230,.95)" stroke-width="1.5" stroke-linecap="round"><path d="M2 2l6 6M8 2L2 8"/></svg></span></span></div></div>
+          <div class="layer" id="l-done"><div class="thead"><span class="badge"><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.2 5.3l1.9 1.9 3.8-4.4"/></svg></span><span class="hlbl" id="dest">PASTED INTO MAIL</span><span class="clk" id="done-clock">0:05</span><span class="ctl"><span class="div"></span><span class="b"><svg viewBox="0 0 10 10" fill="none" stroke="rgba(242,237,229,.72)" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"><path d="M3.5 3.5h5v5h-5zM1.5 6.5v-5h5"/></svg></span><span class="b"><svg viewBox="0 0 10 10" fill="none" stroke="rgba(242,237,229,.72)" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"><path d="M2.5 2h5v7h-5zM4 1h2v1.6H4z"/></svg></span><span class="b"><svg viewBox="0 0 10 10" fill="none" stroke="rgba(242,237,229,.72)" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"><path d="M5 3.4a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2zM5 .9v1.2M5 7.9v1.2M.9 5h1.2M7.9 5h1.2M2.1 2.1l.8.8M7.1 7.1l.8.8M2.1 7.9l.8-.8M7.1 2.9l.8-.8"/></svg></span><span class="b"><svg viewBox="0 0 10 10" fill="none" stroke="rgba(255,244,230,.95)" stroke-width="1.5" stroke-linecap="round"><path d="M2 2l6 6M8 2L2 8"/></svg></span></span></div><div class="hair"></div><p class="tbody" id="tbody"></p></div>
+        </div>
+        <div class="keys" id="keys"><span class="key">⌥</span><span class="key">⌘</span><span class="key">D</span></div>
+      </div>
     </div>
-  </header>
-
-  <main>
-    <!-- Hero Header -->
-    <section class="hero">
-      <div class="hero-tag">
-        <span class="hero-tag-dot"></span>
-        <span>Push-to-Talk Voice Dictation for macOS</span>
+    <div class="controls">
+      <button class="icon-btn" id="play" aria-label="Pause"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path id="play-ico" d="M4 3h3v10H4zM9 3h3v10H9z"/></svg></button>
+      <button class="icon-btn" id="replay" aria-label="Replay"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 8a5 5 0 105-5H5.5"/><path d="M7 1L5 3l2 2"/></svg></button>
+      <div class="scrub">
+        <div class="track" id="track"></div>
+        <div class="beats" id="beats"></div>
       </div>
-
-      <h1>Hold to talk.<br>Release to type.</h1>
-
-      <p class="hero-lede">
-        Press a shortcut anywhere on your Mac, speak your thought, and let go. Dot streams audio in real-time and commits the text directly at your cursor upon release.
-      </p>
-
-      <div class="hero-cta-group">
-        <div class="hero-actions">
-          <a href="https://github.com/anandlo/dot/releases/latest" class="btn-hero-primary">
-            <svg width="15" height="15" viewBox="0 0 17 21" fill="currentColor" aria-hidden="true"><path d="M11.2 4.3c.6-.8 1-1.8.9-2.8-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.7-.9 2.7 1 .1 2-.5 2.6-1.3zM12.1 5.8c-1.4-.1-2.7.8-3.3.8-.7 0-1.7-.8-2.9-.8C4.4 5.9 3 6.8 2.2 8.1c-1.6 2.7-.4 6.8 1.1 9 .8 1.1 1.7 2.3 2.8 2.3 1.1 0 1.6-.7 2.9-.7 1.4 0 1.8.7 2.9.7 1.2 0 2-1.1 2.7-2.2.9-1.3 1.2-2.5 1.2-2.6 0 0-2.4-.9-2.4-3.6 0-2.2 1.8-3.3 1.9-3.4-1-1.5-2.6-1.7-3.2-1.7z"/></svg>
-            Download for Mac
-          </a>
-          <div class="hero-brew-box" title="Click to copy Homebrew command" onclick="copyBrewCmd(this)">
-            <span>brew install --cask anandlo/tap/dot</span>
-            <span class="copy-hint" style="font-size: 11px; opacity: 0.6;">Copy</span>
-          </div>
-        </div>
-        <p class="hero-meta">Apple Silicon · macOS 14 Sonoma or later · 100% Free &amp; Open Source (MIT)</p>
-      </div>
-    </section>
-
-    <!-- Interactive Live Simulator Instrument -->
-    <section class="simulator-container">
-      <div class="mac-window">
-        <div class="mac-titlebar">
-          <div class="traffic-lights">
-            <div class="light light-close"></div>
-            <div class="light light-min"></div>
-            <div class="light light-max"></div>
-          </div>
-          <span class="titlebar-caption">Dot — Interactive Push-to-Talk Simulator</span>
-          <span class="titlebar-status">
-            <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--mint);"></span>
-            Active
-          </span>
-        </div>
-
-        <div class="sim-body">
-          <!-- 3D Interactive Keycaps -->
-          <div class="sim-keys-row">
-            <button class="sim-key" id="keyCtrl" type="button">⌃</button>
-            <button class="sim-key" id="keyOpt" type="button">⌥</button>
-            <button class="sim-key" id="keyR" type="button">R</button>
-            <span class="sim-keys-hint">Click &amp; hold keys, or press Spacebar to dictate</span>
-          </div>
-
-          <!-- Floating HUD Pill -->
-          <div class="hud-simulator" id="simHud">
-            <img src="assets/icon.png" alt="Dot" class="hud-sim-icon">
-            <canvas id="hudWaveCanvas" width="100" height="26"></canvas>
-            <div class="hud-sim-text" id="hudSimText">Ready to dictate…<span class="hud-caret"></span></div>
-          </div>
-
-          <!-- Target Code Editor Workspace -->
-          <div class="editor-box">
-            <div class="editor-top">
-              <span>Focused Text Field (Xcode / Terminal / Slack)</span>
-              <span class="editor-latency" id="simLatency">38ms stop latency</span>
-            </div>
-            <div class="editor-content" id="simEditor">
-              <span style="color: var(--faint);">// Hold ⌃⌥R or click the keys above to speak. Transcribed text pastes directly here upon release.</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Architecture & Features (2x2 Grid) -->
-    <section id="features" class="split">
-      <div class="split-aside">
-        <h2>How it works</h2>
-        <p>Built exclusively in pure Swift 6 and AppKit. Zero Electron overhead, zero background listening daemons, and zero vendor lock-in.</p>
-      </div>
-
-      <div class="feature-grid">
-        <article class="feature-card">
-          <div class="feature-visual">
-            <svg width="160" height="70" viewBox="0 0 160 70" fill="none">
-              <rect x="20" y="24" width="48" height="24" rx="12" fill="#1c1c20" stroke="#34d399" stroke-width="1.5"/>
-              <circle cx="56" cy="36" r="8" fill="#34d399"/>
-              <path d="M74 36H96" stroke="#ffffff22" stroke-width="2" stroke-dasharray="3 3"/>
-              <rect x="100" y="20" width="40" height="32" rx="8" fill="#1c1c20" stroke="#ffffff1a"/>
-              <path d="M120 28V40M115 33H125" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-          </div>
-          <div class="feature-copy">
-            <h3>Hardware-dormant audio gating</h3>
-            <p>The microphone is physically unhooked while idle. The audio input stream initializes only when the key is pressed down and terminates immediately upon key release.</p>
-          </div>
-        </article>
-
-        <article class="feature-card">
-          <div class="feature-visual">
-            <svg width="180" height="70" viewBox="0 0 180 70" fill="none">
-              <path d="M20 35C35 20 45 50 60 35C75 20 85 50 100 35C115 20 125 50 140 35" stroke="#34d399" stroke-width="2" stroke-linecap="round"/>
-              <circle cx="150" cy="35" r="4" fill="#34d399"/>
-              <line x1="160" y1="20" x2="160" y2="50" stroke="#ff453a" stroke-width="1.5"/>
-            </svg>
-          </div>
-          <div class="feature-copy">
-            <h3>Provisional real-time streaming</h3>
-            <p>Audio streams in real-time as you speak so the model processes speech continuously. On release, the trailing silence boundary commits in under 50 milliseconds.</p>
-          </div>
-        </article>
-
-        <article class="feature-card">
-          <div class="feature-visual">
-            <svg width="180" height="70" viewBox="0 0 180 70" fill="none">
-              <rect x="25" y="16" width="130" height="38" rx="6" fill="#17171a" stroke="#ffffff18"/>
-              <text x="36" y="38" fill="#f4f4f6" font-family="monospace" font-size="11">const msg = "</text>
-              <text x="110" y="38" fill="#34d399" font-family="monospace" font-size="11">hello</text>
-              <line x1="142" y1="26" x2="142" y2="44" stroke="#ffffff" stroke-width="1.5"/>
-            </svg>
-          </div>
-          <div class="feature-copy">
-            <h3>Direct cursor paste</h3>
-            <p>Dot commits your transcript straight into Xcode, VS Code, Slack, Terminal, or any active field via the macOS Accessibility API without touching the clipboard.</p>
-          </div>
-        </article>
-
-        <article class="feature-card">
-          <div class="feature-visual">
-            <svg width="180" height="70" viewBox="0 0 180 70" fill="none">
-              <circle cx="50" cy="35" r="18" fill="#1c1c20" stroke="#ffffff1a"/>
-              <path d="M46 30L55 35L46 40V30Z" fill="#34d399"/>
-              <line x1="72" y1="35" x2="108" y2="35" stroke="#ffffff22" stroke-width="1.5"/>
-              <circle cx="130" cy="35" r="18" fill="#1c1c20" stroke="#ffffff1a"/>
-              <text x="124" y="39" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="600">AI</text>
-            </svg>
-          </div>
-          <div class="feature-copy">
-            <h3>Offline or Bring-Your-Own-Key</h3>
-            <p>Run 100% offline using macOS on-device Apple Speech with zero network requests, or plug in your own API keys for Groq, OpenAI, Deepgram, Xiaomi, or self-hosted Ollama.</p>
-          </div>
-        </article>
-      </div>
-    </section>
-
-    <!-- Controls & Shortcuts Section -->
-    <section id="controls" class="split">
-      <div class="split-aside">
-        <h2>Controls</h2>
-        <p>A single global shortcut handles recording and instant paste. Fully customizable to any key or modifier combination.</p>
-      </div>
-
-      <ul class="shortcuts-list">
-        <li>
-          <span class="shortcut-combo"><kbd>⌃</kbd><kbd>⌥</kbd><kbd>R</kbd></span>
-          <span>Hold to dictate, release to commit</span>
-        </li>
-        <li>
-          <span class="shortcut-combo"><kbd>⌥</kbd><kbd>⌘</kbd><kbd>V</kbd></span>
-          <span>Paste latest transcription</span>
-        </li>
-        <li>
-          <span class="shortcut-combo"><kbd>esc</kbd></span>
-          <span>Cancel active recording</span>
-        </li>
-        <li>
-          <span class="shortcut-combo"><kbd>⌘</kbd><kbd>,</kbd></span>
-          <span>Open Settings &amp; Providers</span>
-        </li>
-        <li>
-          <span class="shortcut-combo"><kbd>Double</kbd></span>
-          <span>Hands-free latch mode toggle</span>
-        </li>
-        <li>
-          <span class="shortcut-combo"><kbd>Custom</kbd></span>
-          <span>Bind any single key or modifier</span>
-        </li>
-      </ul>
-    </section>
-
-    <!-- Candid Landscape Comparison -->
-    <section id="landscape" class="split">
-      <div class="split-aside">
-        <h2>The Landscape</h2>
-        <p>Voice dictation tools on Mac usually make you choose between heavy local runtimes downloading gigabytes of weights, or subscription cloud apps that monitor background audio. Here is how Dot compares.</p>
-      </div>
-
-      <div class="table-container">
-        <table class="comp-table">
-          <thead>
-            <tr>
-              <th>App</th>
-              <th>Runtime &amp; RAM</th>
-              <th>Model Download</th>
-              <th>Network &amp; Privacy</th>
-              <th>Price &amp; License</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td class="app-name">Hex <small>Anomaly</small></td>
-              <td>Rust native<br>~450 MB RAM</td>
-              <td>600MB–1.2GB weights (Parakeet)</td>
-              <td>100% on-device (English-only)</td>
-              <td>Free · MIT</td>
-            </tr>
-            <tr>
-              <td class="app-name">MacWhisper <small>Jordi Bruin</small></td>
-              <td>Whisper.cpp<br>~150–800 MB RAM</td>
-              <td>140MB–2.5GB model files</td>
-              <td>100% on-device audio batching</td>
-              <td>€39 Pro · Proprietary</td>
-            </tr>
-            <tr>
-              <td class="app-name">Superwhisper <small>Commercial</small></td>
-              <td>Electron / Webview<br>~250–400 MB RAM</td>
-              <td>Local &amp; cloud hybrid</td>
-              <td>Cloud transcription APIs</td>
-              <td>$96–$180/yr · Subscription</td>
-            </tr>
-            <tr class="highlight-dot">
-              <td class="app-name">Dot <small>Open Source</small></td>
-              <td>Pure Swift 6 &amp; AppKit<br><strong>&lt; 15 MB RAM</strong></td>
-              <td><strong>0 MB required</strong><br>(Neural Engine or BYOK)</td>
-              <td><strong>Hardware-dormant</strong><br>Zero Dot servers, encrypted Keychain</td>
-              <td><strong>100% Free · MIT</strong></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- Installation & Setup -->
-    <section id="install" class="split">
-      <div class="split-aside">
-        <h2>Install</h2>
-        <p>Available directly via Homebrew, prebuilt DMG release for Apple Silicon, or compiled straight from source.</p>
-        <div style="margin-top: 24px;">
-          <a href="https://github.com/anandlo/dot/releases/latest" class="btn-hero-primary" style="display: inline-flex; width: auto; padding: 11px 18px;">
-            <svg width="14" height="14" viewBox="0 0 17 21" fill="currentColor" aria-hidden="true"><path d="M11.2 4.3c.6-.8 1-1.8.9-2.8-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.7-.9 2.7 1 .1 2-.5 2.6-1.3zM12.1 5.8c-1.4-.1-2.7.8-3.3.8-.7 0-1.7-.8-2.9-.8C4.4 5.9 3 6.8 2.2 8.1c-1.6 2.7-.4 6.8 1.1 9 .8 1.1 1.7 2.3 2.8 2.3 1.1 0 1.6-.7 2.9-.7 1.4 0 1.8.7 2.9.7 1.2 0 2-1.1 2.7-2.2.9-1.3 1.2-2.5 1.2-2.6 0 0-2.4-.9-2.4-3.6 0-2.2 1.8-3.3 1.9-3.4-1-1.5-2.6-1.7-3.2-1.7z"/></svg>
-            Download DMG
-          </a>
-        </div>
-      </div>
-
-      <div class="code-grid">
-        <div class="code-box">
-          <div class="code-header">
-            <span>Homebrew (Recommended)</span>
-            <button type="button" onclick="copyText('brew install --cask anandlo/tap/dot', this)">Copy</button>
-          </div>
-          <div class="code-body"><span class="prompt">$ </span>brew install --cask anandlo/tap/dot</div>
-        </div>
-
-        <div class="code-box">
-          <div class="code-header">
-            <span>Terminal</span>
-            <button type="button" onclick="copyText('curl -LO https://github.com/anandlo/dot/releases/latest/download/Dot.zip &amp;&amp; unzip Dot.zip -d ~/Applications', this)">Copy</button>
-          </div>
-          <div class="code-body"><span class="prompt">$ </span>curl -LO https://github.com/anandlo/dot/releases/latest/download/Dot.zip<br><span class="prompt">$ </span>unzip Dot.zip -d ~/Applications<br><span class="prompt">$ </span>open ~/Applications/Dot.app</div>
-        </div>
-
-        <div class="code-box">
-          <div class="code-header">
-            <span>Build from source</span>
-            <button type="button" onclick="copyText('git clone https://github.com/anandlo/dot.git &amp;&amp; cd dot &amp;&amp; ./scripts/build.sh', this)">Copy</button>
-          </div>
-          <div class="code-body"><span class="prompt">$ </span>git clone https://github.com/anandlo/dot.git<br><span class="prompt">$ </span>cd dot &amp;&amp; ./scripts/build.sh</div>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <!-- Clean Minimalist Footer -->
-  <footer class="foot">
-    <div class="foot-left">
-      <img src="assets/icon.png" alt="Dot">
-      <span>Dot — Created by Anand Lo. Free &amp; Open Source under MIT.</span>
     </div>
-    <div class="foot-right">
-      <a href="https://github.com/anandlo/dot" target="_blank" rel="noopener">GitHub</a>
-      <a href="https://buymeacoffee.com/anandlo" target="_blank" rel="noopener" class="foot-coffee">☕ Buy Me a Coffee</a>
-      <a href="https://github.com/anandlo/dot/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
+  </section>
+  <section id="how" class="wrap band">
+    <h2 class="sec rv">Everything happens between two presses.</h2>
+    <div class="cards">
+      <article class="card rv">
+        <div class="viz" data-ui aria-hidden="true">
+          <div class="v-span"><span class="cap">⌥⌘D</span><span class="run"><i></i></span><span class="cap b">⌥⌘D</span>
+            <span class="lbl"><span>start</span><span>stop</span></span></div>
+        </div>
+        <div class="copy"><h3>Two presses, not a hold.</h3><p>Your hands are free while you talk. Hold-to-talk is a setting if you want it.</p></div>
+      </article>
+      <article class="card rv">
+        <div class="viz" data-ui aria-hidden="true">
+          <div class="v-chunks"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="v-legend"><span>transcribed while you speak</span><b>tail only</b></div>
+        </div>
+        <div class="copy"><h3>The stop is already done.</h3><p>Dot transcribes at each pause while you talk, so the second press only waits on the last few words.</p></div>
+      </article>
+      <article class="card rv">
+        <div class="viz" data-ui aria-hidden="true">
+          <div class="v-field">Ship it once the <span class="w" style="animation-delay:0s">migration</span> <span class="w" style="animation-delay:.08s">passes</span> <span class="w" style="animation-delay:.16s">on</span> <span class="w" style="animation-delay:.24s">staging.</span><span class="caret"></span></div>
+        </div>
+        <div class="copy"><h3>It lands where you were.</h3><p>At the cursor of the app in front. Switch apps mid-sentence and it copies instead.</p></div>
+      </article>
+      <article class="card rv">
+        <div class="viz" data-ui aria-hidden="true">
+          <div class="v-list"><ul><span class="sel"></span>
+            <li>Apple on-device<small>local</small></li><li>OpenAI<small>cloud</small></li><li>Groq<small>cloud</small></li><li>Deepgram<small>cloud</small></li>
+            <li>ElevenLabs<small>cloud</small></li><li>Azure<small>cloud</small></li><li>Xiaomi ASR<small>cloud</small></li><li>Any OpenAI-compatible URL<small>yours</small></li></ul></div>
+        </div>
+        <div class="copy"><h3>Eight engines, one key.</h3><p>Run on-device, or bring a key. Swapping engines changes nothing about the shortcut.</p></div>
+      </article>
+      <article class="card rv">
+        <div class="viz" data-ui aria-hidden="true">
+          <div class="v-kc"><pre><span class="k">"provider"</span>: "groq",
+<span class="k">"recordingMode"</span>: "toggle"</pre>
+            <div class="row"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg>DOT_API_KEY_GROQ<em>Keychain</em></div></div>
+        </div>
+        <div class="copy"><h3>Keys never touch a file.</h3><p>Settings are plain JSON. Keys live in the macOS Keychain, asked for zero data retention.</p></div>
+      </article>
+      <article class="card rv">
+        <div class="viz" data-ui aria-hidden="true">
+          <div class="v-hist"><div><b>9:41</b>The Q3 numbers are in the shared folder.</div><div><b>9:12</b>Rename the flag to recordingMode and keep the default.</div>
+            <div><b>8:57</b>Pick up oat milk and the dry cleaning.</div><div><b>8:30</b>Thanks, that works for Thursday.</div></div>
+        </div>
+        <div class="copy"><h3>Twenty, on this Mac.</h3><p>The last twenty transcripts stay in a local history. Nothing is sent anywhere else.</p></div>
+      </article>
     </div>
-  </footer>
+  </section>
 
-  <!-- Interactive Simulator & Canvas Visualizer Script -->
-  <script>
-    // Audio Click synthesizer for tactile feedback
-    let audioCtx = null;
-    function playClickSound() {
-      try {
-        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        if (audioCtx.state === 'suspended') audioCtx.resume();
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(160, audioCtx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(30, audioCtx.currentTime + 0.035);
-        gain.gain.setValueAtTime(0.06, audioCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.035);
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.035);
-      } catch (e) {}
+  <section id="install" class="wrap band install">
+    <h2 class="sec rv">Install.</h2>
+    <div class="two rv">
+      <pre><code>brew trust --cask anandlo/tap/dot
+brew install --cask anandlo/tap/dot</code></pre>
+      <div>
+        <p>Or build from source: <a href="https://github.com/anandlo/dot">clone the repo</a> and run <code>./scripts/build.sh</code>. Xcode 16 or later, no other dependencies.</p>
+        <p>Dot is signed ad-hoc, without an Apple Developer ID, so macOS asks once: <strong>System Settings, Privacy &amp; Security, Open Anyway</strong>. If you see “Dot is damaged”, run <code>xattr -dr com.apple.quarantine /Applications/Dot.app</code>.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">
+  <div class="foot">
+    <svg width="28" height="28" role="img" aria-label="Dot"><use href="#mark"/></svg>
+    <span class="brandname">Dot</span>
+    <span>Free, MIT licensed. Made by Anand Lo.</span>
+    <span class="right">
+      <a href="https://github.com/anandlo/dot">GitHub</a>
+      <a href="https://github.com/anandlo/dot/blob/main/LICENSE">Licence</a>
+      <a href="https://github.com/anandlo/dot/issues">Issues</a>
+    </span>
+  </div>
+</footer>
+<script>
+(function () {
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var $ = function (id) { return document.getElementById(id); };
+
+  /* One clock drives the demonstration: render(t) is a pure function of t, so
+     playing, pausing, replaying and scrubbing are the same call. The island's
+     sizes, springs and timings are the app's own (HUDState, HUDView). */
+  var LENGTH = 13;
+  var BEATS = [['Press', 0], ['Speak', 1.0], ['Again', 5.9], ['Pasted', 7.0], ['Done', 10.4]];
+  var ON = 0.62, STOP = 6.2, PASTE = 7.0, LEAVE = 10.4;
+  var CHUNKS = [[2.3, 'The Q3 numbers are in the shared folder.'], [3.9, 'Can we go through them'], [5.1, 'before the standup tomorrow?']];
+  var SENTENCE = CHUNKS.map(function (c) { return c[1]; }).join(' ');
+  /* Card sizes per state, in points: recording, live, working, transcript. */
+  var SIZES = [[0, 316, 54], [2.3, 520, 84], [STOP, 316, 54], [PASTE, 560, 110]];
+
+  var frame = $('frame'), stage = $('stage'), island = $('island'), wave = $('wave');
+  if (!frame || !stage || !wave) return;
+  var lRec = $('l-rec'), lWork = $('l-work'), lDone = $('l-done'), recRow = $('rec-row');
+  var ring = $('ring'), ldot = $('ldot'), wdot = $('wdot'), spin = $('spin');
+  var clock = $('isl-clock'), live = $('live'), tbody = $('tbody'), keys = $('keys');
+  var typed = $('typed'), caret = $('caret'), ctx = wave.getContext('2d');
+  var win = stage.querySelector('.win');
+  var capEls = keys.querySelectorAll('.key');
+
+  function clamp(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+  function seg(t, a, b) { return clamp((t - a) / (b - a)); }
+  function out(x) { return 1 - Math.pow(1 - x, 4); }
+  function mix(a, b, x) { return a + (b - a) * x; }
+  /* SwiftUI's spring(response:dampingFraction:) as a step response. */
+  function spring(tau, response, damping) {
+    if (tau <= 0) return 0;
+    var w = 2 * Math.PI / response, wd = w * Math.sqrt(1 - damping * damping);
+    return 1 - Math.exp(-damping * w * tau) * (Math.cos(wd * tau) + (damping * w / wd) * Math.sin(wd * tau));
+  }
+
+  var liveWords = [];
+  live.innerHTML = CHUNKS.map(function (c, ci) {
+    return c[1].split(' ').map(function (w, wi) { liveWords.push([c[0] + wi * 0.06]); return '<span class="w">' + w + '</span>'; }).join(' ');
+  }).join(' ');
+  var liveEls = live.querySelectorAll('.w');
+  tbody.textContent = SENTENCE;
+  typed.textContent = SENTENCE;
+
+  /* A speech-like envelope: syllables inside words inside phrases, with the
+     pauses where the chunks commit. The bars span the whole range. */
+  var BARS = 16, WW = 120, WH = 26;
+  function envelope(t) {
+    var on = seg(t, ON + 0.15, ON + 0.45) * (1 - seg(t, STOP - 0.15, STOP));
+    var pause = 1 - 0.85 * (Math.exp(-Math.pow((t - 2.2) / 0.16, 2)) + Math.exp(-Math.pow((t - 3.8) / 0.16, 2)) + Math.exp(-Math.pow((t - 5.0) / 0.14, 2)));
+    var syll = Math.abs(Math.sin(t * 7.9) * (0.6 + 0.4 * Math.sin(t * 3.3 + 0.7)));
+    var phrase = 0.55 + 0.45 * Math.sin(t * 1.3 + 0.4);
+    return on * pause * clamp(0.22 + 0.78 * syll * phrase);
+  }
+  /* The app's MeterRamp: deep amber at the floor, #F5B944 at speech, warm at a peak. */
+  var STOPS = [[0, [201, 139, 42]], [0.6, [245, 185, 68]], [1, [255, 218, 139]]];
+  function ramp(x) {
+    var i = x < STOPS[1][0] ? 0 : 1, a = STOPS[i], b = STOPS[i + 1], k = clamp((x - a[0]) / (b[0] - a[0]));
+    return 'rgb(' + a[1].map(function (c, j) { return Math.round(mix(c, b[1][j], k)); }).join(',') + ')';
+  }
+  function drawWave(t) {
+    ctx.clearRect(0, 0, WW, WH);
+    var pitch = WW / BARS, bw = 3;
+    for (var i = 0; i < BARS; i++) {
+      var age = (BARS - 1 - i) * 0.033;
+      var lv = envelope(t - age) * (0.74 + 0.26 * Math.abs(Math.sin(i * 1.7 + t * 2.3)));
+      var bh = Math.max(3, lv * WH);
+      ctx.fillStyle = ramp(lv);
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(i * pitch + (pitch - bw) / 2, (WH - bh) / 2, bw, bh, 1.5);
+      else ctx.rect(i * pitch + (pitch - bw) / 2, (WH - bh) / 2, bw, bh);
+      ctx.fill();
+    }
+    return envelope(t);
+  }
+
+  function pressKeys(t, a) {
+    return { shown: out(seg(t, a - 0.45, a - 0.15)) * (1 - seg(t, a + 0.5, a + 0.8)),
+             down: seg(t, a, a + 0.04) * (1 - seg(t, a + 0.12, a + 0.2)) };
+  }
+
+  function sizeAt(t) {
+    var w = SIZES[0][1], h = SIZES[0][2];
+    for (var i = 1; i < SIZES.length; i++) {
+      var s = spring(t - SIZES[i][0], 0.34, 0.86);
+      w = mix(w, SIZES[i][1], s); h = mix(h, SIZES[i][2], s);
+    }
+    return [w, h];
+  }
+  function layer(t, a, b) { return seg(t, a + 0.04, a + 0.2) * (b ? 1 - seg(t, b, b + 0.1) : 1); }
+
+  function render(t) {
+    var k1 = pressKeys(t, ON - 0.02), k2 = pressKeys(t, STOP);
+    var k = k1.shown >= k2.shown ? k1 : k2;
+    keys.style.opacity = k.shown;
+    keys.style.transform = 'translateX(-50%) translateY(' + ((1 - k.shown) * 14) + 'px)';
+    for (var c = 0; c < capEls.length; c++) {
+      capEls[c].style.transform = 'translateY(' + (k.down * 4) + 'px)';
+      capEls[c].style.boxShadow = '0 0 0 1px rgba(0,0,0,.25),0 ' + (4 - 4 * k.down) + 'px 0 #BDB4A6,0 10px 24px -8px rgba(0,0,0,.6)';
     }
 
-    // 60fps Multi-Bar Audio Waveform Canvas
-    const canvas = document.getElementById('hudWaveCanvas');
-    const ctx = canvas.getContext('2d');
-    let isRecording = false;
-    let wavePhase = 0;
+    /* Presence: in over 0.32 s, out over 0.18 s, as HUDState declares. */
+    var pin = spring(t - ON, 0.32, 0.9), pout = out(seg(t, LEAVE, LEAVE + 0.18));
+    var p = clamp(pin) * (1 - pout);
+    var size = sizeAt(t);
+    island.style.width = size[0] + 'px';
+    island.style.height = size[1] + 'px';
+    island.style.opacity = p;
+    island.style.transform = 'translateX(-50%) translateY(' + ((1 - p) * -10) + 'px) scale(' + (0.94 + 0.06 * p) + ')';
+    island.style.filter = p < 0.995 ? 'blur(' + ((1 - p) * 7) + 'px)' : 'none';
 
-    function renderWaveform() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const bars = 18;
-      const spacing = canvas.width / bars;
-      const midY = canvas.height / 2;
+    lRec.style.opacity = layer(t, ON, STOP);
+    lWork.style.opacity = layer(t, STOP, PASTE);
+    lDone.style.opacity = layer(t, PASTE, 0);
+    recRow.style.height = mix(54, 44, spring(t - CHUNKS[0][0], 0.34, 0.86)) + 'px';
 
-      for (let i = 0; i < bars; i++) {
-        let height = 3;
-        if (isRecording) {
-          const harmonic = Math.sin(wavePhase + i * 0.45) * Math.cos(wavePhase * 0.7 + i * 0.3);
-          height = Math.max(4, Math.abs(harmonic) * (canvas.height * 0.78));
-        }
-        const x = i * spacing + (spacing * 0.2);
-        const w = Math.max(2, spacing * 0.55);
-        const y = midY - (height / 2);
+    var level = drawWave(t);
+    var pulse = (t % 1.6) / 1.6;
+    ring.style.transform = 'scale(' + (1 + pulse * 1.3) + ')';
+    ring.style.opacity = 0.55 * (1 - pulse);
+    ldot.style.transform = 'scale(' + (1 + level * 0.25) + ')';
+    wdot.style.transform = 'scale(' + (0.85 + 0.3 * Math.abs(Math.sin(t * 2 * Math.PI))) + ')';
+    spin.style.transform = 'rotate(' + (t * 400) + 'deg)';
+    clock.textContent = '0:0' + Math.max(0, Math.min(5, Math.floor(t - ON)));
 
-        ctx.fillStyle = isRecording ? '#34d399' : 'rgba(255, 255, 255, 0.22)';
-        ctx.beginPath();
-        ctx.roundRect ? ctx.roundRect(x, y, w, height, 1.5) : ctx.rect(x, y, w, height);
-        ctx.fill();
-      }
-
-      if (isRecording) wavePhase += 0.14;
-      requestAnimationFrame(renderWaveform);
-    }
-    requestAnimationFrame(renderWaveform);
-
-    // Interactive Demo Simulation State
-    const keyCtrl = document.getElementById('keyCtrl');
-    const keyOpt = document.getElementById('keyOpt');
-    const keyR = document.getElementById('keyR');
-    const simHud = document.getElementById('simHud');
-    const hudSimText = document.getElementById('hudSimText');
-    const simEditor = document.getElementById('simEditor');
-    const simLatency = document.getElementById('simLatency');
-
-    const phrases = [
-      "Let's optimize the latency on the push-to-talk audio pipeline.",
-      "Dot streams provisional speech in real time while you hold the key.",
-      "The microphone is hardware-dormant until physically triggered.",
-      "Direct cursor injection into Xcode, VS Code, or any text field."
-    ];
-    let phraseIdx = 0;
-    let typeInterval = null;
-
-    function startDictation() {
-      if (isRecording) return;
-      isRecording = true;
-      playClickSound();
-
-      keyCtrl.classList.add('active');
-      keyOpt.classList.add('active');
-      keyR.classList.add('active');
-      simHud.classList.add('recording');
-      simLatency.innerText = "Listening…";
-      simLatency.style.color = "#fbbf24";
-
-      const target = phrases[phraseIdx % phrases.length];
-      phraseIdx++;
-      let charIdx = 0;
-      hudSimText.innerHTML = '<span class="hud-caret"></span>';
-
-      clearInterval(typeInterval);
-      typeInterval = setInterval(() => {
-        if (charIdx < target.length) {
-          charIdx += Math.floor(Math.random() * 3) + 2;
-          const current = target.substring(0, Math.min(charIdx, target.length));
-          hudSimText.innerHTML = current + '<span class="hud-caret"></span>';
-        }
-      }, 70);
+    for (var i = 0; i < liveEls.length; i++) {
+      var x = out(seg(t, liveWords[i][0], liveWords[i][0] + 0.24)), el = liveEls[i];
+      el.style.opacity = x;
+      el.style.transform = 'translateY(' + ((1 - x) * 3) + 'px)';
+      el.style.filter = x < 1 ? 'blur(' + ((1 - x) * 1.5) + 'px)' : 'none';
     }
 
-    function stopDictation() {
-      if (!isRecording) return;
-      isRecording = false;
-      playClickSound();
-      clearInterval(typeInterval);
+    /* The paste lands in one piece, as a Command-V does. */
+    var landed = seg(t, PASTE, PASTE + 0.12) * (1 - seg(t, LENGTH - 0.6, LENGTH - 0.1));
+    typed.style.opacity = landed;
+    typed.style.display = t >= PASTE ? 'inline' : 'none';
+    caret.style.opacity = Math.floor(t / 0.53) % 2 ? 0 : 1;
+  }
 
-      keyCtrl.classList.remove('active');
-      keyOpt.classList.remove('active');
-      keyR.classList.remove('active');
-      simHud.classList.remove('recording');
-
-      const target = phrases[(phraseIdx - 1) % phrases.length];
-      hudSimText.innerHTML = '✓ Committed (' + target.split(' ').length + ' words)';
-
-      const randomLatency = Math.floor(Math.random() * 14) + 32;
-      simLatency.innerText = randomLatency + "ms stop latency";
-      simLatency.style.color = "#34d399";
-
-      // Instantly inject into simulated editor
-      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      simEditor.innerHTML = `<span style="color: var(--faint);">[${now}]</span> <span class="typed-text">${target}</span><span class="hud-caret"></span>`;
-
-      setTimeout(() => {
-        if (!isRecording) hudSimText.innerHTML = 'Ready to dictate…<span class="hud-caret"></span>';
-      }, 2600);
-    }
-
-    // Bind Keycap Clicks
-    [keyCtrl, keyOpt, keyR].forEach(el => {
-      el.addEventListener('mousedown', (e) => { e.preventDefault(); startDictation(); });
-      el.addEventListener('mouseup', (e) => { e.preventDefault(); stopDictation(); });
-      el.addEventListener('touchstart', (e) => { e.preventDefault(); startDictation(); }, { passive: false });
-      el.addEventListener('touchend', (e) => { e.preventDefault(); stopDictation(); });
+  /* Player: autoplays while on screen, stops off screen, and scrubs. */
+  var track = $('track'), beats = $('beats'), playBtn = $('play'), playIco = $('play-ico');
+  var fills = [], beatBtns = [];
+  BEATS.forEach(function (b, i) {
+    var end = i + 1 < BEATS.length ? BEATS[i + 1][1] : LENGTH, grow = Math.round((end - b[1]) * 100);
+    var s = document.createElement('div'); s.className = 'seg'; s.style.flex = grow + ' 1 0';
+    s.innerHTML = '<i></i>'; track.appendChild(s); fills.push([s.firstChild, b[1], end]);
+    var btn = document.createElement('button'); btn.style.flex = grow + ' 1 0';
+    btn.innerHTML = '<span>' + (i + 1) + '</span><em>' + b[0] + '</em>';
+    btn.addEventListener('click', function () { seek(b[1] + 0.001); });
+    beats.appendChild(btn); beatBtns.push(btn);
+    s.addEventListener('click', function (e) {
+      var r = s.getBoundingClientRect();
+      seek(b[1] + (end - b[1]) * clamp((e.clientX - r.left) / r.width));
     });
+  });
 
-    // Bind Keyboard shortcuts
-    window.addEventListener('keydown', (e) => {
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-      if (e.code === 'Space' || (e.ctrlKey && e.altKey && e.code === 'KeyR')) {
-        e.preventDefault();
-        startDictation();
-      }
+  var time = reduce ? 9 : 0, playing = !reduce, wanted = !reduce, visible = false, last = 0, raf = 0;
+  function paint() {
+    render(time);
+    fills.forEach(function (f, i) {
+      f[0].style.transform = 'scaleX(' + seg(time, f[1], f[2]) + ')';
+      beatBtns[i].classList.toggle('on', time >= f[1] && time < f[2]);
     });
+  }
+  function loop(now) {
+    var dt = Math.min(0.05, (now - last) / 1000); last = now;
+    time += dt; if (time >= LENGTH) time -= LENGTH;
+    paint();
+    raf = playing ? requestAnimationFrame(loop) : 0;
+  }
+  function setPlaying(p) {
+    playing = p && visible;
+    playBtn.setAttribute('aria-label', p ? 'Pause' : 'Play');
+    playIco.setAttribute('d', p ? 'M4 3h3v10H4zM9 3h3v10H9z' : 'M4.5 2.8v10.4a.6.6 0 00.9.5l8.3-5.2a.6.6 0 000-1L5.4 2.3a.6.6 0 00-.9.5z');
+    if (playing && !raf) { last = performance.now(); raf = requestAnimationFrame(loop); }
+  }
+  function seek(t) { time = t; paint(); }
+  playBtn.addEventListener('click', function () { wanted = !wanted; setPlaying(wanted); });
+  $('replay').addEventListener('click', function () { seek(0); wanted = true; setPlaying(true); });
+  frame.addEventListener('click', function () { wanted = !wanted; setPlaying(wanted); });
+  frame.addEventListener('keydown', function (e) {
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); frame.click(); }
+  });
 
-    window.addEventListener('keyup', (e) => {
-      if (e.code === 'Space' || e.code === 'KeyR' || !e.ctrlKey || !e.altKey) {
-        if (isRecording) stopDictation();
-      }
+  function fit() {
+    /* Narrow frames see the middle of the screen, close enough to read the island. */
+    var crop = frame.clientWidth < 700 ? 660 : frame.clientWidth < 1000 ? 880 : 1200;
+    var scale = frame.clientWidth / crop, dpr = Math.min(window.devicePixelRatio || 1, 2);
+    frame.style.aspectRatio = crop + ' / 720';
+    win.style.left = (crop < 1200 ? (1200 - crop) / 2 + 24 : 200) + 'px';
+    win.style.width = (crop < 1200 ? crop - 48 : 800) + 'px';
+    stage.style.transform = 'translateX(' + (-(1200 - crop) / 2 * scale) + 'px) scale(' + scale + ')';
+    wave.width = Math.round(WW * scale * dpr); wave.height = Math.round(WH * scale * dpr);
+    ctx.setTransform(wave.width / WW, 0, 0, wave.height / WH, 0, 0);
+    paint();
+  }
+  if (window.ResizeObserver) new ResizeObserver(fit).observe(frame);
+  else window.addEventListener('resize', fit);
+  fit();
+
+  new IntersectionObserver(function (entries) {
+    visible = entries[0].isIntersecting;
+    setPlaying(wanted);
+  }, { threshold: 0.3 }).observe(frame);
+
+  /* The frame settles onto the page as it scrolls into view: tilted back and
+     slightly small at the fold, flat and full size by a third of the way up. */
+  if (!reduce) {
+    var ticking = false;
+    var tilt = function () {
+      ticking = false;
+      var vh = window.innerHeight, top = frame.getBoundingClientRect().top;
+      var x = clamp((vh - top) / (vh * 0.85)), p = x * x * (3 - 2 * x);
+      frame.style.transform = 'rotateX(' + ((1 - p) * 16) + 'deg) scale(' + mix(0.9, 1, p) + ')';
+      frame.style.opacity = mix(0.55, 1, p);
+    };
+    window.addEventListener('scroll', function () { if (!ticking) { ticking = true; requestAnimationFrame(tilt); } }, { passive: true });
+    tilt();
+  }
+
+  var reveal = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) { e.target.classList.add('in'); reveal.unobserve(e.target); }
     });
+  }, { rootMargin: '0px 0px -12% 0px' });
+  Array.prototype.forEach.call(document.querySelectorAll('.rv'), function (el) { reveal.observe(el); });
 
-    // Copy utilities
-    function copyBrewCmd(el) {
-      navigator.clipboard.writeText('brew install --cask anandlo/tap/dot');
-      const hint = el.querySelector('.copy-hint');
-      if (hint) {
-        hint.innerText = '✓ Copied';
-        setTimeout(() => hint.innerText = 'Copy', 1800);
-      }
-    }
-
-    function copyText(txt, btn) {
-      navigator.clipboard.writeText(txt);
-      const original = btn.innerText;
-      btn.innerText = 'Copied';
-      setTimeout(() => btn.innerText = original, 1800);
-    }
-  </script>
+  var live = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) { e.target.classList.toggle('live', e.isIntersecting); });
+  }, { threshold: 0.25 });
+  Array.prototype.forEach.call(document.querySelectorAll('.card'), function (el) { live.observe(el); });
+})();
+</script>
 </body>
 </html>
