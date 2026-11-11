@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Dot - Write as fast as you can think</title>
-<meta name="description" content="Press once, speak, press again. Dot types what you said at the cursor of whatever app is in front. Native macOS, MIT, eight engines, no servers.">
+<meta name="description" content="Press once, speak, press again. Dot turns your speech into text at the cursor, in any app on your Mac.">
 <link rel="canonical" href="https://dot.anandlo.com/">
 <meta name="theme-color" content="#0B0A08">
 <meta name="color-scheme" content="dark">
@@ -17,7 +17,7 @@
 <meta property="og:image" content="https://dot.anandlo.com/assets/icon.png">
 <meta name="twitter:card" content="summary_large_image">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Dot","description":"Press-to-start voice dictation for macOS that types at the cursor.","url":"https://dot.anandlo.com/","applicationCategory":"UtilitiesApplication","operatingSystem":"macOS 14 or later","softwareVersion":"0.1.0-beta","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://github.com/anandlo/dot/blob/main/LICENSE","author":{"@type":"Person","name":"Anand Lo"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Dot","description":"Dot turns your speech into text at the cursor, wherever you are working on your Mac.","url":"https://dot.anandlo.com/","applicationCategory":"UtilitiesApplication","operatingSystem":"macOS 14 or later","softwareVersion":"0.1.0-beta","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://github.com/anandlo/dot/blob/main/LICENSE","author":{"@type":"Person","name":"Anand Lo"}}
 </script>
 <!--
   The demonstration is a built stage, not a recording: every frame is a pure
@@ -160,16 +160,36 @@ a{color:inherit;text-decoration:none}
 h2.sec{font-family:var(--display);font-weight:400;font-size:clamp(28px,3.4vw,46px);
   letter-spacing:-.025em;line-height:1.06;max-width:18ch}
 .sec-lead{margin-top:12px;color:var(--ink-2);max-width:46ch}
-.cards{display:grid;gap:clamp(14px,1.6vw,20px);margin-top:clamp(28px,4vh,44px)}
-@media (min-width:700px){ .cards{grid-template-columns:repeat(2,minmax(0,1fr))} }
-@media (min-width:1000px){ .cards{grid-template-columns:repeat(3,minmax(0,1fr))} }
-.card{border-radius:16px;background:var(--tile);overflow:hidden}
-.viz{position:relative;height:210px;overflow:hidden;background:var(--tile-2)}
-.card .copy{padding:18px 20px 22px}
-.card h3{font-family:var(--display);font-weight:400;font-size:21px;letter-spacing:-.01em;line-height:1.2}
-.card p{margin-top:6px;color:var(--ink-2);font-size:16px}
-.viz *{animation-play-state:paused}
-.card.live .viz *{animation-play-state:running}
+/* the story: one stage that stays in view while the steps scroll past */
+.story{display:grid;gap:0 clamp(32px,5vw,72px);margin-top:clamp(12px,3vh,28px)}
+.story__steps{list-style:none;margin:0;padding:0}
+.step{min-height:72vh;display:flex;align-items:center;opacity:.32;transition:opacity 420ms var(--e-out)}
+.step.on{opacity:1}
+.step h3{font-family:var(--display);font-weight:400;font-size:clamp(26px,2.6vw,36px);letter-spacing:-.02em;line-height:1.1}
+.step p{margin-top:12px;color:var(--ink-2);font-size:clamp(16px,1.25vw,18px);max-width:36ch}
+.story__stage{position:sticky;top:max(12vh,64px);height:min(64vh,520px);border-radius:20px;overflow:hidden;background:var(--tile-2);z-index:1}
+.panel{position:absolute;inset:0;opacity:0;transform:scale(.97) translateY(10px);
+  transition:opacity 480ms var(--e-out),transform 640ms var(--e-out)}
+.panel.on{opacity:1;transform:none}
+.panel *{animation-play-state:paused}
+.panel.on *{animation-play-state:running}
+.panel > div{zoom:1.35}
+.panel .v-list{top:50%;bottom:auto;transform:translateY(-50%)}
+.panel .v-hist,.panel .v-kc{top:50%;transform:translateY(-50%)}
+.panel .v-chunks{top:calc(50% - 34px)}
+.panel .v-legend{top:calc(50% + 24px)}
+.story__rail{position:absolute;left:24px;right:24px;bottom:20px;height:3px;border-radius:2px;background:rgba(255,244,230,.1);overflow:hidden}
+.story__rail i{position:absolute;inset:0;background:var(--accent);transform-origin:0 0;transform:scaleX(0)}
+@media (min-width:900px){
+  .story{grid-template-columns:minmax(0,5fr) minmax(0,7fr)}
+  .story__stage{grid-column:2;grid-row:1}
+  .story__steps{grid-column:1;grid-row:1;padding-block:8vh 20vh}
+}
+@media (max-width:899px){
+  .story__stage{top:64px;height:42vh}
+  .step{min-height:68vh;align-items:flex-end;padding-bottom:10vh}
+  .panel > div{zoom:1.1}
+}
 
 /* 1: two presses span one recording */
 .v-span{position:absolute;left:28px;right:28px;top:50%;height:46px;transform:translateY(-50%)}
@@ -229,16 +249,28 @@ h2.sec{font-family:var(--display);font-weight:400;font-size:clamp(28px,3.4vw,46p
 @keyframes push{0%{transform:translateY(-46px);opacity:.0}10%,100%{transform:none;opacity:1}}
 
 /* install */
-.two{display:grid;gap:clamp(22px,3vw,48px);margin-top:clamp(24px,4vh,36px)}
-@media (min-width:860px){ .two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)} }
-pre{font-family:var(--mono);background:var(--tile);color:var(--ink);border-radius:10px;padding:16px 18px;margin:0;
-  overflow-x:auto;font-size:14px;line-height:1.8}
-code{font-family:var(--mono)}
-.install p{color:var(--ink-2);max-width:54ch;font-size:16px}
-.install p + p{margin-top:14px}
+.cmds{display:grid;gap:10px;margin-top:clamp(22px,3.4vh,32px);max-width:820px}
+.cmd{display:flex;align-items:center;gap:16px;min-height:54px;padding:6px 6px 6px 18px;border-radius:12px;background:var(--tile)}
+.cmd__k{flex:0 0 82px;font-size:13.5px;color:var(--ink-3)}
+.cmd code{flex:1;min-width:0;font-family:var(--mono);font-size:14px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.copy{flex:0 0 auto;width:40px;height:40px;border-radius:9px;display:grid;place-items:center;color:var(--ink-2);
+  transition:background var(--t-hover) var(--e-out),color var(--t-hover) var(--e-out),transform 90ms var(--e-out)}
+.copy:hover{background:var(--tile-2);color:var(--ink)}
+.copy:active{transform:scale(.94)}
+.copy svg{width:16px;height:16px}
+.copy .i-done{opacity:0;transition:opacity 160ms var(--e-out)}
+.copy .i-copy{transition:opacity 160ms var(--e-out)}
+.copy.done{color:var(--accent)}
+.copy.done .i-done{opacity:1}
+.copy.done .i-copy{opacity:0}
+.install .note{margin-top:18px;color:var(--ink-2);max-width:62ch;font-size:15.5px}
 .install a{text-decoration:underline;text-decoration-color:var(--ink-3);text-underline-offset:3px}
 .install a:hover{text-decoration-color:var(--ink)}
-
+@media (max-width:640px){
+  .cmd{flex-wrap:wrap;gap:4px 12px;padding:12px 6px 12px 14px}
+  .cmd__k{flex-basis:100%}
+  .cmd code{white-space:normal;word-break:break-all;font-size:13px}
+}
 /* footer */
 .foot{display:flex;flex-wrap:wrap;gap:16px 24px;align-items:center;color:var(--ink-2);
   font-size:14px;padding-block:clamp(32px,5vh,48px)}
@@ -311,65 +343,49 @@ code{font-family:var(--mono)}
       </div>
     </div>
   </section>
-  <section id="how" class="wrap band">
-    <h2 class="sec rv">Everything happens between two presses.</h2>
-    <div class="cards">
-      <article class="card rv">
-        <div class="viz" data-ui aria-hidden="true">
-          <div class="v-span"><span class="cap">⌥⌘D</span><span class="run"><i></i></span><span class="cap b">⌥⌘D</span>
+  <section id="how" class="band">
+    <div class="wrap"><h2 class="sec rv">Everything happens between two presses.</h2></div>
+    <div class="story wrap" id="story">
+      <div class="story__stage" data-ui>
+        <div class="panel" data-i="0" aria-hidden="true"><div class="v-span"><span class="cap">⌥⌘D</span><span class="run"><i></i></span><span class="cap b">⌥⌘D</span>
             <span class="lbl"><span>start</span><span>stop</span></span></div>
         </div>
-        <div class="copy"><h3>Two presses, not a hold.</h3><p>Your hands are free while you talk. Hold-to-talk is a setting if you want it.</p></div>
-      </article>
-      <article class="card rv">
-        <div class="viz" data-ui aria-hidden="true">
-          <div class="v-chunks"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-          <div class="v-legend"><span>transcribed while you speak</span><b>tail only</b></div>
+        <div class="panel" data-i="1" aria-hidden="true"><div class="v-chunks"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="v-legend"><span>written while you talk</span><b>last few words</b></div>
         </div>
-        <div class="copy"><h3>The stop is already done.</h3><p>Dot transcribes at each pause while you talk, so the second press only waits on the last few words.</p></div>
-      </article>
-      <article class="card rv">
-        <div class="viz" data-ui aria-hidden="true">
-          <div class="v-field">Ship it once the <span class="w" style="animation-delay:0s">migration</span> <span class="w" style="animation-delay:.08s">passes</span> <span class="w" style="animation-delay:.16s">on</span> <span class="w" style="animation-delay:.24s">staging.</span><span class="caret"></span></div>
+        <div class="panel" data-i="2" aria-hidden="true"><div class="v-field">Ship it once the <span class="w" style="animation-delay:0s">migration</span> <span class="w" style="animation-delay:.08s">passes</span> <span class="w" style="animation-delay:.16s">on</span> <span class="w" style="animation-delay:.24s">staging.</span><span class="caret"></span></div>
         </div>
-        <div class="copy"><h3>It lands where you were.</h3><p>At the cursor of the app in front. Switch apps mid-sentence and it copies instead.</p></div>
-      </article>
-      <article class="card rv">
-        <div class="viz" data-ui aria-hidden="true">
-          <div class="v-list"><ul><span class="sel"></span>
+        <div class="panel" data-i="3" aria-hidden="true"><div class="v-list"><ul><span class="sel"></span>
             <li>Apple on-device<small>local</small></li><li>OpenAI<small>cloud</small></li><li>Groq<small>cloud</small></li><li>Deepgram<small>cloud</small></li>
             <li>ElevenLabs<small>cloud</small></li><li>Azure<small>cloud</small></li><li>Xiaomi ASR<small>cloud</small></li><li>Any OpenAI-compatible URL<small>yours</small></li></ul></div>
         </div>
-        <div class="copy"><h3>Eight engines, one key.</h3><p>Run on-device, or bring a key. Swapping engines changes nothing about the shortcut.</p></div>
-      </article>
-      <article class="card rv">
-        <div class="viz" data-ui aria-hidden="true">
-          <div class="v-kc"><pre><span class="k">"provider"</span>: "groq",
+        <div class="panel" data-i="4" aria-hidden="true"><div class="v-kc"><pre><span class="k">"provider"</span>: "groq",
 <span class="k">"recordingMode"</span>: "toggle"</pre>
             <div class="row"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg>DOT_API_KEY_GROQ<em>Keychain</em></div></div>
         </div>
-        <div class="copy"><h3>Keys never touch a file.</h3><p>Settings are plain JSON. Keys live in the macOS Keychain, asked for zero data retention.</p></div>
-      </article>
-      <article class="card rv">
-        <div class="viz" data-ui aria-hidden="true">
-          <div class="v-hist"><div><b>9:41</b>The Q3 numbers are in the shared folder.</div><div><b>9:12</b>Rename the flag to recordingMode and keep the default.</div>
+        <div class="panel" data-i="5" aria-hidden="true"><div class="v-hist"><div><b>9:41</b>The Q3 numbers are in the shared folder.</div><div><b>9:12</b>Rename the flag to recordingMode and keep the default.</div>
             <div><b>8:57</b>Pick up oat milk and the dry cleaning.</div><div><b>8:30</b>Thanks, that works for Thursday.</div></div>
         </div>
-        <div class="copy"><h3>Twenty, on this Mac.</h3><p>The last twenty transcripts stay in a local history. Nothing is sent anywhere else.</p></div>
-      </article>
+        <div class="story__rail" aria-hidden="true"><i id="rail"></i></div>
+      </div>
+      <ol class="story__steps">
+        <li class="step" data-i="0"><div><h3>Two presses, not a hold.</h3><p>Your hands are free while you talk. Hold-to-talk is a setting if you want it.</p></div></li>
+        <li class="step" data-i="1"><div><h3>No waiting when you stop.</h3><p>Dot writes while you talk, so when you press again only your last few words are left to finish.</p></div></li>
+        <li class="step" data-i="2"><div><h3>It lands where you were.</h3><p>At the cursor of the app in front. Switch apps mid-sentence and it copies instead.</p></div></li>
+        <li class="step" data-i="3"><div><h3>Eight engines, one key.</h3><p>Run on-device, or bring a key. Swapping engines changes nothing about the shortcut.</p></div></li>
+        <li class="step" data-i="4"><div><h3>Your keys stay in the Keychain.</h3><p>Settings are a plain file you can read. API keys are stored in the macOS Keychain, never in that file.</p></div></li>
+        <li class="step" data-i="5"><div><h3>Your recent dictations.</h3><p>Dot keeps your last twenty transcripts on this Mac, so you can copy or paste one again.</p></div></li>
+      </ol>
     </div>
   </section>
 
   <section id="install" class="wrap band install">
     <h2 class="sec rv">Install.</h2>
-    <div class="two rv">
-      <pre><code>brew trust --cask anandlo/tap/dot
-brew install --cask anandlo/tap/dot</code></pre>
-      <div>
-        <p>Or build from source: <a href="https://github.com/anandlo/dot">clone the repo</a> and run <code>./scripts/build.sh</code>. Xcode 16 or later, no other dependencies.</p>
-        <p>Dot is signed ad-hoc, without an Apple Developer ID, so macOS asks once: <strong>System Settings, Privacy &amp; Security, Open Anyway</strong>. If you see “Dot is damaged”, run <code>xattr -dr com.apple.quarantine /Applications/Dot.app</code>.</p>
-      </div>
+    <div class="cmds rv">
+      <div class="cmd"><span class="cmd__k">Homebrew</span><code>brew install --cask anandlo/tap/dot</code><button class="copy" type="button" data-copy="brew install --cask anandlo/tap/dot" aria-label="Copy the Homebrew command"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect class="i-copy" x="5.5" y="5.5" width="8" height="8" rx="1.8"/><path class="i-copy" d="M10.5 3.5v-.3A1.7 1.7 0 0 0 8.8 1.5H4.2a1.7 1.7 0 0 0-1.7 1.7v4.6a1.7 1.7 0 0 0 1.7 1.7h.3"/><path class="i-done" d="M3.5 8.5l3 3 6-7" stroke-linecap="round"/></svg></button></div>
+      <div class="cmd"><span class="cmd__k">Terminal</span><code>curl -fsSL https://raw.githubusercontent.com/anandlo/dot/main/scripts/install-remote.sh | sh</code><button class="copy" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/anandlo/dot/main/scripts/install-remote.sh | sh" aria-label="Copy the install script command"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect class="i-copy" x="5.5" y="5.5" width="8" height="8" rx="1.8"/><path class="i-copy" d="M10.5 3.5v-.3A1.7 1.7 0 0 0 8.8 1.5H4.2a1.7 1.7 0 0 0-1.7 1.7v4.6a1.7 1.7 0 0 0 1.7 1.7h.3"/><path class="i-done" d="M3.5 8.5l3 3 6-7" stroke-linecap="round"/></svg></button></div>
     </div>
+    <p class="note rv">Or download the disk image from <a href="https://github.com/anandlo/dot/releases/latest">Releases</a>, or <a href="https://github.com/anandlo/dot#building-from-source">build from source</a>. Dot is self-signed, so on first launch macOS asks once: System Settings, Privacy &amp; Security, Open Anyway.</p>
   </section>
 </main>
 
@@ -382,6 +398,7 @@ brew install --cask anandlo/tap/dot</code></pre>
       <a href="https://github.com/anandlo/dot">GitHub</a>
       <a href="https://github.com/anandlo/dot/blob/main/LICENSE">Licence</a>
       <a href="https://github.com/anandlo/dot/issues">Issues</a>
+      <a href="https://buymeacoffee.com/anandlo">Buy me a coffee</a>
     </span>
   </div>
 </footer>
@@ -393,9 +410,9 @@ brew install --cask anandlo/tap/dot</code></pre>
   /* One clock drives the demonstration: render(t) is a pure function of t, so
      playing, pausing, replaying and scrubbing are the same call. The island's
      sizes, springs and timings are the app's own (HUDState, HUDView). */
-  var LENGTH = 13;
-  var BEATS = [['Press', 0], ['Speak', 1.0], ['Again', 5.9], ['Pasted', 7.0], ['Done', 10.4]];
-  var ON = 0.62, STOP = 6.2, PASTE = 7.0, LEAVE = 10.4;
+  var LENGTH = 11;
+  var BEATS = [['Press', 0], ['Speak', 1.0], ['Again', 5.9], ['Pasted', 7.0], ['Done', 8.6]];
+  var ON = 0.62, STOP = 6.2, PASTE = 7.0, LEAVE = 8.6;
   var CHUNKS = [[2.3, 'The Q3 numbers are in the shared folder.'], [3.9, 'Can we go through them'], [5.1, 'before the standup tomorrow?']];
   var SENTENCE = CHUNKS.map(function (c) { return c[1]; }).join(' ');
   /* Card sizes per state, in points: recording, live, working, transcript. */
@@ -612,10 +629,50 @@ brew install --cask anandlo/tap/dot</code></pre>
   }, { rootMargin: '0px 0px -12% 0px' });
   Array.prototype.forEach.call(document.querySelectorAll('.rv'), function (el) { reveal.observe(el); });
 
-  var live = new IntersectionObserver(function (entries) {
-    entries.forEach(function (e) { e.target.classList.toggle('live', e.isIntersecting); });
-  }, { threshold: 0.25 });
-  Array.prototype.forEach.call(document.querySelectorAll('.card'), function (el) { live.observe(el); });
+  /* The step nearest the middle of the viewport owns the stage; its visual
+     restarts from its first frame so every step is seen from the start. */
+  var steps = document.querySelectorAll('.step'), panels = document.querySelectorAll('.panel');
+  var rail = $('rail'), story = $('story'), current = -1, storyTicking = false;
+  function show(i) {
+    if (i === current) return;
+    current = i;
+    for (var k = 0; k < steps.length; k++) {
+      steps[k].classList.toggle('on', k === i);
+      panels[k].classList.toggle('on', k === i);
+    }
+    if (panels[i] && panels[i].getAnimations) {
+      panels[i].getAnimations({ subtree: true }).forEach(function (an) { an.currentTime = 0; });
+    }
+  }
+  function followStory() {
+    storyTicking = false;
+    var mid = window.innerHeight * 0.5, best = 0, dist = Infinity;
+    for (var k = 0; k < steps.length; k++) {
+      var r = steps[k].getBoundingClientRect(), d = Math.abs((r.top + r.bottom) / 2 - mid);
+      if (d < dist) { dist = d; best = k; }
+    }
+    show(best);
+    var sr = story.getBoundingClientRect();
+    rail.style.transform = 'scaleX(' + clamp((mid - sr.top) / Math.max(1, sr.height)) + ')';
+  }
+  window.addEventListener('scroll', function () { if (!storyTicking) { storyTicking = true; requestAnimationFrame(followStory); } }, { passive: true });
+  window.addEventListener('resize', followStory);
+
+  /* Copy buttons: the command is in data-copy, so what is copied is exactly what is shown. */
+  Array.prototype.forEach.call(document.querySelectorAll('.copy'), function (btn) {
+    btn.addEventListener('click', function () {
+      var text = btn.getAttribute('data-copy'), mark = function () {
+        btn.classList.add('done'); btn.setAttribute('aria-label', 'Copied');
+        setTimeout(function () { btn.classList.remove('done'); btn.setAttribute('aria-label', 'Copy'); }, 1600);
+      };
+      if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).then(mark, function () {}); return; }
+      var ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); mark(); } catch (e) {}
+      document.body.removeChild(ta);
+    });
+  });
+  followStory();
 })();
 </script>
 </body>
