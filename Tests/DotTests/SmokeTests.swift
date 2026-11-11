@@ -51,7 +51,7 @@ final class SmokeTests: XCTestCase {
             recordShortcut: MenuShortcut(display: "⌥⌘D", key: "d", modifiers: [.option, .command]),
             pasteShortcut: MenuShortcut(display: "⌥⌘V", key: "v", modifiers: [.option, .command]),
             history: ["One transcript"],
-            microphones: [MenuMicrophone(id: nil, name: "System Default")],
+            microphones: [MenuMicrophone(id: nil, name: "System default")],
             selectedMicrophoneID: nil,
             languages: MenuBuilder.languages,
             selectedLanguage: "auto",
@@ -69,16 +69,16 @@ final class SmokeTests: XCTestCase {
             launchAtLogin: false
         )
         let titles = MenuBuilder.items(for: state).map(\.title)
-        XCTAssertEqual(titles.first, "Start Recording")
-        XCTAssertTrue(titles.contains("Paste Last Transcript"))
-        XCTAssertTrue(titles.contains("Copy Last Transcript"))
-        XCTAssertTrue(titles.contains("Recent Transcripts"))
+        XCTAssertEqual(titles.first, "Start recording")
+        XCTAssertTrue(titles.contains("Paste last transcript"))
+        XCTAssertTrue(titles.contains("Copy last transcript"))
+        XCTAssertTrue(titles.contains("Recent transcripts"))
         XCTAssertTrue(titles.contains("History…"))
         XCTAssertTrue(titles.contains("Microphone"))
         XCTAssertTrue(titles.contains("Language"))
         XCTAssertTrue(titles.contains("Provider"))
-        XCTAssertTrue(titles.contains("Auto-Paste"))
-        XCTAssertTrue(titles.contains("Launch at Login"))
+        XCTAssertTrue(titles.contains("Auto-paste"))
+        XCTAssertTrue(titles.contains("Launch at login"))
         XCTAssertTrue(titles.contains("Welcome to Dot"))
         XCTAssertTrue(titles.contains("Settings…"))
         XCTAssertTrue(titles.contains("About Dot"))
@@ -100,7 +100,7 @@ final class SmokeTests: XCTestCase {
         let items = MenuBuilder.items(for: state)
         let titles = items.map(\.title)
 
-        guard let recent = titles.firstIndex(of: "Recent Transcripts"),
+        guard let recent = titles.firstIndex(of: "Recent transcripts"),
               let history = titles.firstIndex(of: "History…"),
               let microphone = titles.firstIndex(of: "Microphone")
         else {
@@ -173,9 +173,9 @@ final class SmokeTests: XCTestCase {
         )
         let target = MenuActionTarget()
         let menu = MenuBuilder.build(state: state, target: target)
-        XCTAssertEqual(menu.items.first?.title, "Start Recording")
+        XCTAssertEqual(menu.items.first?.title, "Start recording")
         XCTAssertEqual(menu.items.last?.title, "Quit Dot")
-        XCTAssertTrue(menu.items.contains { $0.title == "Recent Transcripts" && $0.submenu != nil })
+        XCTAssertTrue(menu.items.contains { $0.title == "Recent transcripts" && $0.submenu != nil })
         XCTAssertTrue(menu.items.contains { $0.title == "Provider" && $0.submenu != nil })
     }
 
@@ -185,7 +185,7 @@ final class SmokeTests: XCTestCase {
         let target = MenuActionTarget()
         target.handler = { received = $0 }
         let menu = MenuBuilder.build(state: state, target: target)
-        guard let item = menu.items.first(where: { $0.title == "Paste Last Transcript" }) else {
+        guard let item = menu.items.first(where: { $0.title == "Paste last transcript" }) else {
             return XCTFail("the item is missing")
         }
         target.performAction(item)
@@ -194,9 +194,9 @@ final class SmokeTests: XCTestCase {
 
     func testTheRecordingItemChangesWithTheState() {
         var state = MenuState()
-        XCTAssertEqual(MenuBuilder.items(for: state).first?.title, "Start Recording")
+        XCTAssertEqual(MenuBuilder.items(for: state).first?.title, "Start recording")
         state.isRecording = true
-        XCTAssertEqual(MenuBuilder.items(for: state).first?.title, "Stop Recording")
+        XCTAssertEqual(MenuBuilder.items(for: state).first?.title, "Stop recording")
     }
 
     func testTheHostedProviderOffersSetAPIKeyInTheMenu() {
@@ -221,8 +221,8 @@ final class SmokeTests: XCTestCase {
             return XCTFail("the Provider submenu is missing")
         }
 
-        XCTAssertTrue(providerMenu.children.map(\.title).contains("Set API Key…"))
-        let setKey = providerMenu.children.first { $0.title == "Set API Key…" }
+        XCTAssertTrue(providerMenu.children.map(\.title).contains("Set API key…"))
+        let setKey = providerMenu.children.first { $0.title == "Set API key…" }
         XCTAssertEqual(setKey?.action, .setAPIKey(ProviderIdentifier.openAI))
 
         let withKey = MenuBuilder.items(for: MenuState(
@@ -240,7 +240,7 @@ final class SmokeTests: XCTestCase {
         let replace = withKey
             .first { $0.title == "Provider" }?
             .children
-            .first { $0.title == "Replace API Key…" }
+            .first { $0.title == "Replace API key…" }
         XCTAssertEqual(replace?.action, .setAPIKey(ProviderIdentifier.openAI))
     }
 

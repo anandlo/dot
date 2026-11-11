@@ -107,7 +107,7 @@ final class MenuProviderRowsTests: XCTestCase {
 
         let keyRows = items.filter { $0.action?.isKeyAction == true }
         XCTAssertEqual(keyRows.count, 1, "one key action, for the row in use")
-        XCTAssertEqual(keyRows.first?.title, "Set API Key…")
+        XCTAssertEqual(keyRows.first?.title, "Set API key…")
         XCTAssertEqual(keyRows.first?.action, .setAPIKey(ProviderIdentifier.groq))
     }
 

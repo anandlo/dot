@@ -69,8 +69,8 @@ public enum RecordingMode: String, Codable, Sendable, CaseIterable {
     /// The human-readable name of the mode.
     public var title: String {
         switch self {
-        case .toggle: "Press twice"
-        case .hold: "Hold"
+        case .toggle: "Press to start, press to stop"
+        case .hold: "Hold while speaking"
         }
     }
 
@@ -172,7 +172,11 @@ public struct ProviderConfig: Codable, Sendable, Equatable {
     public var azureOutputFormat: String?
     /// Optional Azure server-side audio storage (`storeAudio=true/false`).
     public var azureStoreAudio: Bool?
-    /// Zero data retention (ZDR): opt out of server-side data retention, model training, or logging.
+    /// Zero data retention (ZDR): asks the service to keep this audio out of
+    /// its retention. Only the providers whose endpoint documents a parameter
+    /// for it send it, which is Deepgram, ElevenLabs and Azure; a fresh
+    /// configuration leaves the value empty everywhere else, because a request
+    /// to those services cannot carry it.
     public var zeroDataRetention: Bool?
     /// Optional temperature (e.g. 0.0 to 1.0 for Groq/OpenAI).
     public var temperature: Double?
@@ -368,6 +372,12 @@ public struct DotConfig: Codable, Sendable, Equatable {
     public var fastRecord: Bool
     /// How long the transcript stays on screen, in seconds.
     public var hudDwellSeconds: Double
+    /// How many transcripts Dot keeps in its history.
+    ///
+    /// The store trims to this number every time it writes. It is a setting
+    /// rather than a constant because twenty was an arbitrary choice made in
+    /// the engine, and a person who dictates all day wants more than that.
+    public var historyLimit: Int
     /// The revision of the dwell this configuration was written with.
     ///
     /// A file written by a build from before the dwell changed has no revision
@@ -421,6 +431,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         fastRecord: false,
         hudDwellSeconds: HUDDwell.defaultSeconds,
         hudDwellRevision: HUDDwell.revision,
+        historyLimit: HistoryStore.limit,
         maxSegmentSeconds: 30,
         microphoneDeviceUID: nil,
         logTranscripts: false,
@@ -441,12 +452,10 @@ public struct DotConfig: Codable, Sendable, Equatable {
     /// is stored, and the provider's `defaultModel` is used until then.
     public static let defaultProviders: [String: ProviderConfig] = [
         ProviderIdentifier.openAI: ProviderConfig(
-            baseURL: OpenAICompatibleProvider.defaultBaseURL.absoluteString,
-            zeroDataRetention: true
+            baseURL: OpenAICompatibleProvider.defaultBaseURL.absoluteString
         ),
         ProviderIdentifier.groq: ProviderConfig(
             baseURL: GroqProvider.defaultBaseURL.absoluteString,
-            zeroDataRetention: true,
             temperature: 0.0,
             responseFormat: "json"
         ),
@@ -467,8 +476,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
             zeroDataRetention: true
         ),
         ProviderIdentifier.xiaomi: ProviderConfig(
-            baseURL: XiaomiASRProvider.defaultBaseURL.absoluteString,
-            zeroDataRetention: true
+            baseURL: XiaomiASRProvider.defaultBaseURL.absoluteString
         ),
         ProviderIdentifier.apple: ProviderConfig(),
     ]
@@ -484,6 +492,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         fastRecord: Bool = false,
         hudDwellSeconds: Double = HUDDwell.defaultSeconds,
         hudDwellRevision: Int = HUDDwell.revision,
+        historyLimit: Int = HistoryStore.limit,
         maxSegmentSeconds: Int = 30,
         microphoneDeviceUID: String? = nil,
         logTranscripts: Bool = false,
@@ -504,6 +513,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         self.fastRecord = fastRecord
         self.hudDwellSeconds = hudDwellSeconds
         self.hudDwellRevision = hudDwellRevision
+        self.historyLimit = max(1, historyLimit)
         self.maxSegmentSeconds = maxSegmentSeconds
         self.microphoneDeviceUID = microphoneDeviceUID
         self.logTranscripts = logTranscripts
@@ -627,6 +637,11 @@ extension DotConfig {
         // No revision is a file from before the dwell changed: zero is what
         // makes the migration run once, on that file.
         self.hudDwellRevision = try container.decodeIfPresent(Int.self, forKey: .hudDwellRevision) ?? 0
+        // A file written before the history limit was a setting has no field,
+        // and a hand-edited one may hold a number no store could honour: both
+        // load, clamped to something a list can be.
+        let storedLimit = try container.decodeIfPresent(Int.self, forKey: .historyLimit)
+        self.historyLimit = min(max(storedLimit ?? fallback.historyLimit, 1), 500)
         self.maxSegmentSeconds = try container.decodeIfPresent(Int.self, forKey: .maxSegmentSeconds)
             ?? fallback.maxSegmentSeconds
         self.microphoneDeviceUID = try container.decodeIfPresent(String.self, forKey: .microphoneDeviceUID)

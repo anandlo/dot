@@ -33,8 +33,6 @@ public struct OpenAICompatibleProvider: Provider {
     public let responseFormat: String?
     /// Optional timestamp granularity ("word", "segment", "both") when response_format is "verbose_json".
     public let timestampsGranularity: String?
-    /// Whether Zero Data Retention (ZDR) is requested.
-    public let zeroDataRetention: Bool
 
     /// The provider can use an API key.
     public var requiresCredential: Bool { true }
@@ -65,7 +63,6 @@ public struct OpenAICompatibleProvider: Provider {
         prompt: String? = nil,
         responseFormat: String? = nil,
         timestampsGranularity: String? = nil,
-        zeroDataRetention: Bool = true,
         timeout: TimeInterval = 120,
         session: URLSession = OpenAICompatibleProvider.makeSession()
     ) {
@@ -77,7 +74,6 @@ public struct OpenAICompatibleProvider: Provider {
         self.prompt = prompt
         self.responseFormat = responseFormat
         self.timestampsGranularity = timestampsGranularity
-        self.zeroDataRetention = zeroDataRetention
         self.timeout = timeout
         self.session = session
     }

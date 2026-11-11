@@ -95,14 +95,15 @@ git push origin HEAD
 local path and not a file argument:
 
 ```sh
-brew trust --cask anandlo/tap/dot
 brew audit --cask --online anandlo/tap/dot
 brew install --cask anandlo/tap/dot
 ```
 
-`brew trust` is not optional on Homebrew 7: until a third-party tap is trusted,
-Homebrew refuses to even load the cask (`Refusing to load cask … from untrusted
-tap`). Trusting the single cask rather than the whole tap keeps the permission as
+Tap trust arrived in Homebrew 6.0.0, and a cask named in full trusts that one
+cask, so the install above needs no `brew trust` first. Run
+`brew trust --cask anandlo/tap/dot` only when it is refused with `Refusing to
+load cask … from untrusted tap`, or when the cask has to be installed by short
+name. Trusting the single cask rather than the whole tap keeps the permission as
 narrow as it can be. `brew audit` downloads the release asset to compute its
 checksum, so it only passes once the asset is public. A first install ends with an
 ad-hoc signed app in `/Applications`. Homebrew does not bypass Gatekeeper and the

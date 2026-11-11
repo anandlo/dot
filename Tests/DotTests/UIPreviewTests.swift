@@ -25,20 +25,15 @@ final class UIPreviewTests: XCTestCase {
             ("welcome-dark.png", CGSize(width: 720, height: 560)),
             ("welcome-connected.png", CGSize(width: 720, height: 560)),
             ("welcome-provider.png", CGSize(width: 720, height: 560)),
-            ("welcome-provider-open.png", CGSize(width: 720, height: 560)),
             ("welcome-provider-dark.png", CGSize(width: 720, height: 560)),
-            ("welcome-provider-open-dark.png", CGSize(width: 720, height: 560)),
             ("welcome-tour-hold.png", CGSize(width: 720, height: 560)),
             ("welcome-tour-speak.png", CGSize(width: 720, height: 560)),
             ("welcome-tour-paste.png", CGSize(width: 720, height: 560)),
             ("welcome-tour-hold-dark.png", CGSize(width: 720, height: 560)),
+            ("welcome-tour-speak-dark.png", CGSize(width: 720, height: 560)),
+            ("welcome-tour-paste-dark.png", CGSize(width: 720, height: 560)),
             ("welcome-tour-hold-early.png", CGSize(width: 720, height: 560)),
-            ("about.png", AboutView.size),
-            ("about-dark.png", AboutView.size),
-            ("about-update-checking.png", AboutView.size),
-            ("about-update-current.png", AboutView.size),
-            ("about-update-available.png", AboutView.size),
-            ("about-update-available-dark.png", AboutView.size),
+            ("welcome-connected-dark.png", CGSize(width: 720, height: 560)),
         ]
         for entry in expected {
             let url = directory.appendingPathComponent(entry.name)
@@ -95,7 +90,7 @@ final class UIPreviewTests: XCTestCase {
         let directory = URL(fileURLWithPath: value, isDirectory: true)
         try UIPreview.renderSettings(to: directory)
 
-        let names = [
+        var names = [
             "settings-general.png",
             "settings-provider.png",
             "settings-provider-custom.png",
@@ -107,12 +102,25 @@ final class UIPreviewTests: XCTestCase {
             "settings-shortcuts-dark.png",
             "settings-appearance-dark.png",
             "settings-about-dark.png",
-            "settings-provider-select-closed.png",
-            "settings-provider-select-open.png",
-            "settings-provider-select-closed-dark.png",
-            "settings-provider-select-open-dark.png",
             "settings-provider-stored-endpoint.png",
+            "settings-provider-azure.png",
+            "settings-provider-connected.png",
+            "settings-provider-connected-dark.png",
+            "settings-about-update-current.png",
+            "settings-about-update-available.png",
+            "settings-about-update-unreachable.png",
         ]
+        // Every engine has a page, and each page is drawn in both appearances.
+        for preset in ProviderPreset.all {
+            names.append("settings-provider-\(preset.id).png")
+            names.append("settings-provider-\(preset.id)-dark.png")
+        }
+        // Each page again, tall enough to hold every card it has.
+        let tall = ["general", "provider", "shortcuts", "appearance", "about"]
+        for page in tall {
+            names.append("settings-\(page)-tall.png")
+            names.append("settings-\(page)-dark-tall.png")
+        }
         for name in names {
             let url = directory.appendingPathComponent(name)
             XCTAssertTrue(
@@ -126,7 +134,11 @@ final class UIPreviewTests: XCTestCase {
             let data = try Data(contentsOf: url)
             let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data), "\(name) is not a PNG")
             XCTAssertEqual(bitmap.pixelsWide, 1640, "\(name) width")
-            XCTAssertEqual(bitmap.pixelsHigh, 1200, "\(name) height")
+            let isTall = name.contains("-tall")
+                || name.contains("settings-about-update")
+                || name.contains("settings-provider-connected")
+            let expectedHeight = isTall ? 2360 : 1200
+            XCTAssertEqual(bitmap.pixelsHigh, expectedHeight, "\(name) height")
         }
     }
 
@@ -211,6 +223,45 @@ final class UIPreviewTests: XCTestCase {
         let still = try XCTUnwrap(MenuGlyph.image(phase: 0).tiffRepresentation)
         let breathed = try XCTUnwrap(MenuGlyph.image(phase: 0.5).tiffRepresentation)
         XCTAssertNotEqual(still, breathed, "the glyph drew the same frame twice")
+    }
+
+    /// The palette, in the four states it can be summoned in.
+    ///
+    /// It had no render at all: the one surface a person opens mid-sentence was
+    /// the only window nobody had looked at.
+    func testPaletteRendersToPNGs() throws {
+        guard let value = DotMigration.environment("RENDER_UI_DIR"),
+              !value.isEmpty
+        else {
+            throw XCTSkip("Set DOT_RENDER_UI_DIR to render the palette.")
+        }
+
+        let directory = URL(fileURLWithPath: value, isDirectory: true)
+        try UIPreview.renderPalette(to: directory)
+
+        let names = [
+            "palette.png",
+            "palette-search.png",
+            "palette-empty.png",
+            "palette-no-matches.png",
+            "palette-dark.png",
+        ]
+        let size = PaletteController.panelSize
+        for name in names {
+            let url = directory.appendingPathComponent(name)
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: url.path),
+                "\(name) was not written"
+            )
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            let bytes = try XCTUnwrap(attributes[.size] as? Int)
+            XCTAssertGreaterThan(bytes, 10_240, "\(name) is smaller than 10 KB")
+
+            let data = try Data(contentsOf: url)
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data), "\(name) is not a PNG")
+            XCTAssertEqual(bitmap.pixelsWide, Int(size.width) * 2, "\(name) width")
+            XCTAssertEqual(bitmap.pixelsHigh, Int(size.height) * 2, "\(name) height")
+        }
     }
 
     func testHistoryRenderToPNGs() throws {

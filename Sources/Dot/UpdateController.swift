@@ -107,10 +107,10 @@ public final class UpdateController {
 
     private func showUpdateAvailableAlert(latestVersion: String, releaseURL: URL?) {
         let alert = NSAlert()
-        alert.messageText = "Update Available"
-        alert.informativeText = "Dot \(latestVersion) is now available (you have \(Self.currentVersion)). Would you like to view and download the update?"
+        alert.messageText = "Update available"
+        alert.informativeText = "Dot \(latestVersion) is available. This build is \(Self.currentVersion)."
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "Download Update")
+        alert.addButton(withTitle: "Download update")
         alert.addButton(withTitle: "Later")
 
         let response = alert.runModal()
@@ -125,7 +125,7 @@ public final class UpdateController {
 
     private func showUpToDateAlert(currentVersion: String) {
         let alert = NSAlert()
-        alert.messageText = "You're up to date!"
+        alert.messageText = "You are up to date"
         alert.informativeText = "Dot \(currentVersion) is currently the newest version."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
@@ -134,10 +134,10 @@ public final class UpdateController {
 
     private func showCheckFailedAlert() {
         let alert = NSAlert()
-        alert.messageText = "Update Check Failed"
-        alert.informativeText = "Could not reach the update server. Please verify your connection or check \(Self.downloadPageURL.host ?? "our website")."
+        alert.messageText = "Update check failed"
+        alert.informativeText = "Could not reach the update server at \(Self.downloadPageURL.host ?? "the website")."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Visit Website")
+        alert.addButton(withTitle: "Visit website")
         alert.addButton(withTitle: "OK")
 
         let response = alert.runModal()

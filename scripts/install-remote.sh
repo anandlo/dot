@@ -296,11 +296,24 @@ log ""
 log "Dot $EXTRACTED_VERSION is installed and running."
 log ""
 log "macOS will ask for the two permissions Dot uses, the first time it needs them:"
-log "  Microphone     — only while the shortcut is held"
+log "  Microphone     — only while a recording runs"
 log "  Accessibility  — only to paste the transcript at your cursor"
 log "Input Monitoring is not needed and is never requested."
 log ""
-log "Hold ⌃⌥R to dictate. The dot in the menu bar opens Settings."
+# The shortcut is the app's default until a configuration says otherwise, and
+# this script replaces the app without touching the configuration. Read the
+# label the running app will actually listen for, so a machine that has been
+# set up before is not told the default.
+SHORTCUT="⌥⌘D"
+CONFIG_FILE="$HOME/Library/Application Support/$APP_NAME/config.json"
+if [ -f "$CONFIG_FILE" ]; then
+  CONFIGURED_SHORTCUT="$(tr -d '\n' < "$CONFIG_FILE" \
+    | sed -n 's/.*"hotkey"[[:space:]]*:[[:space:]]*{[^}]*"label"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  if [ -n "$CONFIGURED_SHORTCUT" ]; then
+    SHORTCUT="$CONFIGURED_SHORTCUT"
+  fi
+fi
+log "Press $SHORTCUT twice to dictate. The dot in the menu bar opens the menu."
 log ""
 log "To remove it:"
 log "  launchctl bootout gui/$UID_VALUE/$LABEL"

@@ -33,10 +33,12 @@ enum UIPreview {
         return nil
     }
 
-    /// Renders the key UI windows (Welcome, Tour, Settings) and exits.
+    /// Renders the key UI windows (Welcome, Tour, Settings, Palette) and exits.
     static func renderAll(to directory: URL) throws {
         try renderWelcomeAndAbout(to: directory)
         try renderSettings(to: directory)
+        try renderHistory(to: directory)
+        try renderPalette(to: directory)
     }
 
     /// Renders the welcome and about pages in both appearances.
@@ -101,14 +103,37 @@ enum UIPreview {
             scheme: .light,
             to: directory.appendingPathComponent("welcome-connected.png")
         )
+        try writeHosted(
+            WindowPreview(size: welcomeSize) {
+                WelcomeView(
+                    presets: ProviderPreset.all,
+                    selectedPresetID: chosen.id,
+                    providerReady: true,
+                    microphoneStatus: "Allowed",
+                    accessibilityGranted: true,
+                    shortcutLabel: Hotkey.defaultRecord.keycapLabel,
+                    onEnableMicrophone: { "Allowed" },
+                    onChangeShortcut: {},
+                    onOpenSettings: {},
+                    onFinish: {},
+                    stage: .setup,
+                    animated: false,
+                    previewConnection: ProviderConnectionResult(
+                        status: .connected,
+                        message: "Key saved. Using \(chosen.name).",
+                        providerName: chosen.name
+                    )
+                )
+            },
+            size: welcomeSize,
+            scheme: .dark,
+            to: directory.appendingPathComponent("welcome-connected-dark.png")
+        )
 
-        // The welcome's provider step, closed and open, on paper and on ink:
-        // the card Dot asks a first-run person to choose a service in.
-        let providerStates: [(name: String, scheme: ColorScheme, open: Bool)] = [
-            ("welcome-provider.png", .light, false),
-            ("welcome-provider-open.png", .light, true),
-            ("welcome-provider-dark.png", .dark, false),
-            ("welcome-provider-open-dark.png", .dark, true),
+        // The welcome's service card, on paper and on ink.
+        let providerStates: [(name: String, scheme: ColorScheme)] = [
+            ("welcome-provider.png", .light),
+            ("welcome-provider-dark.png", .dark),
         ]
         for state in providerStates {
             try writeHosted(
@@ -124,8 +149,7 @@ enum UIPreview {
                         onOpenSettings: {},
                         onFinish: {},
                         stage: .setup,
-                        animated: false,
-                        providerMenuOpen: state.open
+                        animated: false
                     )
                 },
                 size: welcomeSize,
@@ -141,6 +165,8 @@ enum UIPreview {
             ("welcome-tour-speak.png", .speak, .light),
             ("welcome-tour-paste.png", .paste, .light),
             ("welcome-tour-hold-dark.png", .hold, .dark),
+            ("welcome-tour-speak-dark.png", .speak, .dark),
+            ("welcome-tour-paste-dark.png", .paste, .dark),
         ]
         // The same step at two moments of the loop: side by side these are the
         // proof that the stage is drawn from the clock and not from a still.
@@ -190,37 +216,9 @@ enum UIPreview {
                 to: directory.appendingPathComponent(state.name)
             )
         }
-
-        // The About window, in both appearances and with the update row in two
-        // of the states it can hold. The states are handed to the view rather
-        // than asked for, so a render never reaches GitHub.
-        let aboutSize = AboutView.size
-        let aboutStates: [(name: String, scheme: ColorScheme, update: AboutUpdateState?)] = [
-            ("about.png", .light, nil),
-            ("about-dark.png", .dark, nil),
-            ("about-update-checking.png", .light, .checking),
-            ("about-update-current.png", .light, .upToDate),
-            ("about-update-available.png", .light, .available(version: "0.2.0", page: nil)),
-            ("about-update-available-dark.png", .dark, .available(version: "0.2.0", page: nil)),
-        ]
-        for state in aboutStates {
-            try writeHosted(
-                WindowPreview(size: aboutSize) {
-                    AboutView(
-                        version: "1.0",
-                        build: "1",
-                        animated: false,
-                        previewUpdate: state.update
-                    )
-                },
-                size: aboutSize,
-                scheme: state.scheme,
-                to: directory.appendingPathComponent(state.name)
-            )
-        }
     }
 
-    /// Renders the five settings pages into `directory`.
+    /// Renders the settings pages into `directory`.
     ///
     /// The sample uses the first row of the picker, so the connect card shows a
     /// chosen service and the endpoint cards carry that service's values.
@@ -287,6 +285,31 @@ enum UIPreview {
             )
         }
 
+        // Every page again, tall enough to hold all of its cards. The window
+        // is 600 points so a page can scroll; a render of a scrolling page that
+        // stops at the fold cannot show the cards below it, and the last card
+        // of a page is exactly where a layout mistake hides.
+        let tallSize = CGSize(width: 820, height: 1180)
+        for page in pages {
+            var config = sampleConfig
+            if page.scheme == .dark {
+                config.appearance = .dark
+            }
+            let settings = settingsPreview(
+                config: config,
+                providers: providers,
+                tab: page.tab,
+                height: tallSize.height
+            )
+            let name = page.name.replacingOccurrences(of: ".png", with: "-tall.png")
+            try writeHosted(
+                WindowPreview(size: tallSize) { settings },
+                size: tallSize,
+                scheme: page.scheme,
+                to: directory.appendingPathComponent(name)
+            )
+        }
+
         // The hand-filled row, with the endpoint and the model it stores.
         var customConfig = DotConfig.default
         customConfig.appearance = .light
@@ -307,34 +330,6 @@ enum UIPreview {
             scheme: .light,
             to: directory.appendingPathComponent("settings-provider-custom.png")
         )
-
-        // The provider list itself, closed and open on paper and on ink. The
-        // control is DotSelect; these are the renders that show it is ours.
-        let selectStates: [(name: String, scheme: ColorScheme, open: Bool)] = [
-            ("settings-provider-select-closed.png", .light, false),
-            ("settings-provider-select-open.png", .light, true),
-            ("settings-provider-select-closed-dark.png", .dark, false),
-            ("settings-provider-select-open-dark.png", .dark, true),
-        ]
-        for state in selectStates {
-            var config = sampleConfig
-            if state.scheme == .dark {
-                config.appearance = .dark
-            }
-            try writeHosted(
-                WindowPreview(size: size) {
-                    settingsPreview(
-                        config: config,
-                        providers: providers,
-                        tab: 1,
-                        providerMenuOpen: state.open
-                    )
-                },
-                size: size,
-                scheme: state.scheme,
-                to: directory.appendingPathComponent(state.name)
-            )
-        }
 
         // A configuration that names a provider through an endpoint Dot ships
         // no row for: the card presents it as the custom endpoint it is, with the
@@ -369,27 +364,100 @@ enum UIPreview {
             to: directory.appendingPathComponent("settings-provider-azure.png")
         )
 
-        var groqConfig = DotConfig.default
-        groqConfig.provider = ProviderIdentifier.groq
-        try writeHosted(
-            WindowPreview(size: size) {
-                settingsPreview(
-                    config: groqConfig,
-                    providers: providers,
-                    tab: 1
+        // The About page with the update row in each state it can hold. The
+        // states are handed to the view rather than asked for, so a render
+        // never reaches GitHub.
+        let aboutStates: [(name: String, update: AboutUpdateState)] = [
+            ("settings-about-update-current.png", .upToDate),
+            ("settings-about-update-available.png", .available(version: "2.0", page: nil)),
+            ("settings-about-update-unreachable.png", .unreachable),
+        ]
+        for state in aboutStates {
+            try writeHosted(
+                WindowPreview(size: tallSize) {
+                    settingsPreview(
+                        config: sampleConfig,
+                        providers: providers,
+                        tab: 4,
+                        aboutUpdate: state.update,
+                        height: tallSize.height
+                    )
+                },
+                size: tallSize,
+                scheme: .light,
+                to: directory.appendingPathComponent(state.name)
+            )
+        }
+
+        // A service with a stored key: the key field is empty, the delete
+        // button is present and the status chip reads Connected.
+        let connectedProviders = MenuBuilder.providerRows(config: sampleConfig) { _ in true }
+        let sampleModels = [
+            AvailableModel(id: "gpt-4o-transcribe", name: "gpt-4o-transcribe"),
+            AvailableModel(id: "gpt-4o-mini-transcribe", name: "gpt-4o-mini-transcribe"),
+            AvailableModel(id: "whisper-1", name: "whisper-1"),
+        ]
+        for scheme in [ColorScheme.light, ColorScheme.dark] {
+            var config = sampleConfig
+            var openAISettings = config.settings(for: ProviderIdentifier.openAI)
+            openAISettings.model = "gpt-4o-transcribe"
+            config.providers[ProviderIdentifier.openAI] = openAISettings
+            if scheme == .dark {
+                config.appearance = .dark
+            }
+            let suffix = scheme == .dark ? "-dark" : ""
+            try writeHosted(
+                WindowPreview(size: tallSize) {
+                    settingsPreview(
+                        config: config,
+                        providers: connectedProviders,
+                        tab: 1,
+                        models: sampleModels,
+                        height: tallSize.height
+                    )
+                },
+                size: tallSize,
+                scheme: scheme,
+                to: directory.appendingPathComponent("settings-provider-connected\(suffix).png")
+            )
+        }
+
+        // One page per engine, in both appearances. Every service has its own
+        // set of rows, so a page that is only ever rendered for the first row
+        // of the picker proves nothing about the other seven.
+        for preset in ProviderPreset.all {
+            for scheme in [ColorScheme.light, ColorScheme.dark] {
+                var config = sampleConfig
+                preset.apply(to: &config)
+                config.provider = preset.providerID
+                if scheme == .dark {
+                    config.appearance = .dark
+                }
+                let suffix = scheme == .dark ? "-dark" : ""
+                let name = "settings-provider-" + preset.id + suffix + ".png"
+                try writeHosted(
+                    WindowPreview(size: size) {
+                        settingsPreview(
+                            config: config,
+                            providers: providers,
+                            tab: 1
+                        )
+                    },
+                    size: size,
+                    scheme: scheme,
+                    to: directory.appendingPathComponent(name)
                 )
-            },
-            size: size,
-            scheme: .light,
-            to: directory.appendingPathComponent("settings-provider-" + ["gr", "oq"].joined() + ".png")
-        )
+            }
+        }
     }
 
     private static func settingsPreview(
         config: DotConfig,
         providers: [MenuProvider],
         tab: Int,
-        providerMenuOpen: Bool? = nil
+        aboutUpdate: AboutUpdateState? = nil,
+        models: [AvailableModel]? = nil,
+        height: CGFloat? = nil
     ) -> some View {
         SettingsView(
             config: Binding.constant(config),
@@ -401,11 +469,13 @@ enum UIPreview {
             onChangeShortcut: {},
             onChangePasteShortcut: {},
             onOpenWelcome: {},
-            providerMenuOpen: providerMenuOpen
+            aboutUpdatePreview: aboutUpdate,
+            modelPreview: models
         )
         .environment(\.settingsHeadless, true)
         .environment(\.settingsDefaultInputUID, "DotRenderBuiltInMicrophone")
         .environment(\.settingsVersionOverride, "1.0")
+        .environment(\.settingsHeightOverride, height)
     }
 
     /// Renders the history window into `directory`.
@@ -461,6 +531,61 @@ enum UIPreview {
             scheme: .dark,
             to: directory.appendingPathComponent("history-dark.png")
         )
+    }
+
+    /// Renders the palette into `directory`.
+    ///
+    /// Four states: the recent dictations with their ages, a search that
+    /// matches, a search that matches nothing, and the empty palette a fresh
+    /// install summons. The palette floats on paper, so it is drawn in both
+    /// appearances: the second one is where a paper surface can go wrong.
+    static func renderPalette(to directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let samples = SampleTranscripts.entries(now: now)
+        let states: [(name: String, entries: [HistoryStore.Entry], query: String, scheme: ColorScheme)] = [
+            ("palette.png", samples, "", .light),
+            ("palette-search.png", samples, "tomorrow", .light),
+            ("palette-empty.png", [], "", .light),
+            ("palette-no-matches.png", samples, "xylophone", .light),
+            ("palette-dark.png", samples, "", .dark),
+        ]
+        for state in states {
+            let model = PaletteModel(now: { now })
+            model.present(entries: state.entries)
+            model.query = state.query
+            try writeHosted(
+                PaletteSheet(model: model),
+                size: PaletteController.panelSize,
+                scheme: state.scheme,
+                to: directory.appendingPathComponent(state.name)
+            )
+        }
+    }
+
+    /// The palette with its window chrome, so the PNG reads like the panel.
+    private struct PaletteSheet: View {
+        @ObservedObject var model: PaletteModel
+
+        var body: some View {
+            PaletteView(model: model, insert: { _ in }, copy: { _ in })
+                .padding(10)
+                .background(Color.clear)
+        }
+    }
+
+    /// The sample transcripts the palette and the history renders share.
+    private enum SampleTranscripts {
+        static func entries(now: Date) -> [HistoryStore.Entry] {
+            [
+                (text: "Meeting notes: ship the history window on Thursday, then walk through the empty, filtered and no-match states with Priya before the Friday sync.", age: 900.0),
+                (text: "Remind me to water the fig tree tomorrow and pick up oat milk on the way home.", age: 5_400.0),
+                (text: "The retry loop should stop after three attempts and show the provider error.", age: 90_000.0),
+                (text: "Quick thought: the onboarding copy is lovely, but step two could be one sentence shorter.", age: 400_000.0),
+                (text: "Book the dentist for tomorrow morning; the first week of November works too.", age: 900_000.0),
+            ].map { HistoryStore.Entry(text: $0.text, addedAt: now.addingTimeInterval(-$0.age)) }
+        }
     }
 
     private static func writeHistory(
@@ -589,6 +714,10 @@ enum UIPreview {
             rootView: view
                 .frame(width: size.width, height: size.height)
                 .environment(\.colorScheme, scheme)
+                // The bitmap below is two times the view, so the view has to
+                // resolve its hairlines at that scale: an offscreen hosting view
+                // has no screen to ask.
+                .environment(\.displayScale, 2)
         )
         hosting.frame = NSRect(origin: .zero, size: size)
         hosting.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)

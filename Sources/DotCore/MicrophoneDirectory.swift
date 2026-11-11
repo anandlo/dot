@@ -46,7 +46,7 @@ public struct MicrophoneOption: Equatable, Sendable {
 /// without a microphone, an audio engine or a permission prompt.
 public enum MicrophoneDirectory {
     /// The row that hands the choice back to the system.
-    public static let systemDefaultName = "System Default"
+    public static let systemDefaultName = "System default"
 
     /// The row for a configured device Dot cannot offer right now.
     ///

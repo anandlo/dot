@@ -54,8 +54,6 @@ enum DotTheme {
     static let cardBorder = adaptive(light: white(0.72), dark: white(0.10))
     /// The border of a selected card.
     static let cardBorderSelected = adaptive(light: black(0.30), dark: white(0.34))
-    /// The card shadow.
-    static let cardShadow = adaptive(light: black(0.07), dark: black(0.32))
 
     /// The fill of a text field.
     static let fieldFill = adaptive(light: white(0.62), dark: white(0.06))
@@ -116,8 +114,9 @@ enum DotTheme {
     ///
     /// The system green, stepped per appearance: the light stop is the green
     /// that sits calmly on warm paper, the dark stop the slightly brighter one
-    /// that holds on warm charcoal. Green is the only colour in the app that
-    /// means a state, so it is not spent on anything decorative.
+    /// that holds on warm charcoal. A switch is the one control whose colour
+    /// says a state, so it keeps the colour the platform uses for that state
+    /// rather than borrowing the action colour.
     static let switchOn = adaptive(light: ns(0.204, 0.780, 0.349), dark: ns(0.188, 0.820, 0.345))
     /// The lit stop at the top of the on track, which keeps it from reading as
     /// a flat rectangle of colour.
@@ -135,6 +134,10 @@ enum DotTheme {
 
     /// The knob is porcelain in both appearances: the track carries the state.
     static let switchKnob = Color.white
+    /// The hairline that separates the porcelain knob from its track. On a lit
+    /// track the two light shapes would otherwise touch and the knob would lose
+    /// its edge.
+    static let switchKnobEdge = adaptive(light: black(0.16), dark: black(0.34))
     /// The shadow that seats the knob on its track.
     static let switchKnobShadow = adaptive(light: black(0.26), dark: black(0.55))
 
@@ -163,11 +166,13 @@ enum DotTheme {
     /// The quiet button border under the pointer.
     static let secondaryBorderHover = adaptive(light: black(0.30), dark: white(0.26))
 
-    /// The fill of a selected indicator: the same green a switch uses when it is
+    /// The fill of a selected indicator: the same amber a switch uses when it is
     /// on, so "chosen" and "on" are one colour rather than two.
     static let selectionFill = switchOn
-    /// The mark drawn on a selected indicator.
-    static let onSelection = Color.white
+    /// The mark drawn on a selected indicator. Graphite, not white: white on
+    /// amber is barely two to one, and the check is the smallest glyph in the
+    /// window.
+    static let onSelection = onAction
 
     /// The focus ring around a control.
     static let focusRing = adaptive(light: black(0.45), dark: white(0.60))
@@ -198,7 +203,7 @@ enum DotTheme {
     // MARK: - Geometry and type
 
     static let windowCorner: CGFloat = 22
-    static let cardCorner: CGFloat = 16
+    static let cardCorner: CGFloat = 10
     static let sidebarWidth: CGFloat = 198
     static let headerHeight: CGFloat = 64
     static let windowPadding: CGFloat = 24
@@ -233,6 +238,14 @@ enum DotTheme {
     static let bodyFont = Font.system(size: 13, weight: .regular)
     static let smallFont = Font.system(size: 11.5, weight: .regular)
     static let labelFont = Font.system(size: 10.5, weight: .semibold)
+    /// The name of a setting.
+    static let rowTitleFont = Font.system(size: 12.5, weight: .medium)
+    /// The line under a setting that says what it does. One size everywhere:
+    /// the pages used to mix 10.5 and 11, which read as two ranks of the same
+    /// thing.
+    static let rowDetailFont = Font.system(size: 11, weight: .regular)
+    /// The caps label above a field or a card.
+    static let fieldLabelFont = Font.system(size: 9.5, weight: .semibold)
 
     // MARK: - Colour helpers
 
@@ -258,10 +271,6 @@ enum DotTheme {
     private static func black(_ alpha: CGFloat) -> NSColor {
         NSColor.black.withAlphaComponent(alpha)
     }
-
-    private static func indigoAlpha(_ alpha: CGFloat) -> NSColor {
-        NSColor(srgbRed: 0.122, green: 0.176, blue: 0.361, alpha: alpha)
-    }
 }
 
 /// The warm paper behind every window.
@@ -284,19 +293,20 @@ struct DotPaper: View {
     }
 }
 
-/// A raised sheet on the paper.
+/// A quiet sheet on the paper.
+///
+/// The card is a surface, not an object on the page: a hairline border and a
+/// translucent fill, no drop shadow. The horizontal inset belongs to the card;
+/// the vertical inset is small because every row brings its own padding, and a
+/// row that carried a second inset would move the divider away from the text.
 struct DotCard<Content: View>: View {
-    var padding: CGFloat = 16
     @ViewBuilder var content: Content
 
     var body: some View {
         content
-            .padding(padding)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
             .background(
-                // The border is drawn behind the content, not over it. A list
-                // that opens out of a card is drawn over the card's own edge,
-                // and a border in an overlay drew a hairline straight across
-                // it: the faint line that ran through the provider list.
                 RoundedRectangle(cornerRadius: DotTheme.cardCorner, style: .continuous)
                     .fill(DotTheme.cardFill)
                     .overlay(
@@ -304,8 +314,6 @@ struct DotCard<Content: View>: View {
                             .strokeBorder(DotTheme.cardBorder, lineWidth: 1)
                     )
             )
-            .shadow(color: DotTheme.cardShadow, radius: 12, x: 0, y: 6)
-            .dotSelectLayer()
     }
 }
 
@@ -392,10 +400,10 @@ private struct DotPrimaryButtonBody: View {
             .padding(.horizontal, 18)
             .padding(.vertical, 8)
             .background(
-                Capsule(style: .continuous)
+                Capsule(style: .circular)
                     .fill(fill)
                     .overlay(
-                        Capsule(style: .continuous)
+                        Capsule(style: .circular)
                             .fill(
                                 LinearGradient(
                                     colors: [Color.white.opacity(0.28), .clear],
@@ -408,7 +416,7 @@ private struct DotPrimaryButtonBody: View {
                         // The rim is a lit top edge, not a ring around the whole
                         // capsule: a full ring bled a hairline of white onto the
                         // paper at the two sides of the button.
-                        Capsule(style: .continuous)
+                        Capsule(style: .circular)
                             .strokeBorder(
                                 LinearGradient(
                                     colors: [DotTheme.actionEdge, .clear],
@@ -464,10 +472,10 @@ private struct DotSecondaryButtonBody: View {
             .padding(.horizontal, 15)
             .padding(.vertical, 8)
             .background(
-                Capsule(style: .continuous)
+                Capsule(style: .circular)
                     .fill(isHovering && isEnabled ? DotTheme.secondaryFillHover : DotTheme.secondaryFill)
                     .overlay(
-                        Capsule(style: .continuous)
+                        Capsule(style: .circular)
                             .strokeBorder(
                                 isHovering && isEnabled
                                     ? DotTheme.secondaryBorderHover
@@ -500,7 +508,10 @@ struct DotKeycap: View {
             .font(.system(size: 12, weight: .medium, design: .monospaced))
             .foregroundStyle(DotTheme.ink)
             .padding(.horizontal, 9)
-            .padding(.vertical, 5)
+            // The same height as the quiet button beside it: a keycap and a
+            // Change button are one row, and two heights in one row read as a
+            // mistake rather than as two weights of control.
+            .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(DotTheme.keycapFill)
@@ -648,27 +659,30 @@ private struct DotSwitchTrack: View {
 
     var body: some View {
         ZStack(alignment: isOn ? .trailing : .leading) {
-            Capsule(style: .continuous)
+            Capsule(style: .circular)
                 .fill(DotTheme.switchOff)
                 .overlay(
-                    Capsule(style: .continuous)
+                    Capsule(style: .circular)
                         .strokeBorder(DotTheme.switchOffEdge, lineWidth: 0.75)
                 )
 
-            Capsule(style: .continuous)
+            Capsule(style: .circular)
                 .fill(onFill)
                 .overlay(
-                    Capsule(style: .continuous)
+                    Capsule(style: .circular)
                         .strokeBorder(DotTheme.switchOnEdge, lineWidth: 0.75)
                 )
                 .opacity(isOn ? 1 : 0)
 
-            Capsule(style: .continuous)
+            Capsule(style: .circular)
                 .fill(DotTheme.switchHoverLift)
                 .opacity(hovering ? 1 : 0)
 
             Circle()
                 .fill(DotTheme.switchKnob)
+                .overlay(
+                    Circle().strokeBorder(DotTheme.switchKnobEdge, lineWidth: 0.75)
+                )
                 .shadow(color: DotTheme.switchKnobShadow, radius: 2, x: 0, y: 1)
                 .frame(width: knobWidth, height: knobHeight)
                 .padding(Self.inset)
@@ -678,9 +692,9 @@ private struct DotSwitchTrack: View {
         .frame(width: Self.width, height: Self.height)
         .animation(trackFade, value: isOn)
         .animation(.easeOut(duration: 0.16), value: hovering)
-        .contentShape(Capsule(style: .continuous))
+        .contentShape(Capsule(style: .circular))
         .overlay(
-            Capsule(style: .continuous)
+            Capsule(style: .circular)
                 .strokeBorder(focused ? DotTheme.focusRing : Color.clear, lineWidth: 1.5)
                 .padding(-2.5)
                 .animation(.easeOut(duration: 0.12), value: focused)

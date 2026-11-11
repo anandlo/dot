@@ -43,14 +43,14 @@ final class MenuActionTests: XCTestCase {
         let menu = MenuBuilder.build(state: makeState(), target: target)
 
         let expected: [(title: String, action: MenuAction)] = [
-            ("Start Recording", .toggleRecording),
-            ("Paste Last Transcript", .pasteLast),
-            ("Copy Last Transcript", .copyLast),
-            ("Auto-Paste", .toggleAutoPaste),
-            ("Launch at Login", .toggleLaunchAtLogin),
+            ("Start recording", .toggleRecording),
+            ("Paste last transcript", .pasteLast),
+            ("Copy last transcript", .copyLast),
+            ("Auto-paste", .toggleAutoPaste),
+            ("Launch at login", .toggleLaunchAtLogin),
             ("Settings…", .openSettings),
-            ("Open Log in Finder", .openLog),
-            ("Check for Updates…", .checkForUpdates),
+            ("Open log in Finder", .openLog),
+            ("Check for updates…", .checkForUpdates),
             ("About Dot", .showAbout),
             ("Quit Dot", .quit),
         ]
@@ -82,7 +82,7 @@ final class MenuActionTests: XCTestCase {
         var received: MenuAction?
         target.handler = { received = $0 }
         let menu = MenuBuilder.build(state: makeState(), target: target)
-        guard let index = menu.items.firstIndex(where: { $0.title == "Paste Last Transcript" }) else {
+        guard let index = menu.items.firstIndex(where: { $0.title == "Paste last transcript" }) else {
             return XCTFail("the Paste Last Transcript item is missing")
         }
 
@@ -96,7 +96,7 @@ final class MenuActionTests: XCTestCase {
         var received: MenuAction?
         target.handler = { received = $0 }
         let menu = MenuBuilder.build(state: makeState(), target: target)
-        guard let recent = menu.items.first(where: { $0.title == "Recent Transcripts" }),
+        guard let recent = menu.items.first(where: { $0.title == "Recent transcripts" }),
               let submenu = recent.submenu,
               let transcript = submenu.items.first(where: { $0.title == "The meeting is at four." }),
               let action = transcript.action

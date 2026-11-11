@@ -191,6 +191,21 @@ struct HUDView: View {
                     .scrollBounceBehavior(.basedOnSize)
                     .defaultScrollAnchor(.bottom)
                     .frame(height: HUDState.liveHeight - HUDState.headerHeight)
+                    // The body follows the end of the sentence, so it is always
+                    // mid line at the foot of the card. Without the fade the
+                    // card ends in the bottom half of a line of text, which is
+                    // the one thing a finished surface cannot look like.
+                    .mask(alignment: .top) {
+                        VStack(spacing: 0) {
+                            Rectangle()
+                            LinearGradient(
+                                colors: [.black, .black.opacity(0)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            .frame(height: 10)
+                        }
+                    }
                     .onAppear { followLiveText(proxy) }
                     .onChange(of: model.liveText) { _, _ in followLiveText(proxy) }
                     .onChange(of: model.cardSize) { _, _ in followLiveText(proxy) }
@@ -398,17 +413,34 @@ struct HUDView: View {
     /// It used to say "Hold <key> to talk", which told the user something they
     /// had just configured. It now names the active service and a masked hint of
     /// the key, which is the thing they cannot otherwise see.
+    /// Whether the service the card names is a host rather than a name.
+    private var isHostLabel: Bool {
+        model.activeService.contains(".") && !model.activeService.contains(" ")
+    }
+
     private func ready(shortcut: String) -> some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(model.activeService.isEmpty ? "READY" : model.activeService.uppercased())
-                    .font(HUDTheme.labelFont)
-                    .tracking(HUDTheme.labelTracking)
-                    .foregroundStyle(HUDTheme.accent)
-                    .lineLimit(1)
+                // A shipped service is a name and reads as one; a hand-filled
+                // endpoint is a host, and a host set in caps with letter
+                // spacing reads as an error code. Naming the key line "Key"
+                // says what the eight characters under the name are: the card
+                // used to print an unexplained fragment of the secret.
+                if isHostLabel {
+                    Text(model.activeService)
+                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(HUDTheme.accent)
+                        .lineLimit(1)
+                } else {
+                    Text(model.activeService.isEmpty ? "READY" : model.activeService.uppercased())
+                        .font(HUDTheme.labelFont)
+                        .tracking(HUDTheme.labelTracking)
+                        .foregroundStyle(HUDTheme.accent)
+                        .lineLimit(1)
+                }
 
                 if !model.activeKeyHint.isEmpty {
-                    Text(model.activeKeyHint)
+                    Text("Key \(model.activeKeyHint)")
                         .font(.system(size: 11.5, weight: .medium, design: .monospaced))
                         .foregroundStyle(HUDTheme.ink2)
                         .lineLimit(1)
@@ -531,7 +563,7 @@ private struct GrammarChip: View {
     let wasLong: Bool
 
     var body: some View {
-        Text(wasLong ? "\(title) · long" : title)
+        Text(wasLong ? "\(title) · length kept" : title)
             .font(HUDTheme.labelFont)
             .tracking(1.0)
             .foregroundStyle(HUDTheme.ink2)
@@ -539,15 +571,15 @@ private struct GrammarChip: View {
             .padding(.horizontal, 7)
             .frame(height: 18)
             .background(
-                Capsule(style: .continuous)
+                Capsule(style: .circular)
                     .fill(HUDTheme.actionFill)
             )
             .overlay(
-                Capsule(style: .continuous)
+                Capsule(style: .circular)
                     .strokeBorder(HUDTheme.actionBorder, lineWidth: 1)
             )
             .accessibilityLabel(
-                Text(wasLong ? "Rewritten for \(title), and longer than usual" : "Rewritten for \(title)")
+                Text(wasLong ? "Formatting: \(title). The words were not shortened." : "Formatting: \(title)")
             )
     }
 }
@@ -665,17 +697,17 @@ private struct HUDMessageActionButton: View {
                 .padding(.horizontal, HUDTheme.messageActionHPadding)
                 .frame(height: HUDTheme.messageActionHeight)
                 .background(
-                    Capsule(style: .continuous)
+                    Capsule(style: .circular)
                         .fill(hovering ? HUDTheme.actionFillHover : HUDTheme.actionFill)
                 )
                 .overlay(
-                    Capsule(style: .continuous)
+                    Capsule(style: .circular)
                         .strokeBorder(
                             hovering ? HUDTheme.actionBorderHover : HUDTheme.actionBorder,
                             lineWidth: 0.75
                         )
                 )
-                .contentShape(Capsule(style: .continuous))
+                .contentShape(Capsule(style: .circular))
                 .animation(
                     reduceMotion ? nil : .easeOut(duration: 0.14),
                     value: hovering
@@ -756,7 +788,7 @@ private struct HUDActionTooltip: View {    let action: HUDAction
         .padding(.horizontal, 9)
         .padding(.vertical, 4)
         .background(
-            Capsule(style: .continuous)
+            Capsule(style: .circular)
                 .fill(
                     LinearGradient(
                         colors: [
@@ -769,7 +801,7 @@ private struct HUDActionTooltip: View {    let action: HUDAction
                 )
         )
         .overlay(
-            Capsule(style: .continuous)
+            Capsule(style: .circular)
                 .strokeBorder(
                     LinearGradient(
                         colors: [
@@ -970,8 +1002,12 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
         context.coordinator.applyAttributedText(text, to: textView)
         scrollView.documentView = textView
 
+        // The card opens on the first word. It used to scroll to its own end
+        // as soon as it appeared, so the first line of every transcript that
+        // did not fit was sliced in half by the top edge of the card, and the
+        // reader started in the middle of a paragraph.
         DispatchQueue.main.async {
-            Self.scrollToBottomIfNeeded(scrollView: scrollView, textView: textView)
+            Self.scrollToStart(scrollView: scrollView)
         }
         return scrollView
     }
@@ -985,14 +1021,25 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
             context.coordinator.applyAttributedText(text, to: textView)
             if isEditing {
                 textView.selectedRanges = selectedRanges
-            } else {
+            } else if context.coordinator.hasShownText {
+                // Words that arrive while the card is open are the reason to
+                // follow the end; a sentence that was already complete is read
+                // from its start.
                 Self.scrollToBottomIfNeeded(scrollView: scrollView, textView: textView)
+            } else {
+                Self.scrollToStart(scrollView: scrollView)
             }
+            context.coordinator.hasShownText = !text.isEmpty
             context.coordinator.isUpdatingProgrammatically = false
         }
         if !isEditing, textView.window?.firstResponder === textView {
             textView.window?.makeFirstResponder(nil)
         }
+    }
+
+    private static func scrollToStart(scrollView: NSScrollView) {
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     private static func scrollToBottomIfNeeded(scrollView: NSScrollView, textView: NSTextView) {
@@ -1013,6 +1060,10 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: HUDInlineTranscriptView
         var isUpdatingProgrammatically = false
+        /// Whether the card has already drawn text. The first text a transcript
+        /// card receives is the whole take, and it is read from its first
+        /// word; only text that arrives after that follows the end of the card.
+        var hasShownText = false
 
         init(_ parent: HUDInlineTranscriptView) {
             self.parent = parent

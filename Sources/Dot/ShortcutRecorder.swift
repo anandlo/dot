@@ -33,7 +33,7 @@ final class ShortcutRecorder {
     var inUse: [Hotkey] = []
 
     /// The title of the window.
-    var title = "Set Shortcut"
+    var title = "Set shortcut"
 
     /// Opens the window.
     func begin() {
@@ -48,14 +48,14 @@ final class ShortcutRecorder {
         window.isReleasedWhenClosed = false
         window.center()
 
-        let caption = NSTextField(labelWithString: "Press the new shortcut")
+        let caption = NSTextField(labelWithString: "New shortcut")
         caption.font = NSFont.systemFont(ofSize: 15, weight: .semibold)
         caption.textColor = NSColor.labelColor
 
         hintLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
         hintLabel.textColor = NSColor.secondaryLabelColor
         hintLabel.alignment = .center
-        hintLabel.stringValue = "⌘, ⌥ or ⌃ is required — a function key may stand alone. Esc cancels."
+        hintLabel.stringValue = "Requires ⌘, ⌥ or ⌃. A function key can be used alone."
 
         let capture = ShortcutCaptureView()
         capture.onCombination = { [weak self] event in

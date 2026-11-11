@@ -283,8 +283,8 @@ struct PaletteView: View {
                 .foregroundStyle(DotTheme.ink)
             Text(
                 model.query.isEmpty
-                    ? "Every dictation shows up here."
-                    : "Try another word, or clear the search."
+                    ? "Recent dictations appear here."
+                    : "Nothing matches this search."
             )
             .font(DotTheme.smallFont)
             .foregroundStyle(DotTheme.ink3)
@@ -296,9 +296,14 @@ struct PaletteView: View {
 
     private var footer: some View {
         HStack(spacing: 14) {
-            hint(key: "↑↓", action: "Move")
-            hint(key: "Return", action: "Insert")
-            hint(key: "Shift Return", action: "Copy")
+            // The key hints describe rows, so an empty palette shows none:
+            // three keys that would do nothing are the loudest thing in a list
+            // with nothing in it.
+            if !model.rows.isEmpty {
+                hint(key: "↑↓", action: "Move")
+                hint(key: "Return", action: "Insert")
+                hint(key: "⇧ Return", action: "Copy")
+            }
             Spacer(minLength: 0)
             Text("Newest first")
                 .font(.system(size: 10))
@@ -314,6 +319,16 @@ struct PaletteView: View {
             Text(key)
                 .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                 .foregroundStyle(DotTheme.ink2)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(DotTheme.keycapFill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .strokeBorder(DotTheme.keycapBorder, lineWidth: 0.5)
+                )
             Text(action)
                 .font(.system(size: 10))
                 .foregroundStyle(DotTheme.ink3)

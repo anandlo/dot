@@ -200,25 +200,10 @@ private struct TourKeys: View {
                 TourKeycap(symbol: symbol, index: index, pressed: pressed)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .fill(DotTheme.cardFill)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .strokeBorder(
-                            pressed ? DotTheme.amber.opacity(0.40) : DotTheme.cardBorder,
-                            lineWidth: 1
-                        )
-                )
-                .shadow(
-                    color: pressed ? DotTheme.amber.opacity(0.18) : DotTheme.cardShadow,
-                    radius: pressed ? 10 : 6,
-                    x: 0,
-                    y: pressed ? 2 : 4
-                )
-        )
+        // The three keys stand on the paper by themselves. They used to sit on
+        // a second card that carried its own border and shadow, so the scene
+        // drew a rounded box inside a rounded box and the keys stopped reading
+        // as keys.
         .animation(.spring(response: 0.28, dampingFraction: 0.72), value: pressed)
     }
 
@@ -440,7 +425,7 @@ private struct PasteScene: View {
                             .strokeBorder(DotTheme.cardBorder, lineWidth: 1)
                     )
             )
-            .shadow(color: DotTheme.cardShadow, radius: 8, y: 3)
+            .shadow(color: Color.black.opacity(0.22), radius: 8, y: 3)
 
             TourKeys(shortcut: shortcut, pressed: isPressed)
         }
@@ -515,7 +500,13 @@ struct WelcomeTourPage: View {
 
             VStack(spacing: 8) {
                 Text(step.title(shortcut: shortcutLabel, mode: recordingMode))
-                    .font(.system(size: 22, weight: .semibold))
+                    // The same face as every other title in the app. The tour
+                    // used to set its heading in plain SF while Settings and
+                    // About set theirs in the serif display face, so the first
+                    // thing a new person saw was the one screen that did not
+                    // look like the product.
+                    .font(DotTheme.displayFont(25))
+                    .tracking(-0.3)
                     .foregroundStyle(DotTheme.ink)
                     .accessibilityAddTraits(.isHeader)
                 Text(step.detail(mode: recordingMode))
@@ -554,7 +545,7 @@ struct WelcomeTourPage: View {
                         Button("Back") { onBack() }
                             .buttonStyle(DotSecondaryButtonStyle())
                     }
-                    Button(step == .paste ? "Continue" : "Next") { onNext() }
+                    Button("Continue") { onNext() }
                         .buttonStyle(DotPrimaryButtonStyle())
                         .keyboardShortcut(.defaultAction)
                 }

@@ -11,7 +11,11 @@ import Foundation
 /// written before the age existed still loads: its entries simply have no date,
 /// and the palette says nothing rather than inventing one.
 public enum HistoryStore {
-    /// How many transcripts are kept.
+    /// How many transcripts are kept when no configuration names a number.
+    ///
+    /// The store still owns a bound, because a file has to be bounded even when
+    /// no configuration was read yet; ``DotConfig/historyLimit`` is what the
+    /// app passes in, and the page writes it.
     public static let limit = 20
 
     /// One remembered transcript.
@@ -43,17 +47,21 @@ public enum HistoryStore {
     /// earlier build wrote, a list of strings. A file that is neither gives an
     /// empty history rather than an error: a broken file must never stop a
     /// recording.
-    public static func loadEntries(from url: URL = defaultURL()) -> [Entry] {
+    public static func loadEntries(
+        from url: URL = defaultURL(),
+        limit: Int = HistoryStore.limit
+    ) -> [Entry] {
         guard let data = try? Data(contentsOf: url) else { return [] }
         // A file an older build wrote is still `0644`. Reading it is the moment
         // to restrict it, so the words stop being readable by every other
         // account on the Mac.
         SecureFile.tighten(url)
+        let bound = max(1, limit)
         if let entries = try? JSONDecoder().decode([Entry].self, from: data) {
-            return Array(entries.prefix(limit))
+            return Array(entries.prefix(bound))
         }
         if let texts = try? JSONDecoder().decode([String].self, from: data) {
-            return Array(texts.prefix(limit).map { Entry(text: $0) })
+            return Array(texts.prefix(bound).map { Entry(text: $0) })
         }
         return []
     }
@@ -63,8 +71,12 @@ public enum HistoryStore {
     /// The file holds what was dictated, so it is written `0600` in a folder
     /// that is `0700`. It is replaced atomically: a crash cannot leave a
     /// truncated history behind.
-    public static func saveEntries(_ entries: [Entry], to url: URL = defaultURL()) {
-        let trimmed = Array(entries.prefix(limit))
+    public static func saveEntries(
+        _ entries: [Entry],
+        to url: URL = defaultURL(),
+        limit: Int = HistoryStore.limit
+    ) {
+        let trimmed = Array(entries.prefix(max(1, limit)))
         do {
             let data = try JSONEncoder().encode(trimmed)
             try SecureFile.write(data, to: url)
@@ -74,8 +86,8 @@ public enum HistoryStore {
     }
 
     /// Reads the history as text only.
-    public static func load(from url: URL = defaultURL()) -> [String] {
-        loadEntries(from: url).map(\.text)
+    public static func load(from url: URL = defaultURL(), limit: Int = HistoryStore.limit) -> [String] {
+        loadEntries(from: url, limit: limit).map(\.text)
     }
 
     /// Writes the history as text only.
@@ -83,8 +95,8 @@ public enum HistoryStore {
     /// An entry that is already in the file keeps the date it had; a new one
     /// gets `now`, because the caller that only has strings cannot know better
     /// and a missing date would make a fresh transcript look old.
-    public static func save(_ items: [String], to url: URL = defaultURL()) {
-        let existing = loadEntries(from: url)
+    public static func save(_ items: [String], to url: URL = defaultURL(), limit: Int = HistoryStore.limit) {
+        let existing = loadEntries(from: url, limit: limit)
         var dates: [String: Date] = [:]
         for entry in existing {
             guard let date = entry.addedAt else { continue }
@@ -92,7 +104,7 @@ public enum HistoryStore {
         }
         let now = Date()
         let entries = items.map { Entry(text: $0, addedAt: dates[$0] ?? now) }
-        saveEntries(entries, to: url)
+        saveEntries(entries, to: url, limit: limit)
     }
 
     /// The history with one more transcript at the front, and its date.
@@ -104,22 +116,27 @@ public enum HistoryStore {
     public static func adding(
         _ text: String,
         at date: Date = Date(),
-        to entries: [Entry]
+        to entries: [Entry],
+        limit: Int = HistoryStore.limit
     ) -> [Entry] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return entries }
         let existing = entries.first { $0.text == trimmed }
         var next = entries.filter { $0.text != trimmed }
         next.insert(Entry(text: trimmed, addedAt: existing?.addedAt ?? date), at: 0)
-        return Array(next.prefix(limit))
+        return Array(next.prefix(max(1, limit)))
     }
 
     /// The history with one more transcript at the front.
-    public static func adding(_ text: String, to items: [String]) -> [String] {
+    public static func adding(
+        _ text: String,
+        to items: [String],
+        limit: Int = HistoryStore.limit
+    ) -> [String] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return items }
         var next = items.filter { $0 != trimmed }
         next.insert(trimmed, at: 0)
-        return Array(next.prefix(limit))
+        return Array(next.prefix(max(1, limit)))
     }
 }

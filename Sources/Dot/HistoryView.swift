@@ -246,12 +246,6 @@ struct HistoryView: View {
                         lineWidth: isFocused ? 1.5 : 1
                     )
             )
-            .shadow(
-                color: DotTheme.cardShadow,
-                radius: isHovered ? 12 : 8,
-                x: 0,
-                y: isHovered ? 5 : 3
-            )
             .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -336,7 +330,12 @@ struct HistoryView: View {
                 .font(DotTheme.sectionFont)
                 .foregroundStyle(DotTheme.ink)
 
-            Text("Press \(recordHotkey.label) to record.")
+            // The empty state states the fact and stops. The shortcut that
+            // starts a recording is taught once, in the welcome tour, and the
+            // menu carries it on the item that runs it; a third copy here was
+            // the same sentence in a place where the person was looking for
+            // something they had already recorded.
+            Text("Finished recordings appear here.")
                 .font(DotTheme.smallFont)
                 .foregroundStyle(DotTheme.ink3)
                 .padding(.top, 5)
@@ -344,7 +343,7 @@ struct HistoryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("No transcripts yet")
-        .accessibilityHint("Press \(recordHotkey.spelledOut) to record.")
+        .accessibilityHint("Transcripts appear here once a recording is finished.")
     }
 
     private var noMatches: some View {
@@ -366,7 +365,7 @@ struct HistoryView: View {
                 .foregroundStyle(DotTheme.ink)
                 .padding(.top, 14)
 
-            Text("Try another word, or clear the search.")
+            Text("Nothing matches this search.")
                 .font(DotTheme.smallFont)
                 .foregroundStyle(DotTheme.ink3)
                 .padding(.top, 5)
@@ -374,7 +373,7 @@ struct HistoryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("No matches")
-        .accessibilityHint("Try another word, or clear the search.")
+        .accessibilityHint("No transcript contains these words.")
     }
 
     // MARK: - Footer
@@ -387,14 +386,13 @@ struct HistoryView: View {
                 Button {
                     onClear()
                 } label: {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(history.isEmpty ? DotTheme.ink3.opacity(0.35) : DotTheme.coral)
-                            .frame(width: 5, height: 5)
-                        Text("Clear history…")
-                    }
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(history.isEmpty ? DotTheme.ink3 : DotTheme.ink)
+                    Text("Clear history…")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(
+                            history.isEmpty
+                                ? DotTheme.ink3
+                                : DotTheme.coral
+                        )
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
                     .background(
@@ -445,7 +443,11 @@ struct HistoryView: View {
     }
 
     private var countText: String {
-        history.count == 1 ? "1 transcript" : "\(history.count) transcripts"
+        switch history.count {
+        case 0: "No transcripts"
+        case 1: "1 transcript"
+        default: "\(history.count) transcripts"
+        }
     }
 
     private var entries: [Entry] {

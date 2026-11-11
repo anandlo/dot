@@ -78,8 +78,7 @@ public enum ProviderRegistry {
                 temperature: settings.temperature,
                 prompt: settings.prompt,
                 responseFormat: settings.responseFormat,
-                timestampsGranularity: settings.timestampsGranularity,
-                zeroDataRetention: settings.zeroDataRetention ?? true
+                timestampsGranularity: settings.timestampsGranularity
             )
         case ProviderIdentifier.groq:
             let settings = config.settings(for: id)
@@ -90,8 +89,7 @@ public enum ProviderRegistry {
                 temperature: settings.temperature,
                 prompt: settings.prompt,
                 responseFormat: settings.responseFormat ?? "json",
-                timestampsGranularity: settings.timestampsGranularity,
-                zeroDataRetention: settings.zeroDataRetention ?? true
+                timestampsGranularity: settings.timestampsGranularity
             )
         case ProviderIdentifier.azure:
             let settings = config.settings(for: id)
@@ -164,8 +162,7 @@ public enum ProviderRegistry {
                     temperature: settings.temperature,
                     prompt: settings.prompt,
                     responseFormat: settings.responseFormat,
-                    timestampsGranularity: settings.timestampsGranularity,
-                    zeroDataRetention: settings.zeroDataRetention ?? true
+                    timestampsGranularity: settings.timestampsGranularity
                 )
             }
             return XiaomiASRProvider(

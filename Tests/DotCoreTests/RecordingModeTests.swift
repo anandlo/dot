@@ -77,7 +77,7 @@ final class RecordingModeTests: XCTestCase {
     func testEveryModeIsNamedAndExplained() {
         let titles = RecordingMode.allCases.map(\.title)
         let details = RecordingMode.allCases.map(\.detail)
-        XCTAssertEqual(titles, ["Press twice", "Hold"])
+        XCTAssertEqual(titles, ["Press to start, press to stop", "Hold while speaking"])
         XCTAssertEqual(Set(titles).count, titles.count)
         XCTAssertEqual(Set(details).count, details.count)
         for detail in details {

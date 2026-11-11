@@ -47,7 +47,6 @@ public struct GroqProvider: Provider {
     public let prompt: String?
     public let responseFormat: String
     public let timestampsGranularity: String?
-    public let zeroDataRetention: Bool
     public let timeout: TimeInterval
     private let session: URLSession
 
@@ -61,7 +60,6 @@ public struct GroqProvider: Provider {
         prompt: String? = nil,
         responseFormat: String = "json",
         timestampsGranularity: String? = nil,
-        zeroDataRetention: Bool = true,
         timeout: TimeInterval = 60,
         session: URLSession = GroqProvider.makeSession()
     ) {
@@ -71,7 +69,6 @@ public struct GroqProvider: Provider {
         self.prompt = prompt
         self.responseFormat = responseFormat
         self.timestampsGranularity = timestampsGranularity
-        self.zeroDataRetention = zeroDataRetention
         self.timeout = timeout
         self.session = session
     }

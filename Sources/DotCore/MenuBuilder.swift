@@ -264,7 +264,7 @@ public enum MenuBuilder {
 
     /// The title of the item that starts or stops the recording.
     public static func recordTitle(isRecording: Bool) -> String {
-        isRecording ? "Stop Recording" : "Start Recording"
+        isRecording ? "Stop recording" : "Start recording"
     }
 
     /// The tree of the menu.
@@ -283,18 +283,18 @@ public enum MenuBuilder {
         items.append(.separator)
 
         items.append(MenuItem(
-            title: "Paste Last Transcript",
+            title: "Paste last transcript",
             action: .pasteLast,
             shortcut: state.pasteShortcut,
             isEnabled: !state.history.isEmpty
         ))
         items.append(MenuItem(
-            title: "Copy Last Transcript",
+            title: "Copy last transcript",
             action: .copyLast,
             isEnabled: !state.history.isEmpty
         ))
         items.append(MenuItem(
-            title: "Recent Transcripts",
+            title: "Recent transcripts",
             children: historyItems(state.history)
         ))
         items.append(MenuItem(
@@ -312,17 +312,17 @@ public enum MenuBuilder {
         items.append(.separator)
 
         items.append(MenuItem(
-            title: "Auto-Paste",
+            title: "Auto-paste",
             action: .toggleAutoPaste,
             isOn: state.autoPasteEnabled
         ))
         items.append(MenuItem(
-            title: "Fast Record",
+            title: "Fast record",
             action: .toggleFastRecord,
             isOn: state.fastRecordEnabled
         ))
         items.append(MenuItem(
-            title: "Launch at Login",
+            title: "Launch at login",
             action: .toggleLaunchAtLogin,
             isOn: state.launchAtLogin
         ))
@@ -335,11 +335,11 @@ public enum MenuBuilder {
             action: .openSettings,
             shortcut: MenuShortcut(display: "⌘,", key: ",", modifiers: .command)
         ))
-        items.append(MenuItem(title: "Open Log in Finder", action: .openLog))
+        items.append(MenuItem(title: "Open log in Finder", action: .openLog))
 
         items.append(.separator)
 
-        items.append(MenuItem(title: "Check for Updates…", action: .checkForUpdates))
+        items.append(MenuItem(title: "Check for updates…", action: .checkForUpdates))
         items.append(MenuItem(title: "About Dot", action: .showAbout))
         items.append(MenuItem(
             title: "Quit Dot",
@@ -362,7 +362,7 @@ public enum MenuBuilder {
             )
         }
         items.append(.separator)
-        items.append(MenuItem(title: "Clear History…", action: .clearHistory))
+        items.append(MenuItem(title: "Clear history…", action: .clearHistory))
         return items
     }
 
@@ -405,7 +405,7 @@ public enum MenuBuilder {
     /// its credential.
     private static func providerItems(_ state: MenuState) -> [MenuItem] {
         guard !state.providers.isEmpty else {
-            return [MenuItem(title: "No provider is available", isEnabled: false)]
+            return [MenuItem(title: "No service selected", isEnabled: false)]
         }
         var items = state.providers.map { provider in
             MenuItem(
@@ -418,7 +418,7 @@ public enum MenuBuilder {
            selected.needsKey {
             items.append(.separator)
             items.append(MenuItem(
-                title: selected.hasKey ? "Replace API Key…" : "Set API Key…",
+                title: selected.hasKey ? "Replace API key…" : "Set API key…",
                 action: .setAPIKey(selected.providerID)
             ))
         }

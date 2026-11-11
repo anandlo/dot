@@ -31,7 +31,6 @@ struct WelcomeView: View {
     let onFinish: () -> Void
     var animated = true
     var previewConnection: ProviderConnectionResult?
-    var providerMenuOpen = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var stage: WelcomeStage
@@ -69,7 +68,6 @@ struct WelcomeView: View {
         tourPhase: Double = TourFrame.stillPhase,
         animated: Bool = true,
         previewConnection: ProviderConnectionResult? = nil,
-        providerMenuOpen: Bool = false
     ) {
         self.presets = presets
         self.selectedPresetID = selectedPresetID
@@ -86,7 +84,6 @@ struct WelcomeView: View {
         self.tourPhase = tourPhase
         self.animated = animated
         self.previewConnection = previewConnection
-        self.providerMenuOpen = providerMenuOpen
         _connection = State(initialValue: previewConnection)
         _chosenPresetID = State(initialValue: selectedPresetID)
         _stage = State(initialValue: stage)
@@ -139,27 +136,27 @@ struct WelcomeView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 36)
 
-            DotSignalMark(size: 52, animated: animated)
+            // The shipped mark, drawn from the same dial the icon and the About
+            // window are drawn from. The bitmap path this used to take fell
+            // back to the running application's icon, which in a bare binary is
+            // the generic macOS application icon: a blue folder on the first
+            // screen of a paid app.
+            DotMarkDialPresentation(dial: DotMark.chosenDial ?? .clipped, size: 56)
                 .accessibilityHidden(true)
 
             Text(ProductLinks.tagline)
-                .font(.system(size: 24, weight: .semibold))
+                .font(DotTheme.displayFont(27))
+                .tracking(-0.5)
                 .foregroundStyle(DotTheme.ink)
-                .padding(.top, 16)
+                .padding(.top, 18)
                 .accessibilityAddTraits(.isHeader)
 
             VStack(spacing: 0) {
                 serviceRow
-                    .zIndex(10)
-                    .dotSelectLayer()
                 divider
-                    .zIndex(5)
                 microphoneRow
-                    .zIndex(2)
                 divider
-                    .zIndex(1)
                 shortcutRow
-                    .zIndex(0)
             }
             .padding(.horizontal, 20)
             .background(
@@ -172,7 +169,6 @@ struct WelcomeView: View {
             )
             .frame(width: 520)
             .padding(.top, 30)
-            .dotSelectLayer()
 
             Spacer(minLength: 24)
 
@@ -180,13 +176,11 @@ struct WelcomeView: View {
                 Button("Back") {
                     withAnimation(transition) { stage = .tour }
                 }
-                .buttonStyle(.plain)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(DotTheme.ink3)
+                .buttonStyle(DotSecondaryButtonStyle())
 
                 Spacer()
 
-                Button("Done") { onFinish() }
+                Button("Finish") { onFinish() }
                     .buttonStyle(DotPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
             }
@@ -206,9 +200,13 @@ struct WelcomeView: View {
         @ViewBuilder trailing: () -> Trailing
     ) -> some View {
         HStack(spacing: 12) {
+            // A finished row is marked with a filled check in the same neutral
+            // ink as the symbol it replaces: the step is complete, it is not a
+            // success message, and the pale mint check read as a disabled
+            // button next to the black labels.
             Image(systemName: done ? "checkmark.circle.fill" : symbol)
                 .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(done ? DotTheme.mint : DotTheme.ink2)
+                .foregroundStyle(done ? DotTheme.ink : DotTheme.ink2)
                 .frame(width: 22)
                 .contentTransition(.symbolEffect(.replace))
             Text(title)
@@ -253,9 +251,8 @@ struct WelcomeView: View {
                             }
                         }
                     ),
-                    placeholder: "Choose",
-                    width: 200,
-                    openForPreview: providerMenuOpen
+                    placeholder: "Choose a service",
+                    width: 200
                 )
             }
 

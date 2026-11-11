@@ -182,8 +182,7 @@ final class OpenAICompatibleProviderTests: XCTestCase {
             temperature: 0.25,
             prompt: "Special medical domain terminology",
             responseFormat: "verbose_json",
-            timestampsGranularity: "both",
-            zeroDataRetention: true
+            timestampsGranularity: "both"
         )
 
         let transcript = try await provider.transcribe(wav: makeWAV(), model: "whisper-1", language: "en")
@@ -223,6 +222,9 @@ final class OpenAICompatibleProviderTests: XCTestCase {
         XCTAssertEqual(openAI.prompt, "Prompt guide")
         XCTAssertEqual(openAI.responseFormat, "verbose_json")
         XCTAssertEqual(openAI.timestampsGranularity, "word")
-        XCTAssertTrue(openAI.zeroDataRetention)
+        XCTAssertFalse(
+            RetentionControl.supportsPerRequestControl(openAI.id),
+            "OpenAI decides retention on the account, so the setting must not reach a request"
+        )
     }
 }

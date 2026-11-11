@@ -98,7 +98,7 @@ final class MicrophoneDirectoryTests: XCTestCase {
             options.map(\.uid),
             [nil, Self.leakedUID, Self.iPhone.uid, Self.builtIn.uid]
         )
-        XCTAssertEqual(options.map(\.name).first, "System Default")
+        XCTAssertEqual(options.map(\.name).first, "System default")
         XCTAssertEqual(options[1].name, "Unavailable device")
         XCTAssertEqual(options[1].uid, Self.leakedUID, "the value must stay the person's choice")
         XCTAssertFalse(options.contains { $0.name == Self.leakedUID })
@@ -112,7 +112,7 @@ final class MicrophoneDirectoryTests: XCTestCase {
         XCTAssertEqual(
             options,
             [
-                MicrophoneOption(uid: nil, name: "System Default"),
+                MicrophoneOption(uid: nil, name: "System default"),
                 MicrophoneOption(uid: Self.iPhone.uid, name: Self.iPhone.name),
                 MicrophoneOption(uid: Self.builtIn.uid, name: Self.builtIn.name),
             ]
@@ -123,7 +123,7 @@ final class MicrophoneDirectoryTests: XCTestCase {
     func testTheSystemDefaultIsAlwaysFirstEvenWithNoDevices() {
         XCTAssertEqual(
             MicrophoneDirectory.options(devices: [], configuredUID: nil),
-            [MicrophoneOption(uid: nil, name: "System Default")]
+            [MicrophoneOption(uid: nil, name: "System default")]
         )
     }
 

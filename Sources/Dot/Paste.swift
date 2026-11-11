@@ -21,9 +21,16 @@ enum Paste {
         _ = AXIsProcessTrustedWithOptions(options)
     }
 
-    /// The bundle identifier of the application the user is working in.
-    static var frontmostBundleIdentifier: String? {
-        NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    /// The application the user is working in, with both halves of its
+    /// identity: the guard that decides whether a paste is safe compares the
+    /// process and the bundle of this app with the one that was frontmost when
+    /// the recording started.
+    static var frontmostApp: FrontmostApp? {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        return FrontmostApp(
+            processIdentifier: app.processIdentifier,
+            bundleIdentifier: app.bundleIdentifier
+        )
     }
 
     /// Puts text back on the pasteboard, but only when Dot is still the last

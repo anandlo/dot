@@ -15,7 +15,7 @@ final class SecretPrompt {
     private let field = NSSecureTextField()
 
     /// The title of the window.
-    var title = "Set API Key"
+    var title = "Set API key"
 
     /// The line under the field that explains what the key is for.
     var explanation = ""
@@ -48,7 +48,7 @@ final class SecretPrompt {
         field.bezelStyle = .roundedBezel
         field.alignment = .left
         field.font = NSFont.systemFont(ofSize: 13)
-        field.placeholderString = "Paste the key"
+        field.placeholderString = "API key"
 
         let stack = NSStackView(views: [caption, hint, field])
         stack.orientation = .vertical

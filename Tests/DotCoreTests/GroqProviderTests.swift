@@ -10,7 +10,6 @@ final class GroqProviderTests: XCTestCase {
         XCTAssertEqual(provider.maxSegmentSeconds, 120)
         XCTAssertEqual(provider.baseURL, GroqProvider.defaultBaseURL)
         XCTAssertEqual(GroqProvider.defaultModel, "whisper-large-v3-turbo")
-        XCTAssertTrue(provider.zeroDataRetention)
     }
 
     func testSupportedModelsCatalog() {
@@ -26,8 +25,7 @@ final class GroqProviderTests: XCTestCase {
             apiKey: "gsk_secretKey",
             temperature: 0.2,
             prompt: "Test context vocabulary",
-            responseFormat: "verbose_json",
-            zeroDataRetention: true
+            responseFormat: "verbose_json"
         )
         let sampleWav = Data([0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45])
         let request = try provider.buildRequest(wav: sampleWav, model: "whisper-large-v3", language: "en")
@@ -123,6 +121,9 @@ final class GroqProviderTests: XCTestCase {
         XCTAssertEqual(groq.prompt, "Technical terminology dictionary")
         XCTAssertEqual(groq.responseFormat, "verbose_json")
         XCTAssertEqual(groq.timestampsGranularity, "both")
-        XCTAssertTrue(groq.zeroDataRetention)
+        XCTAssertFalse(
+            RetentionControl.supportsPerRequestControl(groq.id),
+            "Groq decides retention in its console, so the setting must not reach a request"
+        )
     }
 }

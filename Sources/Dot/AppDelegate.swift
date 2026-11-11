@@ -71,12 +71,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let historyController = HistoryWindowController()
     /// The dictation palette: the recent transcripts, one keystroke away.
     private let palette = PaletteController()
-    private let aboutController = AboutWindowController()
     private var triggerTimer: Timer?
     private var triggerURL: URL?
     private var providerRefreshTimer: Timer?
     /// The application the user was in when the recording started.
-    private var frontmostAtPress: String?
+    ///
+    /// The process and the bundle are both kept: the paste guard compares them
+    /// with the frontmost app at delivery, so a transcript is only typed into
+    /// the application the words were meant for.
+    private var frontmostAtPress: FrontmostApp?
     /// The localized name of that application, for the card's header.
     private var frontmostNameAtPress: String?
     /// Whether the recording was asked for by the hot key.
@@ -223,7 +226,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys?.uninstall()
         welcomeController.close()
         historyController.close()
-        aboutController.close()
         palette.dismiss(restoringFocus: false)
         settingsController.close()
         hud.hide()
@@ -275,6 +277,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func loadConfiguration() {
         let loaded = ProviderMigration.loadConfiguration(from: DotConfig.defaultURL())
         config = loaded.config
+        // The history file is read against the limit this configuration asks
+        // for, so the window, the palette and the menu open with the same list.
+        history = HistoryStore.loadEntries(limit: config.historyLimit)
         // The dwell of the card moved, and a file that never touched the slider
         // holds the old default. The migration rewrites it once and records the
         // revision, so a value the user chooses from now on is left alone.
@@ -496,7 +501,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .checkForUpdates:
             UpdateController.shared.checkForUpdates(userInitiated: true)
         case .showAbout:
-            showAbout()
+            openSettings(tab: 4)
         case .quit:
             NSApp.terminate(nil)
         }
@@ -677,7 +682,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         state = .recording
         let frontmost = NSWorkspace.shared.frontmostApplication
-        frontmostAtPress = frontmost?.bundleIdentifier
+        frontmostAtPress = FrontmostApp(
+            processIdentifier: frontmost?.processIdentifier,
+            bundleIdentifier: frontmost?.bundleIdentifier
+        )
         frontmostNameAtPress = frontmost?.localizedName
         hud.showRecording(elapsed: "0:00")
         startLiveTranscription()
@@ -716,8 +724,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         learn(from: recording)
         refreshMenu()
-        let frontmostNow = Paste.frontmostBundleIdentifier
-        let frontmostUnchanged = frontmostNow != nil && frontmostNow == frontmostAtPress
+        // The guard reads the frontmost application when the words are ready,
+        // not when the recording stops: the transcript can arrive seconds
+        // later, and what is frontmost then is what a paste would land in.
 
         transcriptionTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -766,7 +775,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         "characters": .int(candidateText.count),
                     ])
                     self.ledger = nil
-                    self.handleTranscript(candidateText, frontmostUnchanged: frontmostUnchanged)
+                    self.handleTranscript(candidateText)
                     return
                 }
                 // The partial said nothing usable, so the tail below is the one
@@ -791,7 +800,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "samples": .int(samples),
                     "characters": .int(text.count),
                 ])
-                self.handleTranscript(text, frontmostUnchanged: frontmostUnchanged)
+                self.handleTranscript(text)
             case .send(let range, let prefix):
                 let piece = Array(recording.samples[range])
                 let segments = Segmenter.segmentCount(
@@ -810,7 +819,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         prefix: prefix,
                         total: segments
                     )
-                    self.handleTranscript(transcript, frontmostUnchanged: frontmostUnchanged)
+                    self.handleTranscript(transcript)
                 } catch is CancellationError {
                     self.finishWork()
                 } catch {
@@ -822,7 +831,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         Log.shared.info("transcription.tail.fallbackToPrefix", [
                             "characters": .int(fallback.count),
                         ])
-                        self.handleTranscript(fallback, frontmostUnchanged: frontmostUnchanged)
+                        self.handleTranscript(fallback)
                     } else {
                         self.handleFailure(error)
                     }
@@ -1129,10 +1138,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.shared.error("recording.failed", ["error": .string(message)])
     }
 
-    private func handleTranscript(_ transcript: String, frontmostUnchanged: Bool) {
+    private func handleTranscript(_ transcript: String) {
         lastTranscript = transcript
-        history = HistoryStore.adding(transcript, at: Date(), to: history)
-        HistoryStore.saveEntries(history)
+        history = HistoryStore.adding(
+            transcript,
+            at: Date(),
+            to: history,
+            limit: config.historyLimit
+        )
+        HistoryStore.saveEntries(history, limit: config.historyLimit)
         refreshMenu()
 
         // The history keeps the transcript and the clipboard keeps the
@@ -1141,28 +1155,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let plan = TranscriptDelivery.plan(transcript: transcript, grammar: grammar)
 
         // The clipboard and the paste always carry the whole transcript, even
-        // when the card only has room for the top of it.
+        // when the card only has room for the top of it. It is on the clipboard
+        // before the guard runs, because a copy is the outcome the guard
+        // decides on: the words are never left only in a failed paste.
         Paste.copy(plan.clipboard)
+        let decision = pasteDecision()
         var delivery: HUDDelivery = .copied
-        if config.autoPaste {
-            let targetIsNotDot = Paste.frontmostBundleIdentifier != Bundle.main.bundleIdentifier
-            if Paste.accessibilityGranted {
-                if frontmostUnchanged || targetIsNotDot {
-                    delivery = paste(plan)
-                }
-            } else {
-                if !hasRequestedAccessibility {
-                    hasRequestedAccessibility = true
-                    Paste.requestAccessibility()
-                }
-                Log.shared.warn("autopaste.skipped.accessibilityMissing")
+        switch decision {
+        case .paste:
+            delivery = paste(plan)
+        case .copy(let reason):
+            if reason == .accessibilityMissing, !hasRequestedAccessibility {
+                hasRequestedAccessibility = true
+                Paste.requestAccessibility()
             }
+            logSkippedPaste(reason)
         }
         hud.showTranscript(
             text: transcript,
             delivery: delivery,
             elapsed: HUDClock.string(for: recordingElapsed),
-            destination: frontmostUnchanged ? frontmostNameAtPress : nil,
+            destination: decision == .paste ? frontmostNameAtPress : nil,
             grammar: grammar?.target,
             grammarWasLong: grammar?.wasLong ?? false
         )
@@ -1188,9 +1201,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// place is plain and gets no rewrite at all.
     private func grammarResult(for transcript: String) -> OutputGrammar.Result? {
         guard config.outputGrammarEnabled else { return nil }
-        let target = config.dictationTarget(for: frontmostAtPress)
+        let target = config.dictationTarget(for: frontmostAtPress?.bundleIdentifier)
         guard target != .plain else { return nil }
         return OutputGrammar.result(for: transcript, target: target)
+    }
+
+    /// What the paste guard decides for a finished transcript.
+    ///
+    /// The application at the press is the one the words were meant for, and it
+    /// has to still be frontmost when they are ready. Anything else is a copy: a
+    /// paste is a keystroke into whatever holds the focus, and nothing on screen
+    /// tells the person where it landed.
+    private func pasteDecision() -> PasteDecision {
+        PasteDecision.decide(
+            atPress: frontmostAtPress,
+            atDelivery: Paste.frontmostApp,
+            accessibilityGranted: Paste.accessibilityGranted,
+            autoPasteEnabled: config.autoPaste,
+            ownBundleIdentifier: Bundle.main.bundleIdentifier ?? ""
+        )
+    }
+
+    /// Records why the transcript was copied instead of pasted.
+    ///
+    /// The two apps are logged with the reason: a guard that copies without
+    /// saying what changed is indistinguishable from a guard that is broken.
+    private func logSkippedPaste(_ reason: PasteDecision.CopyReason) {
+        let fields: [String: LogValue] = [
+            "press": .string(frontmostAtPress?.bundleIdentifier ?? "none"),
+            "delivery": .string(Paste.frontmostApp?.bundleIdentifier ?? "none"),
+        ]
+        if reason.isWarning {
+            Log.shared.warn(reason.logEvent, fields)
+        } else {
+            Log.shared.info(reason.logEvent, fields)
+        }
     }
 
     /// Posts the planned insertion at the cursor.
@@ -1328,7 +1373,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A recording owns the microphone and the card. The palette is about
         // words that already exist, so it waits for the take to finish.
         guard state == .idle else {
-            hud.showMessage(text: "Finish the recording first.", symbol: "waveform")
+            hud.showMessage(text: "A recording is still running.", symbol: "waveform")
             return
         }
         palette.show(
@@ -1416,7 +1461,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func selectMicrophone(_ id: String?) {
         guard state != .recording else {
-            hud.showMessage(text: "Stop recording before changing the microphone.", symbol: "mic.slash")
+            hud.showMessage(text: "The microphone cannot change during a recording.", symbol: "mic.slash")
             return
         }
         config.microphoneDeviceUID = id
@@ -1432,7 +1477,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func selectLanguage(_ id: String) {
         guard state != .recording else {
-            hud.showMessage(text: "Stop recording before changing the language.", symbol: "globe")
+            hud.showMessage(text: "The language cannot change during a recording.", symbol: "globe")
             return
         }
         var settings = config.settings(for: config.provider)
@@ -1549,7 +1594,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let preset = ProviderPreset.preset(id: id) else { return }
         guard id != ProviderPreset.presenting(config).id else { return }
         guard state != .recording else {
-            hud.showMessage(text: "Stop recording before changing the provider.", symbol: "waveform")
+            hud.showMessage(text: "The service cannot change during a recording.", symbol: "waveform")
             return
         }
         preset.apply(to: &config)
@@ -1570,7 +1615,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setAPIKey(for providerID: String) {
         let name = providerName(for: providerID)
         let prompt = SecretPrompt()
-        prompt.title = "Set API Key"
+        prompt.title = "Set API key"
         prompt.explanation = "The key for \(name) is kept in the Keychain, never in the configuration file."
         prompt.completion = { [weak self] secret in
             guard let self, let secret else { return }
@@ -1775,16 +1820,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return providerIsAvailable(provider)
     }
 
-    private func showAbout() {
-        aboutController.show()
-    }
-
     /// The version this build reports, read from the bundle.
     private static var version: String { ProductVersion.current }
 
     // MARK: - Settings
 
-    private func openSettings() {
+    private func openSettings(tab: Int = 0) {
         let binding = Binding<DotConfig>(
             get: { [weak self] in self?.config ?? DotConfig.load() },
             set: { [weak self] value in
@@ -1798,12 +1839,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsController.show(
             config: binding,
             providers: currentProviders,
+            tab: tab,
             onChange: { [weak self] in
                 guard let self else { return }
                 let started = CACurrentMediaTime()
                 self.hud.dwell = self.config.hudDwellSeconds
                 self.hud.visualizer = self.config.hudVisualizer
                 self.hud.material = self.config.hudMaterial
+                // A shorter history takes effect now rather than on the next
+                // dictation: the window is open on the list being shortened.
+                if self.history.count > self.config.historyLimit {
+                    self.history = Array(self.history.prefix(self.config.historyLimit))
+                    HistoryStore.saveEntries(self.history, limit: self.config.historyLimit)
+                    self.refreshMenu()
+                }
                 // The mode is read again on every press and release, so a switch
                 // needs no wiring to take effect; the line exists so a log can
                 // say which interaction was in force when a recording ran.
@@ -1937,7 +1986,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveConfiguration()
         refreshMenu()
         hud.showMessage(
-            text: config.fastRecord ? "Fast record on" : "Fast record off",
+            text: config.fastRecord ? "Menu bar recording on" : "Menu bar recording off",
             symbol: config.fastRecord ? "cursorarrow.click.2" : "cursorarrow.click"
         )
     }
