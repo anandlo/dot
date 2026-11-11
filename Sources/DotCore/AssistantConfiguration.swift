@@ -63,6 +63,8 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
     /// Off means every turn is a plain question: no tool schemas are sent, so
     /// an action cannot be proposed, let alone run.
     public var actionsEnabled: Bool
+    /// Which rewrites the transcript card offers after a dictation.
+    public var rewrite: RewriteConfiguration
 
     /// The voice a fresh configuration speaks with: the one on this Mac.
     public static let defaultVoice = VoiceSettings(providerID: VoiceProviderID.apple)
@@ -81,13 +83,15 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
         voice: VoiceSettings = AssistantConfiguration.defaultVoice,
         connectors: ConnectorSettings = .default,
         delivery: AnswerDelivery = .paste,
-        actionsEnabled: Bool = true
+        actionsEnabled: Bool = true,
+        rewrite: RewriteConfiguration = .default
     ) {
         self.chat = chat
         self.voice = voice
         self.connectors = connectors
         self.delivery = delivery
         self.actionsEnabled = actionsEnabled
+        self.rewrite = rewrite
     }
 
     /// The model id a turn is asked for, resolved from the catalogue.
@@ -101,6 +105,7 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
         case connectors
         case delivery
         case actionsEnabled
+        case rewrite
     }
 
     public init(from decoder: Decoder) throws {
@@ -115,6 +120,8 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
             ?? fallback.delivery
         actionsEnabled = ((try? container.decodeIfPresent(Bool.self, forKey: .actionsEnabled)) ?? nil)
             ?? fallback.actionsEnabled
+        rewrite = ((try? container.decodeIfPresent(RewriteConfiguration.self, forKey: .rewrite)) ?? nil)
+            ?? fallback.rewrite
         // A voice block with no provider is not a choice of silence: the voice
         // on this Mac fills in, and the speed the person set is kept.
         var storedVoice = ((try? container.decodeIfPresent(VoiceSettings.self, forKey: .voice)) ?? nil)

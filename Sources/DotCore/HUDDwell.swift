@@ -33,6 +33,20 @@ public enum HUDDwell {
     /// grace is what stops the card from disappearing while its own inertia is
     /// still running.
     public static let scrollGrace: Double = 1.5
+    /// The shortest time the chips stay after a transcript lands, in seconds.
+    ///
+    /// A take with a rewrite offer is a card with something to do on it, and
+    /// the ten second dwell a plain transcript gets is not long enough to read
+    /// the words and choose a style. The longer dwell is a floor: a person who
+    /// configured more keeps their own.
+    public static let rewriteSeconds: Double = 8
+    /// How long the card stays after the pointer leaves it once it offers the
+    /// chips, in seconds.
+    ///
+    /// The countdown pauses while the card is read. Leaving it restarts at this
+    /// short dwell rather than resuming what was left, because the pointer
+    /// crossing the card is also how a person says "I am done with this".
+    public static let rewriteLeaveSeconds: Double = 3
     /// The revision of the dwell a configuration file is written with.
     ///
     /// A file that carries an older revision predates this dwell, and

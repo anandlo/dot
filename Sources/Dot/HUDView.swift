@@ -28,6 +28,16 @@ struct HUDActions {
     var updateTranscript: ((String) -> Void)? = nil
     /// Dismisses the card.
     var close: (() -> Void)? = nil
+    /// Runs one rewrite style from the chip row.
+    var rewrite: ((RewriteStyle) -> Void)? = nil
+    /// Stops the rewrite that is running.
+    var cancelRewrite: (() -> Void)? = nil
+    /// Puts the original back where the rewrite went.
+    var undoRewrite: (() -> Void)? = nil
+    /// Applies a rewrite the check refused.
+    var applyRewriteAnyway: (() -> Void)? = nil
+    /// Returns to the chips without writing the refused rewrite.
+    var keepOriginal: (() -> Void)? = nil
 }
 
 /// The card.
@@ -47,7 +57,7 @@ struct HUDView: View {
     /// drawn; the app wires History, the preview leaves it out.
     var actions = HUDActions()
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) var reduceMotion
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: HUDTheme.cornerRadius, style: .continuous)
@@ -467,7 +477,8 @@ struct HUDView: View {
         elapsed: String,
         destination: String?
     ) -> some View {
-        VStack(spacing: 0) {
+        let card = model.rewrite
+        return VStack(spacing: 0) {
             HStack(spacing: 10) {
                 ZStack {
                     Circle()
@@ -481,19 +492,25 @@ struct HUDView: View {
                 // The application the words went into, when there is one. The
                 // title is already cut to the room the header has, so a long
                 // name can never push the clock or the buttons out of the card.
-                Text(HUDHeader.title(delivery: delivery, destination: destination))
+                Text(headerTitle(for: card, delivery: delivery, destination: destination))
                     .font(HUDTheme.labelFont)
                     .tracking(HUDTheme.labelTracking)
                     .foregroundStyle(delivery.color)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .frame(maxWidth: HUDHeader.maximumTitleWidth, alignment: .leading)
+                    .frame(maxWidth: headerTitleCap(for: card), alignment: .leading)
+                    .fixedSize(horizontal: true, vertical: false)
                     .accessibilityLabel(Text(
-                        HUDHeader.accessibilityLabel(
+                        headerAccessibilityLabel(
+                            for: card,
                             delivery: delivery,
                             destination: destination
                         )
                     ))
+
+                if let card, case .applied = card.phase {
+                    RewriteFaithfulBadge(warning: card.warning)
+                }
 
                 // The surface the words were written for, named on the card.
                 // The rewrite changes the inserted text, so it has to be
@@ -513,6 +530,13 @@ struct HUDView: View {
                     .foregroundStyle(HUDTheme.ink2)
                     .fixedSize()
 
+                if card?.canUndo == true {
+                    RewriteCapsuleButton(title: "Undo", isPrimary: false) {
+                        actions.undoRewrite?()
+                    }
+                    .accessibilityLabel("Undo the rewrite")
+                }
+
                 controlsSection([.copy, .paste, .history, .settings, .close])
             }
             .padding(.horizontal, HUDTheme.padding)
@@ -522,15 +546,58 @@ struct HUDView: View {
                 .fill(HUDTheme.hairline)
                 .frame(height: 1)
 
-            transcriptBody(text)
+            if let card, card.showsRewrite {
+                rewriteBody(card)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .frame(height: transcriptBodyHeight(card))
+            } else {
+                transcriptBody(text, height: bodyHeight(for: card))
+            }
+
+            if let card {
+                rewriteSection(card)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func headerTitle(
+        for card: RewriteCard?,
+        delivery: HUDDelivery,
+        destination: String?
+    ) -> String {
+        guard let card else { return HUDHeader.title(delivery: delivery, destination: destination) }
+        return HUDHeader.title(for: card, delivery: delivery, destination: destination)
+    }
+
+    private func headerAccessibilityLabel(
+        for card: RewriteCard?,
+        delivery: HUDDelivery,
+        destination: String?
+    ) -> String {
+        guard let card else {
+            return HUDHeader.accessibilityLabel(delivery: delivery, destination: destination)
+        }
+        return HUDHeader.accessibilityLabel(for: card, delivery: delivery, destination: destination)
+    }
+
+    /// The room the title has once the badge and the Undo capsule are drawn.
+    private func headerTitleCap(for card: RewriteCard?) -> CGFloat {
+        var cap = HUDHeader.maximumTitleWidth
+        guard let card else { return cap }
+        if case .applied = card.phase {
+            cap -= 70
+        }
+        if card.canUndo {
+            cap -= 58
+        }
+        return max(120, cap)
     }
 
     /// The transcript itself: a body that grows with the words, then scrolls,
     /// and becomes directly editable inline at the clicked character position.
     @ViewBuilder
-    private func transcriptBody(_ text: String) -> some View {
+    private func transcriptBody(_ text: String, height: CGFloat? = nil) -> some View {
         HUDInlineTranscriptView(
             text: text,
             isEditing: model.isEditingTranscript,
@@ -546,7 +613,7 @@ struct HUDView: View {
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .frame(height: transcriptBodyHeight)
+        .frame(height: height ?? transcriptBodyHeight)
         .accessibilityLabel(Text("Transcript"))
     }
 
@@ -567,6 +634,24 @@ struct HUDView: View {
     /// The height of the scrollable body inside the card.
     private var transcriptBodyHeight: CGFloat {
         max(0, model.cardSize.height - HUDTheme.headerHeight - 1)
+    }
+
+    /// The height of the body once the rewrite layer has taken its rows.
+    private func transcriptBodyHeight(_ card: RewriteCard) -> CGFloat {
+        max(
+            0,
+            model.cardSize.height - HUDTheme.headerHeight - 1 - HUD.rewriteExtraHeight(card)
+        )
+    }
+
+    /// The height of an inline-editable body.
+    ///
+    /// A transcript that offers the chips keeps the body it would have had
+    /// without them and grows by the row, so the words do not lose a line to a
+    /// control the person has not chosen yet.
+    private func bodyHeight(for card: RewriteCard?) -> CGFloat {
+        guard let card else { return transcriptBodyHeight }
+        return transcriptBodyHeight(card)
     }
 
     // MARK: - Message

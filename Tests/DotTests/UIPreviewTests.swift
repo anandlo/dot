@@ -113,6 +113,8 @@ final class UIPreviewTests: XCTestCase {
             "settings-assistant-dark-tall.png",
             "settings-assistant-connected-tall.png",
             "settings-assistant-connected-dark-tall.png",
+            "settings-assistant-rewrite-tall.png",
+            "settings-assistant-rewrite-dark-tall.png",
             "settings-voices-tall.png",
             "settings-voices-dark-tall.png",
             "settings-voices-cloud-tall.png",

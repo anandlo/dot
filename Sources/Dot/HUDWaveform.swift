@@ -52,6 +52,23 @@ struct HUDWaveform: View {
     /// and settle back into it when the recording ends, instead of appearing at
     /// a full height it had from nowhere.
     var reveal: Double = 1
+    /// The power the grid's brightness is drawn on.
+    ///
+    /// The grid is the one style whose cells have area, so the drawn energy of
+    /// one cell is a curve of its band rather than the band itself: a dot that
+    /// answers a whisper as brightly as it answers a word fills the grid with
+    /// light and leaves the peaks nothing to stand out against. The value is a
+    /// calibration, chosen by rendering the grid against the Settings swatch at
+    /// a range of values and keeping the one whose picture matched.
+    var displayExponent: Double = 3.0
+    /// Where on the brightness the grid's halo starts, and how far it runs.
+    ///
+    /// The halo grows from nothing at the onset to its full width half a unit
+    /// later, so a cell that is a little brighter than its neighbour has a
+    /// little more halo instead of switching one on. The onset is the same
+    /// calibration as ``displayExponent``: it decides how much of the voice is
+    /// drawn as a field of light and how much is drawn as peaks.
+    var glowOnset: Double = 0.70
 
     var body: some View {
         Canvas { context, size in
@@ -324,39 +341,63 @@ struct HUDWaveform: View {
                     }
                 }
 
-                let rawEnergy = min(1.0, max(0.0, bandWeight))
-                let cellEnergy = CGFloat(rawEnergy > 0.02 ? pow(rawEnergy, 1.15) : 0.0)
-                let radius = 0.85 + cellEnergy * 1.55
+                // The live path hands the grid a band that has already been
+                // written onto this voice's own window and bent by the meter's
+                // perceptual curve, so the band is the whole of the shape: a bend
+                // applied a second time here spends the top of the range on a
+                // loudness the speaker never reaches, and the grid reads as dull.
+                // The size of a dot follows that band.
+                let cellEnergy = CGFloat(min(1.0, max(0.0, bandWeight)))
+                let radius = 0.85 + cellEnergy * 1.65
+                // The brightness follows a steeper curve of the same band.
+                //
+                // The meter's curve lifts the middle of the voice, which is what
+                // a bar of height wants: half a voice is drawn well above half a
+                // bar. A dot has area as well as height, so the same lift fills
+                // almost every cell and the grid becomes one bright field with no
+                // structure left in it. The power below spends the brightness on
+                // the loud cells, so the grid rests dark and the peaks of the
+                // voice are the only things that carry light.
+                let display = pow(Double(cellEnergy), displayExponent)
 
-                // A cell at a formant peak glows: the same amber the shape is
-                // drawn in, never a second colour the card does not own.
-                if cellEnergy > 0.55 {
-                    let glowRadius = radius * 1.85
+                // A halo on every cell the display curve has lifted, and one that
+                // grows with the cell rather than switching on at a level: an edge
+                // at one energy and none below it draws a grid that reads as dots
+                // flipping on, which is not what the voice did. The colour is the
+                // same amber the shape is drawn in, never a second colour the card
+                // does not own.
+                if display > glowOnset {
+                    let glow = MeterRamp.smoothstep(glowOnset, glowOnset + 0.5, display)
+                    let glowRadius = radius * (1.5 + 0.9 * CGFloat(glow))
                     let glowRect = CGRect(
                         x: x - glowRadius,
                         y: y - glowRadius,
                         width: glowRadius * 2,
                         height: glowRadius * 2
                     )
-                    let glowAlpha = Double((cellEnergy - 0.40) * 0.45)
                     context.fill(
                         Path(ellipseIn: glowRect),
-                        with: .color(HUDTheme.meter(Double(cellEnergy), ceiling: ceiling).opacity(glowAlpha))
+                        with: .color(HUDTheme.meter(display, ceiling: 1).opacity(0.55 * glow))
                     )
                 }
 
                 let rect = CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)
                 let path = Path(ellipseIn: rect)
 
-                if cellEnergy <= 0.12 {
+                if display <= 0.04 {
                     // The resting grid: dim enough to be a grid, warm enough to
                     // be the same material as the voice that lights it.
                     context.fill(path, with: .color(HUDTheme.meter(0, ceiling: ceiling)))
                 } else {
-                    let alpha = Double(min(1.0, 0.68 + 0.32 * cellEnergy))
+                    // The colour is drawn against a ceiling of one because the
+                    // value is already relative to this voice: its top is the
+                    // loudest this band has been in this take, so the warm tip is
+                    // reached by the speaker's own peak and not by a peak of the
+                    // whole card, which is a different measurement.
+                    let alpha = 0.55 + 0.45 * display
                     context.fill(
                         path,
-                        with: .color(HUDTheme.meter(Double(cellEnergy), ceiling: ceiling).opacity(alpha))
+                        with: .color(HUDTheme.meter(display, ceiling: 1).opacity(alpha))
                     )
                 }
             }

@@ -101,6 +101,12 @@ final class HUDModel: ObservableObject {
     /// Whether the user is editing the transcript directly inside the HUD island.
     @Published var isEditingTranscript: Bool = false
 
+    /// The rewrite layer of the transcript card, when the take offers one.
+    ///
+    /// It belongs to the transcript that carried it: every other card clears
+    /// it, so a chip can never act on words that are no longer on screen.
+    @Published var rewrite: RewriteCard?
+
     /// What the confirmation card's allow button does.
     ///
     /// The closures live on the model because the card that draws the buttons

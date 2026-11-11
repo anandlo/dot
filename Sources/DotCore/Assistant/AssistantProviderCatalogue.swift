@@ -286,6 +286,8 @@ extension AssistantProviderCatalogue {
     ///   - apiKey: the key, when the person has one.
     ///   - session: the session to send with, or `nil` for a fresh one. A
     ///     session is never retained past the provider.
+    ///   - temperature: a sampling temperature that replaces the one stored in
+    ///     the settings.
     /// - Returns: a provider for the row's wire shape.
     /// - Throws: ``ProviderError/missingCredential(_:)`` when the row needs a
     ///   key that is absent, ``ProviderError/unavailable(_:)`` when no address
@@ -293,7 +295,8 @@ extension AssistantProviderCatalogue {
     public static func makeProvider(
         settings: AssistantSettings,
         apiKey: String?,
-        session: URLSession? = nil
+        session: URLSession? = nil,
+        temperature: Double? = nil
     ) throws -> any ChatProvider {
         let settings = settings.sanitized()
         let row = row(for: settings.providerID)
@@ -313,7 +316,7 @@ extension AssistantProviderCatalogue {
                 apiKey: key,
                 authStyle: row.authStyle,
                 extraHeaders: row.extraHeaders,
-                temperature: settings.temperature,
+                temperature: temperature ?? settings.temperature,
                 includeUsage: row.includeUsage,
                 session: session ?? OpenAIChatProvider.makeSession()
             )
@@ -324,7 +327,7 @@ extension AssistantProviderCatalogue {
                 apiKey: key,
                 extraHeaders: row.extraHeaders,
                 maxTokens: anthropicAnswerLimit,
-                temperature: settings.temperature,
+                temperature: temperature ?? settings.temperature,
                 session: session ?? AnthropicChatProvider.makeSession()
             )
         }

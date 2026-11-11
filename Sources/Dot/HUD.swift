@@ -37,7 +37,14 @@ final class HUDHostingView: NSHostingView<AnyView> {
 final class HUD {
     /// The size of the panel. It is large enough for the biggest card plus
     /// the room the shadow needs, and it never changes.
-    private static let panelSize = CGSize(width: 640, height: 340)
+    static let panelSize = CGSize(width: 640, height: 340)
+    /// The tallest card the panel can hold.
+    ///
+    /// The card is placed ``shadowPadding`` below the top of the panel, so its
+    /// height plus that inset has to stay inside the panel: a taller card would
+    /// be cut by the window that draws it, which is why a long transcript's
+    /// body scrolls at ``HUDTranscript/maxBodyHeight``.
+    static var maximumCardHeight: CGFloat { panelSize.height - shadowPadding }
     /// The room around the card, so its shadow is never clipped.
     static let shadowPadding: CGFloat = 28
     /// How far below the top of the usable screen the top of the panel sits.
@@ -102,6 +109,14 @@ final class HUD {
     private var spectrumRing: [AudioSpectrumFrame] = Array(repeating: .zero, count: VoiceMeter.historyLength)
     private var spectrumSmoothed: AudioSpectrumFrame = .zero
     private var spectrumClock: Double = 0
+    /// The window the five bands are drawn on, per band.
+    ///
+    /// The recorder's bands are a fixed measurement of the microphone, and every
+    /// speaker reads on it the same way; this is what turns them into a picture
+    /// of this voice, from its own quietest band to its own loudest, so the grid
+    /// moves across its whole range instead of lighting a row of dots at the
+    /// level a fixed scale happens to put ordinary speech.
+    private var spectrumScale = SpectrumScale()
     private var isPreviewingVisualizer = false
     /// The envelope history of the meter, kept between frames.
     ///
@@ -282,6 +297,7 @@ final class HUD {
         spectrumRing = Array(repeating: .zero, count: VoiceMeter.historyLength)
         spectrumSmoothed = .zero
         spectrumClock = 0
+        spectrumScale.reset()
         reveal = 0
         model.reveal = 0
         setMode(mode, size: HUDState.recordingCard.size)
@@ -367,6 +383,9 @@ final class HUD {
         // by every other state.
         model.grammar = grammar
         model.grammarWasLong = grammarWasLong
+        // A rewrite belongs to the take that carried it, so a new transcript
+        // starts with no layer. The runner sets it once the card is up.
+        model.rewrite = nil
         setMode(
             .transcript(
                 text: trimmed,
@@ -472,6 +491,7 @@ final class HUD {
         spectrumRing = Array(repeating: .zero, count: VoiceMeter.historyLength)
         spectrumSmoothed = .zero
         spectrumClock = 0
+        spectrumScale.reset()
         // Pre-seed the meter with 2 seconds of speech history so scrolling visualizers
         // (Filament, Matrix) immediately show a full, moving voice trace.
         var simTime = now - 2.0
@@ -574,6 +594,7 @@ final class HUD {
         model.clearLiveText()
         model.grammar = nil
         model.grammarWasLong = false
+        model.rewrite = nil
         model.isEditingTranscript = false
         model.hoveredAction = nil
         model.messageAction = nil
@@ -898,6 +919,13 @@ final class HUD {
         }
         guard inside != isPointerInside else { return }
         isPointerInside = inside
+        // A card that offers the chips restarts its countdown when the pointer
+        // leaves it. Crossing the card is how a person says they are done with
+        // it, so what was left of the long dwell is not kept.
+        if !inside, model.rewrite != nil, var clock = dwellClock {
+            clock.restart(duration: HUDDwell.rewriteLeaveSeconds, now: CACurrentMediaTime())
+            dwellClock = clock
+        }
         Log.shared.info(inside ? "hud.pointer.inside" : "hud.pointer.outside")
     }
 
@@ -1120,17 +1148,22 @@ final class HUD {
     }
 
     private func advanceSpectrum(target: AudioSpectrumFrame, dt: Double) {
+        // The bands arrive on the recorder's fixed scale, where ordinary speech
+        // never reaches the top. The window of this voice is applied first, so
+        // the grid is drawn between the quietest and the loudest this speaker's
+        // bands have been, and the smoothing below is what settles it.
+        let scaled = spectrumScale.normalise(target, dt: dt)
         func step(_ cur: Double, _ tgt: Double) -> Double {
-            let tau = tgt > cur ? 0.014 : 0.11
+            let tau = tgt > cur ? 0.014 : 0.03
             let c = 1.0 - exp(-max(0, dt) / tau)
             return cur + (tgt - cur) * c
         }
         spectrumSmoothed = AudioSpectrumFrame(bands: (
-            step(spectrumSmoothed.bands.0, target.bands.0),
-            step(spectrumSmoothed.bands.1, target.bands.1),
-            step(spectrumSmoothed.bands.2, target.bands.2),
-            step(spectrumSmoothed.bands.3, target.bands.3),
-            step(spectrumSmoothed.bands.4, target.bands.4)
+            step(spectrumSmoothed.bands.0, scaled.bands.0),
+            step(spectrumSmoothed.bands.1, scaled.bands.1),
+            step(spectrumSmoothed.bands.2, scaled.bands.2),
+            step(spectrumSmoothed.bands.3, scaled.bands.3),
+            step(spectrumSmoothed.bands.4, scaled.bands.4)
         ))
         spectrumClock += dt * VoiceMeter.sampleRate
         while spectrumClock >= 1.0 {
@@ -1152,6 +1185,7 @@ final class HUD {
             if case .transcript = mode {} else {
                 model.grammar = nil
                 model.grammarWasLong = false
+                model.rewrite = nil
             }
             model.isEditingTranscript = false
             model.hoveredAction = nil
@@ -1327,6 +1361,26 @@ final class HUD {
         dwellClock = nil
     }
 
+    /// Shows the rewrite layer on the transcript card.
+    ///
+    /// The card is sized from the layer: the chips add a row, a note adds a
+    /// line, and the body follows the text that is on it. A nil layer returns
+    /// the card to the plain transcript it was.
+    ///
+    /// - Parameter card: the layer, or `nil` when the take carries no rewrite.
+    func setRewrite(_ card: RewriteCard?) {
+        model.rewrite = card
+        guard case .transcript(let text, _, _, _) = model.mode else { return }
+        model.cardSize = Self.transcriptSize(text: text, rewrite: card)
+        guard card != nil else { return }
+        // A card with something to do on it stays long enough to read and to
+        // choose, however short the configured dwell is.
+        let target = max(dwellSeconds, HUDDwell.rewriteSeconds)
+        if dwellClock == nil || (dwellClock?.duration ?? 0) < target {
+            startDwelling(duration: target)
+        }
+    }
+
     /// The size of the assistant's answer card.
     ///
     /// It is the transcript's body under the transcript's header: the same font,
@@ -1346,11 +1400,38 @@ final class HUD {
     /// around it, and `HUDTranscript` holds it inside the range the card draws:
     /// below the limit the card fits the text exactly, above it the body stops
     /// growing and the text scrolls under its own scroller.
-    static func transcriptSize(text: String) -> CGSize {
-        let body = HUDTranscript.bodyHeight(contentHeight: transcriptContentHeight(text: text))
+    static func transcriptSize(text: String, rewrite: RewriteCard? = nil) -> CGSize {
+        guard let rewrite else {
+            let body = HUDTranscript.bodyHeight(contentHeight: transcriptContentHeight(text: text))
+            return CGSize(
+                width: HUDState.transcriptWidth,
+                height: HUDTheme.headerHeight + 1 + body
+            )
+        }
+        let bodyText = rewrite.showsRewrite ? rewrite.rewrite : text
+        var contentHeight = transcriptContentHeight(text: bodyText.isEmpty ? text : bodyText)
+        if rewrite.dimsOriginal {
+            contentHeight += CGFloat(HUDRewriteLayout.dimmedOriginalLines)
+                * HUDRewriteLayout.dimmedLineHeight
+                + HUDRewriteLayout.dimmedGap
+        }
+        let body = HUDTranscript.bodyHeight(contentHeight: contentHeight)
         return CGSize(
             width: HUDState.transcriptWidth,
-            height: HUDTheme.headerHeight + 1 + body
+            height: HUDTheme.headerHeight + 1 + body + rewriteExtraHeight(rewrite)
+        )
+    }
+
+    /// The height the rewrite layer adds under the body of the card.
+    static func rewriteExtraHeight(_ card: RewriteCard) -> CGFloat {
+        var blocked = false
+        if case .blocked = card.phase { blocked = true }
+        var noteLines = card.note == nil ? 0 : 1
+        if blocked { noteLines += 1 }
+        return HUDRewriteLayout.extraHeight(
+            showsChips: card.showsChips,
+            showsActions: blocked,
+            noteLines: noteLines
         )
     }
 

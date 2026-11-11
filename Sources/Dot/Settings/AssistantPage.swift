@@ -97,6 +97,7 @@ struct AssistantPage: View {
             serviceSection
             modelSection
             answersSection
+            rewriteSection
         }
         .onAppear(perform: readStoredKeys)
     }
@@ -271,6 +272,98 @@ struct AssistantPage: View {
         }
     }
 
+    // MARK: - Rewrite
+
+    /// The styles the transcript card offers once a dictation lands.
+    ///
+    /// A switch per built-in style, then the person's own: a row of two fields
+    /// and the control that removes it, and the button that adds another. The
+    /// chips on the card show exactly the styles that are on here, built-ins
+    /// first.
+    private var rewriteSection: some View {
+        SettingsSection("Rewrite") {
+            SettingsToggleRow(
+                title: "Offer rewrites after dictation",
+                subtitle: "Shown when an assistant service is connected.",
+                isOn: rewriteEnabledBinding
+            )
+            ForEach(RewriteStyleID.allCases, id: \.self) { style in
+                SettingsDivider()
+                SettingsToggleRow(
+                    title: style.title,
+                    subtitle: style.subtitle,
+                    isOn: styleBinding(style)
+                )
+                // A two-line description under a one-line title leaves the
+                // row's ink high in its cell, so those rows carry three points
+                // more air below it. A one-line description is already level.
+                .padding(.bottom, style.wrapsSubtitle ? 3 : 0)
+            }
+            ForEach(config.assistant.rewrite.custom) { style in
+                SettingsDivider()
+                customStyleRow(style)
+            }
+            if config.assistant.rewrite.custom.count < CustomRewriteStyle.maximumCount {
+                SettingsDivider()
+                addStyleRow
+            }
+        }
+    }
+
+    /// One custom style: its name, what it should do, and the control that
+    /// removes it.
+    private func customStyleRow(_ style: CustomRewriteStyle) -> some View {
+        HStack(spacing: 8) {
+            TextField("Name", text: customBinding(style.id, \.title))
+                .modifier(DotFieldStyle())
+                .frame(width: 150)
+                .accessibilityLabel("Style name")
+
+            TextField("How to rewrite", text: customBinding(style.id, \.instruction))
+                .modifier(DotFieldStyle())
+                .frame(width: 250)
+                .accessibilityLabel("Style instruction")
+
+            Spacer(minLength: 8)
+
+            Button(role: .destructive) {
+                deleteStyle(style.id)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(DotTheme.coral)
+                    .frame(width: 26, height: 26, alignment: .trailing)
+                    .padding(.trailing, -2)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Delete this style")
+            .accessibilityLabel("Delete this style")
+        }
+        .padding(.vertical, 9)
+        .frame(minHeight: 40)
+    }
+
+    /// The borderless button that adds a style, up to the limit the catalogue
+    /// keeps.
+    private var addStyleRow: some View {
+        HStack(spacing: 0) {
+            Button {
+                addStyle()
+            } label: {
+                Text("+ Add style")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(DotTheme.ink)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add a custom style")
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 10)
+        .frame(minHeight: 40)
+    }
+
     // MARK: - Bindings
 
     /// The catalogue row of the chosen service.
@@ -324,6 +417,65 @@ struct AssistantPage: View {
                 onChange()
             }
         )
+    }
+
+    private var rewriteEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { config.assistant.rewrite.enabled },
+            set: { value in
+                guard config.assistant.rewrite.enabled != value else { return }
+                config.assistant.rewrite.enabled = value
+                onChange()
+            }
+        )
+    }
+
+    private func styleBinding(_ style: RewriteStyleID) -> Binding<Bool> {
+        Binding(
+            get: { config.assistant.rewrite.styles.contains(style) },
+            set: { isOn in
+                var kept = config.assistant.rewrite.styles
+                if isOn {
+                    if !kept.contains(style) { kept.append(style) }
+                } else {
+                    kept.removeAll { $0 == style }
+                }
+                let ordered = RewriteStyleID.allCases.filter { kept.contains($0) }
+                guard ordered != config.assistant.rewrite.styles else { return }
+                config.assistant.rewrite.styles = ordered
+                onChange()
+            }
+        )
+    }
+
+    private func customBinding(
+        _ id: String,
+        _ keyPath: WritableKeyPath<CustomRewriteStyle, String>
+    ) -> Binding<String> {
+        Binding(
+            get: {
+                config.assistant.rewrite.custom.first { $0.id == id }?[keyPath: keyPath] ?? ""
+            },
+            set: { value in
+                guard let index = config.assistant.rewrite.custom.firstIndex(where: { $0.id == id }),
+                      config.assistant.rewrite.custom[index][keyPath: keyPath] != value
+                else { return }
+                config.assistant.rewrite.custom[index][keyPath: keyPath] = value
+                onChange()
+            }
+        )
+    }
+
+    private func addStyle() {
+        guard config.assistant.rewrite.custom.count < CustomRewriteStyle.maximumCount else { return }
+        config.assistant.rewrite.custom.append(CustomRewriteStyle(title: "", instruction: ""))
+        onChange()
+    }
+
+    private func deleteStyle(_ id: String) {
+        guard config.assistant.rewrite.custom.contains(where: { $0.id == id }) else { return }
+        config.assistant.rewrite.custom.removeAll { $0.id == id }
+        onChange()
     }
 
     private var actionsBinding: Binding<Bool> {

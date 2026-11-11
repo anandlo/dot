@@ -128,6 +128,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         }
     )
+    /// The rewrite that follows a dictation.
+    ///
+    /// It is built once and kept: the card it feeds is the transcript card, and
+    /// a per-take runner would lose the stream of a rewrite the moment a second
+    /// take started.
+    private lazy var rewrite = RewriteRunner(
+        factory: AssistantRewriteProviderFactory(
+            credentials: credentials,
+            configuration: { [weak self] in self?.config.assistant ?? .default }
+        ),
+        textFields: AccessibilityTextFieldAccess.shared,
+        copy: { text in Paste.copy(text) }
+    )
+    /// The insertion the last paste made, kept for the rewrite that follows it.
+    private var rewriteAnchor: InsertionAnchor?
     /// Whether Accessibility permission has already been prompted during this session.
     private var hasRequestedAccessibility = false
     /// How long the last recording was, in seconds.
@@ -438,7 +453,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         actions.history = { [weak self] in self?.openHistory() }
         actions.settings = { [weak self] in self?.openSettings() }
         actions.close = { [weak self] in self?.hud.hide() }
+        actions.rewrite = { [weak self] style in self?.chooseRewrite(style) }
+        actions.cancelRewrite = { [weak self] in self?.rewrite.cancelStream() }
+        actions.undoRewrite = { [weak self] in self?.rewrite.undo() }
+        actions.applyRewriteAnyway = { [weak self] in self?.rewrite.useAnyway() }
+        actions.keepOriginal = { [weak self] in self?.rewrite.keepOriginal() }
         hud.actions = actions
+        rewrite.onChange = { [weak self] card in
+            self?.hud.setRewrite(card)
+        }
+    }
+
+    /// Runs one chip's style against the transcript on the card.
+    private func chooseRewrite(_ style: RewriteStyle) {
+        rewrite.choose(style, configuration: config.assistant.rewrite)
     }
 
     /// Shows the launch card once, after the menu is ready.
@@ -788,6 +816,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // person may press the shortcut again while it is up. The second
         // answer must not open a second recording over the first.
         guard state == .idle else { return }
+        rewrite.reset()
         // In hold mode the press may already be over: the microphone prompt
         // takes long enough for a quick tap to end while it is up, and a
         // recording whose key was released can never be stopped by that key.
@@ -1279,6 +1308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func failRecording(_ message: String) {
         guard state == .recording else { return }
+        rewrite.reset()
         stopLiveTranscription()
         ledger = nil
         recorder.cancel()
@@ -1325,11 +1355,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // before the guard runs, because a copy is the outcome the guard
         // decides on: the words are never left only in a failed paste.
         Paste.copy(plan.clipboard)
+        // Whether a rewrite is offered is decided before the paste, because it
+        // is what decides whether the insertion is anchored at all. A take Dot
+        // would not offer to rewrite never reads the Accessibility API.
+        let offersRewrite = rewrite.offersRewrite(
+            for: transcript,
+            delivery: .pasted,
+            configuration: config.assistant.rewrite
+        )
         let decision = pasteDecision()
         var delivery: HUDDelivery = .copied
         switch decision {
         case .paste:
-            delivery = paste(plan)
+            delivery = paste(plan, captureAnchor: offersRewrite)
         case .copy(let reason):
             if reason == .accessibilityMissing, !hasRequestedAccessibility {
                 hasRequestedAccessibility = true
@@ -1352,10 +1390,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 "characters": .int(grammar.text.count),
             ])
         }
+        // The rewrite layer belongs to the card that was just shown. Its state
+        // changes come back through `rewrite.onChange`, so the card is the only
+        // one that knows what is on it.
+        rewrite.begin(
+            text: transcript,
+            delivery: delivery,
+            destination: decision == .paste ? frontmostNameAtPress : nil,
+            configuration: config.assistant.rewrite,
+            anchor: rewriteAnchor
+        )
+        rewriteAnchor = nil
         if config.logTranscripts {
             Log.shared.info("transcript", ["text": .string(transcript)])
         } else {
             Log.shared.info("transcript.received", ["characters": .int(transcript.count)])
+        }
+        if rewrite.card != nil {
+            Log.shared.info("rewrite.offered", ["styles": .int(rewrite.card?.choices.count ?? 0)])
         }
         finishWork()
     }
@@ -1413,12 +1465,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///
     /// - Parameter plan: what to insert and what the clipboard keeps.
     /// - Returns: how the card reports the delivery.
-    private func paste(_ plan: TranscriptDelivery) -> HUDDelivery {
+    private func paste(_ plan: TranscriptDelivery, captureAnchor: Bool = false) -> HUDDelivery {
         let rewritten = plan.insertion != plan.clipboard
         if rewritten {
             Paste.copy(plan.insertion)
         }
+        // The anchor is read immediately before the keystroke: the selected
+        // range is the point the words land at, and reading it after the paste
+        // would be reading the field the words are already in.
+        rewriteAnchor = captureAnchor
+            ? rewrite.captureAnchor(insertedText: plan.insertion)
+            : nil
         guard Paste.pasteCommand() else {
+            rewriteAnchor = nil
             Paste.copy(plan.clipboard)
             return .copied
         }
@@ -1439,6 +1498,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleFailure(_ error: Error) {
+        rewrite.reset()
         let message: String
         if let providerError = error as? ProviderError {
             message = providerError.errorDescription ?? providerError.localizedDescription

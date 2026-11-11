@@ -552,6 +552,20 @@ enum UIPreview {
                 model: "gpt-4o"
             )
         }
+        try render("assistant-rewrite", tab: 5, keys: [AssistantSettings.defaultProviderID]) { config in
+            config.assistant.rewrite.custom = [
+                CustomRewriteStyle(
+                    id: "haiku",
+                    title: "Haiku",
+                    instruction: "Rewrite as a three line haiku."
+                ),
+                CustomRewriteStyle(
+                    id: "email",
+                    title: "Email",
+                    instruction: "Rewrite for a work email."
+                ),
+            ]
+        }
         try render("voices", tab: 6, keys: [], voices: appleVoices) { config in
             config.assistant.voice = VoiceSettings(providerID: VoiceProviderID.apple)
         }

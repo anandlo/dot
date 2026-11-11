@@ -91,6 +91,56 @@ enum HUDHeader {
         return cut + ellipsis
     }
 
+    /// The title of a transcript card that carries a rewrite.
+    ///
+    /// A card whose text was rewritten says so in the same small caps as the
+    /// delivery, because the words on it are no longer only what was said. The
+    /// copy outcome keeps the word the card has always used for the clipboard.
+    ///
+    /// - Parameters:
+    ///   - card: the rewrite layer.
+    ///   - delivery: how the transcript was delivered.
+    ///   - destination: the application the transcript went into.
+    /// - Returns: `"REWRITTEN IN MAIL"`, `"REWRITTEN"`, `"COPIED"`, or the
+    ///   plain delivery title while a rewrite is running or was refused.
+    static func title(
+        for card: RewriteCard,
+        delivery: HUDDelivery,
+        destination: String?
+    ) -> String {
+        switch card.phase {
+        case .applied:
+            let base = "REWRITTEN"
+            guard delivery == .pasted, let name = normalized(destination) else { return base }
+            let prefix = base + " IN "
+            guard width(of: prefix) < maximumTitleWidth else { return base }
+            return truncated(prefix + name.uppercased(), to: maximumTitleWidth)
+        case .copied:
+            return "COPIED"
+        case .offered, .rewriting, .blocked, .failed:
+            return title(delivery: delivery, destination: destination)
+        }
+    }
+
+    /// What VoiceOver reads for a rewritten header.
+    static func accessibilityLabel(
+        for card: RewriteCard,
+        delivery: HUDDelivery,
+        destination: String?
+    ) -> String {
+        switch card.phase {
+        case .applied:
+            guard delivery == .pasted, let name = normalized(destination) else {
+                return "Rewritten"
+            }
+            return "Rewritten into \(name)"
+        case .copied:
+            return "Copied"
+        case .offered, .rewriting, .blocked, .failed:
+            return accessibilityLabel(delivery: delivery, destination: destination)
+        }
+    }
+
     /// The name of the application, or `nil` when there is none to show.
     private static func normalized(_ name: String?) -> String? {
         guard let name else { return nil }

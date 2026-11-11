@@ -85,8 +85,18 @@ public enum MeterRamp {
         )
     }
 
-    /// A smooth ramp between two edges.
-    static func smoothstep(_ edge0: Double, _ edge1: Double, _ value: Double) -> Double {
+    /// A smooth ramp between two edges: `0` at ``edge0``, `1` at ``edge1``.
+    ///
+    /// The meter uses it to warm a bar towards the tip, and the grid uses the
+    /// same ramp for its halo, so a cell that is a little louder than the one
+    /// beside it is a little brighter rather than either lit or dark.
+    ///
+    /// - Parameters:
+    ///   - edge0: the value the ramp starts from.
+    ///   - edge1: the value the ramp reaches.
+    ///   - value: the value to place on the ramp.
+    /// - Returns: the position on the ramp, from `0` to `1`.
+    public static func smoothstep(_ edge0: Double, _ edge1: Double, _ value: Double) -> Double {
         guard edge1 > edge0 else { return value >= edge1 ? 1 : 0 }
         let t = min(max((value - edge0) / (edge1 - edge0), 0), 1)
         return t * t * (3 - 2 * t)

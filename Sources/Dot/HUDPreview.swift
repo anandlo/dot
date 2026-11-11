@@ -28,6 +28,12 @@ enum HUDPreview {
         case assistantAnswerSpoken
         case assistantConfirm
         case assistantConfirmDestructive
+        case rewriteOffered
+        case rewriteRunning
+        case rewriteAppliedFaithful
+        case rewriteAppliedCheck
+        case rewriteBlocked
+        case rewriteCopied
     }
 
     /// The question the assistant renders show.
@@ -85,6 +91,13 @@ enum HUDPreview {
     /// render of it has to show the end of the text and not its beginning.
     static let livePartial = "Dot keeps listening while the recording runs, so the words arrive as you speak and the card grows to make room for them. The newest words stay in view, which means the beginning of a long thought scrolls up out of the card while the person is still talking."
 
+    /// The rewrite the rewrite renders show.
+    ///
+    /// It is shorter than the transcript on purpose, so the concise style's
+    /// length band holds and the render of the applied card is the render of a
+    /// rewrite that would really have been applied.
+    static let rewrite = "Dot records the microphone, transcribes the words and pastes them back where you were."
+
     /// The shortcut the launch render shows.
     static let readyShortcut = "⌥⌘D"
 
@@ -102,6 +115,11 @@ enum HUDPreview {
         actions.paste = {}
         actions.settings = {}
         actions.close = {}
+        actions.rewrite = { _ in }
+        actions.cancelRewrite = {}
+        actions.undoRewrite = {}
+        actions.applyRewriteAnyway = {}
+        actions.keepOriginal = {}
         return actions
     }
 
@@ -333,8 +351,53 @@ enum HUDPreview {
             model.mode = .assistantConfirm(request)
             model.assistantAllow = {}
             model.assistantCancel = {}
+        case .rewriteOffered, .rewriteRunning, .rewriteAppliedFaithful,
+             .rewriteAppliedCheck, .rewriteBlocked, .rewriteCopied:
+            applyRewriteState(state, to: model)
         }
         return model
+    }
+
+    /// The six states of the rewrite layer, on the transcript card.
+    private static func applyRewriteState(_ state: State, to model: HUDModel) {
+        let style = RewriteStyle.concise
+        let text = state == .rewriteRunning ? longTranscript : transcript
+        model.mode = .transcript(
+            text: text,
+            delivery: .pasted,
+            elapsed: "0:07",
+            destination: "Mail"
+        )
+        var card = RewriteCard(
+            original: text,
+            choices: RewriteStyle.builtIns,
+            destination: "Mail"
+        )
+        switch state {
+        case .rewriteRunning:
+            card.phase = .rewriting(styleID: style.id, title: style.title)
+            card.rewrite = "Dot records the microphone, transcribes the words and pastes them back where you were."
+        case .rewriteAppliedFaithful:
+            card.phase = .applied(styleID: style.id)
+            card.rewrite = rewrite
+            card.canUndo = true
+        case .rewriteAppliedCheck:
+            card.phase = .applied(styleID: style.id)
+            card.rewrite = rewrite
+            card.warning = FaithfulnessCheck.nameChanged
+            card.canUndo = true
+        case .rewriteBlocked:
+            card.phase = .blocked(styleID: style.id, error: FaithfulnessCheck.numberChanged)
+            card.rewrite = rewrite
+        case .rewriteCopied:
+            card.phase = .copied(styleID: style.id)
+            card.rewrite = rewrite
+            card.note = RewriteCard.clipboardNote
+        default:
+            break
+        }
+        model.rewrite = card
+        model.cardSize = HUD.transcriptSize(text: text, rewrite: card)
     }
 
     /// Three seconds of a plausible voice, through the product's own meter.

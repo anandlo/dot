@@ -53,6 +53,12 @@ enum HUDTheme {
     static let live = Color(red: 0.961, green: 0.725, blue: 0.267)
     /// The transcribing state.
     static let amber = Color(red: 0.659, green: 0.639, blue: 0.604)
+    /// The faithfulness badge of a rewrite that kept every fact.
+    ///
+    /// The card's only other status colours are the amber of the live dot and
+    /// the silver of a delivery, and a silver dot beside the word "Faithful"
+    /// read as decoration rather than as "this one is safe".
+    static let faithful = Color(red: 0.361, green: 0.749, blue: 0.435)
 
     /// The colour of one bar of the meter.
     ///
