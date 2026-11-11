@@ -42,6 +42,40 @@ cp -- "$PROJECT_DIR/Resources/AppIcon-1024.png" "$APP/Contents/Resources/AppIcon
 cp -- "$PROJECT_DIR/Resources/MenuGlyph.png" "$APP/Contents/Resources/MenuGlyph.png"
 cp -- "$PROJECT_DIR/Resources/MenuGlyph@2x.png" "$APP/Contents/Resources/MenuGlyph@2x.png"
 
+# The Icon Composer document compiles to Assets.car, which is what macOS 26 and
+# later read. AppIcon.icns above stays the file macOS 14 and 15 read: those have
+# no icon stack of their own and draw the icon exactly as supplied.
+#
+# actool also writes an icns of its own with four slots. That one is deliberately
+# not used: the committed icns is drawn from the vector at all ten, so the small
+# and the large sizes agree.
+if [ -f "$PROJECT_DIR/Resources/AppIcon.icon/icon.json" ] && xcrun --find actool >/dev/null 2>&1; then
+  ICON_BUILD="$BUILD_DIR/icon-assets"
+  rm -r -- "$ICON_BUILD" 2>/dev/null || true
+  mkdir -p -- "$ICON_BUILD"
+  if xcrun actool "$PROJECT_DIR/Resources/AppIcon.icon" \
+    --compile "$ICON_BUILD" \
+    --platform macosx \
+    --minimum-deployment-target 14.0 \
+    --target-device mac \
+    --app-icon AppIcon \
+    --output-partial-info-plist "$ICON_BUILD/partial.plist" >/dev/null 2>&1
+  then
+    cp -- "$ICON_BUILD/Assets.car" "$APP/Contents/Resources/Assets.car"
+    log "compiled AppIcon.icon into Assets.car ($(( $(stat -f%z "$APP/Contents/Resources/Assets.car") / 1024 )) KB)"
+  else
+    warn "actool could not compile AppIcon.icon: the bundle ships the classic icns only"
+  fi
+else
+  warn "actool not found: the bundle ships the classic icns only"
+fi
+
+# CFBundleIconName is only written when the stack it names is in the bundle.
+ICON_NAME_ENTRY=""
+if [ -f "$APP/Contents/Resources/Assets.car" ]; then
+  ICON_NAME_ENTRY=$'\t<key>CFBundleIconName</key>\n\t<string>AppIcon</string>'
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -61,6 +95,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<string>Dot</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
+$ICON_NAME_ENTRY
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -83,6 +118,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<string>Dot reads your calendars when you ask what is next and adds events you ask for.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>Dot looks up a person's details when you ask it to write to them.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Dot opens or moves a file in your Desktop folder when you ask it to.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Dot opens or moves a file in your Documents folder when you ask it to.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Dot opens or moves a file in your Downloads folder when you ask it to.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
