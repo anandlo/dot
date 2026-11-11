@@ -5,6 +5,8 @@ import Foundation
 public enum MenuAction: Hashable, Sendable {
     /// Start or stop the recording.
     case toggleRecording
+    /// Ask the assistant: start a question, or stop the one in flight.
+    case askAssistant
     /// Paste the last transcript again.
     case pasteLast
     /// Copy the last transcript again.
@@ -195,6 +197,8 @@ public struct MenuState: Equatable, Sendable {
     public var isRecording: Bool
     /// The shortcut that starts and stops a recording.
     public var recordShortcut: MenuShortcut?
+    /// The shortcut that asks the assistant.
+    public var assistantShortcut: MenuShortcut?
     /// The shortcut that pastes the last transcript again.
     public var pasteShortcut: MenuShortcut?
     /// The last transcripts, newest first.
@@ -222,6 +226,7 @@ public struct MenuState: Equatable, Sendable {
     public init(
         isRecording: Bool = false,
         recordShortcut: MenuShortcut? = nil,
+        assistantShortcut: MenuShortcut? = nil,
         pasteShortcut: MenuShortcut? = nil,
         history: [String] = [],
         microphones: [MenuMicrophone] = [],
@@ -236,6 +241,7 @@ public struct MenuState: Equatable, Sendable {
     ) {
         self.isRecording = isRecording
         self.recordShortcut = recordShortcut
+        self.assistantShortcut = assistantShortcut
         self.pasteShortcut = pasteShortcut
         self.history = history
         self.microphones = microphones
@@ -278,6 +284,11 @@ public enum MenuBuilder {
             title: recordTitle(isRecording: state.isRecording),
             action: .toggleRecording,
             shortcut: state.recordShortcut
+        ))
+        items.append(MenuItem(
+            title: "Ask the assistant",
+            action: .askAssistant,
+            shortcut: state.assistantShortcut
         ))
 
         items.append(.separator)

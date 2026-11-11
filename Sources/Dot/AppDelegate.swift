@@ -4,6 +4,18 @@ import Foundation
 import DotCore
 import SwiftUI
 
+/// Why a take is being recorded.
+///
+/// It is the one fact that decides what happens to the words: a dictation is
+/// transcribed, rewritten, kept in the history and delivered to the cursor; a
+/// question goes to the assistant and nothing about it is written down.
+enum CapturePurpose: Equatable, Sendable {
+    /// The words become a transcript.
+    case dictation
+    /// The words are a question to the assistant.
+    case assistant
+}
+
 /// The application's coordinator.
 ///
 /// It owns the menu bar item, the HUD, the recorder, the hot keys, the key
@@ -84,6 +96,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var frontmostNameAtPress: String?
     /// Whether the recording was asked for by the hot key.
     private var startedFromHotkey = false
+    /// Why the take that is running was started.
+    ///
+    /// It is set by whichever shortcut opened the microphone and read when the
+    /// transcript lands, which is the only point where the two paths differ.
+    private var capturePurpose: CapturePurpose = .dictation
+    /// Whether the tool log may write the argument values of a call.
+    ///
+    /// The setting lives on the main actor with the rest of the configuration
+    /// and the tool log asks from whatever thread finished a call, so the answer
+    /// is mirrored into this box whenever the configuration is saved.
+    private nonisolated let logArguments = LogArgumentsFlag()
+    /// The assistant's turn.
+    ///
+    /// Nothing it owns exists until the first question: the provider, the
+    /// connectors and the voice are built by the coordinator on demand.
+    private lazy var assistant = AssistantCoordinator(
+        factory: AssistantCatalogueFactory(
+            credentials: credentials,
+            log: ToolCallLog.shared(allowsArguments: { [logArguments] in logArguments.isOn })
+        ),
+        makeSpeaker: { [credentials] in SpeechAnswerSpeaker(credentials: credentials) },
+        paster: PasteAnswerPaster(),
+        hud: hud,
+        settings: { [weak self] in
+            guard let self else { return AssistantRuntimeSettings() }
+            return AssistantRuntimeSettings(
+                configuration: self.config.assistant,
+                autoPaste: self.config.autoPaste,
+                ownBundleIdentifier: Bundle.main.bundleIdentifier ?? ""
+            )
+        }
+    )
     /// Whether Accessibility permission has already been prompted during this session.
     private var hasRequestedAccessibility = false
     /// How long the last recording was, in seconds.
@@ -191,7 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // permission and without a focused window. No hot key announces it, so
         // the watcher has to trust the keyboard state on its own.
         cancelWatcher.onRelease = { [weak self] in
-            self?.cancelRecording()
+            self?.escapePressed()
         }
 
         // The watcher reads the keyboard state from the start: it is the only
@@ -217,6 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         saveConfiguration()
+        assistant.terminate()
         migrationTask?.cancel()
         stopLiveTranscription()
         transcriptionTask?.cancel()
@@ -277,6 +322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func loadConfiguration() {
         let loaded = ProviderMigration.loadConfiguration(from: DotConfig.defaultURL())
         config = loaded.config
+        logArguments.set(config.logTranscripts)
         // The history file is read against the limit this configuration asks
         // for, so the window, the palette and the menu open with the same list.
         history = HistoryStore.loadEntries(limit: config.historyLimit)
@@ -468,6 +514,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch action {
         case .toggleRecording:
             toggleRecording()
+        case .askAssistant:
+            assistantHotkeyPressed()
         case .pasteLast:
             pasteLastTranscript()
         case .copyLast:
@@ -517,6 +565,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var state = MenuState()
         state.isRecording = self.state == .recording
         state.recordShortcut = MenuShortcuts.shortcut(for: config.hotkey)
+        state.assistantShortcut = MenuShortcuts.shortcut(for: config.assistantHotkey)
         state.pasteShortcut = MenuShortcuts.shortcut(for: config.pasteHotkey)
         state.history = history.map(\.text)
         state.microphones = MicrophoneDirectory.options(
@@ -561,6 +610,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "mode": .string(config.recordingMode.rawValue),
         ])
         keyWatcher.noteHotkeyFired()
+        // A dictation must not start on top of a question. The two keys write to
+        // the same microphone, and the answer would arrive in the middle of a
+        // second take.
+        if assistant.isTurnActive,
+           AssistantInteraction.action(for: .dictation, phase: assistantPhase) == .ignore {
+            Log.shared.info("hotkey.ignored", ["reason": .string("an assistant turn is running")])
+            return
+        }
         switch RecordKeyInteraction.action(
             for: .press,
             mode: config.recordingMode,
@@ -575,6 +632,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stopRecording()
         case .ignore:
             break
+        }
+    }
+
+    /// The assistant's shortcut was pressed.
+    ///
+    /// One key asks, sends, stops and silences, and ``AssistantInteraction``
+    /// decides which of those it is. Escape is answered by the same table.
+    private func assistantHotkeyPressed() {
+        Log.shared.info("assistant.hotkey.pressed", [
+            "hotkey": .string(config.assistantHotkey.label),
+            "phase": .string(assistantPhaseName),
+        ])
+        switch AssistantInteraction.action(for: .assistant, phase: assistantPhase) {
+        case .startCapture:
+            startRecording(fromHotkey: true, purpose: .assistant)
+        case .stopCapture:
+            stopRecording()
+        case .cancelTurn:
+            assistant.cancelTurn()
+        case .stopSpeech:
+            assistant.stopSpeech()
+        case .cancelCapture, .decline, .ignore:
+            // A question is never approved from the keyboard: a confirmation
+            // waits for the card's own buttons.
+            break
+        }
+    }
+
+    /// Escape was released.
+    ///
+    /// The assistant's table answers first; anything it does not handle falls
+    /// through to the behaviour Escape has always had, which is dropping the
+    /// recording without transcribing it.
+    private func escapePressed() {
+        switch AssistantInteraction.action(for: .escape, phase: assistantPhase) {
+        case .cancelTurn:
+            assistant.cancelTurn()
+        case .stopSpeech:
+            assistant.stopSpeech()
+        case .decline:
+            assistant.declineConfirmation()
+        case .cancelCapture:
+            if capturePurpose == .assistant {
+                cancelAssistantCapture()
+            } else {
+                cancelRecording()
+            }
+        case .startCapture, .stopCapture, .ignore:
+            cancelRecording()
+        }
+    }
+
+    private func cancelAssistantCapture() {
+        guard state == .recording else { return }
+        stopLiveTranscription()
+        ledger = nil
+        recorder.cancel()
+        capturePurpose = .dictation
+        state = .idle
+        refreshMenu()
+        hud.cancel()
+        hud.hide()
+        Log.shared.info("recording.cancelled", ["purpose": .string("assistant")])
+    }
+
+    /// The state the assistant's key is answered in.
+    ///
+    /// A take that is recording a question is the assistant's own capture, so it
+    /// reads as ``AssistantPhase/recording``. Every other state is whatever the
+    /// turn is doing; a dictation never reaches this table.
+    private var assistantPhase: AssistantPhase {
+        if state == .recording, capturePurpose == .assistant { return .recording }
+        return assistant.phase
+    }
+
+    /// The phase, for a log line.
+    private var assistantPhaseName: String {
+        switch assistantPhase {
+        case .idle: "idle"
+        case .recording: "recording"
+        case .thinking: "thinking"
+        case .streaming: "streaming"
+        case .tool: "tool"
+        case .speaking: "speaking"
+        case .confirming: "confirming"
         }
     }
 
@@ -603,13 +745,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func startRecording(fromHotkey: Bool = false) {
+    private func startRecording(fromHotkey: Bool = false, purpose: CapturePurpose = .dictation) {
         guard state == .idle else { return }
         startedFromHotkey = fromHotkey
+        capturePurpose = purpose
 
         // There is no point in recording when the transcript could never be
         // made.
         if let provider, !(providerIsAvailable(provider)) {
+            capturePurpose = .dictation
             hud.showMessage(
                 text: "\(selectedProviderName) is not available right now.",
                 action: nil
@@ -687,11 +831,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             bundleIdentifier: frontmost?.bundleIdentifier
         )
         frontmostNameAtPress = frontmost?.localizedName
-        hud.showRecording(elapsed: "0:00")
-        startLiveTranscription()
+        if capturePurpose == .assistant {
+            // A question is one short sentence: a live partial would be a second
+            // paid request that only repeats what the answer is about to use.
+            hud.showAssistantRecording(elapsed: "0:00")
+        } else {
+            hud.showRecording(elapsed: "0:00")
+            startLiveTranscription()
+        }
         keyWatcher.watch(keyCode: config.hotkey.keyCode)
         refreshMenu()
-        Log.shared.info("recording.started")
+        Log.shared.info("recording.started", [
+            "purpose": .string(capturePurpose == .assistant ? "assistant" : "dictation"),
+        ])
     }
 
     private func stopRecording() {
@@ -846,6 +998,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopLiveTranscription()
         ledger = nil
         recorder.cancel()
+        capturePurpose = .dictation
         state = .idle
         refreshMenu()
         hud.cancel()
@@ -1139,6 +1292,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleTranscript(_ transcript: String) {
+        // A question is answered, not delivered. It keeps nothing: no history
+        // entry, no rewrite, and nothing on the clipboard until the answer is
+        // ready to go where the person was writing.
+        if capturePurpose == .assistant {
+            capturePurpose = .dictation
+            assistant.ask(
+                transcript,
+                frontmost: frontmostAtPress,
+                frontmostName: frontmostNameAtPress
+            )
+            finishWork()
+            return
+        }
         lastTranscript = transcript
         history = HistoryStore.adding(
             transcript,
@@ -1287,6 +1453,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func finishWork() {
         stopLiveTranscription()
         ledger = nil
+        // The purpose belongs to the take that just ended. Nothing reads it
+        // again until a shortcut sets it, and a stale one would misroute the
+        // next transcript.
+        capturePurpose = .dictation
         state = .idle
         refreshMenu()
     }
@@ -1962,6 +2132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onChangePaletteShortcut: { [weak self] in
                 self?.choosePaletteShortcut()
             },
+            onChangeAssistantShortcut: { [weak self] in
+                self?.chooseAssistantShortcut()
+            },
             onOpenWelcome: { [weak self] in
                 self?.openWelcome()
             }
@@ -2021,6 +2194,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.pasteLastTranscript()
                 case GlobalHotkeyManager.paletteIdentifier:
                     self.showPalette()
+                case GlobalHotkeyManager.assistantIdentifier:
+                    self.assistantHotkeyPressed()
                 default:
                     break
                 }
@@ -2044,6 +2219,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             Log.shared.error("hotkey.register.failed", ["hotkey": .string(config.pasteHotkey.label)])
         }
+        if manager.register(config.assistantHotkey, identifier: GlobalHotkeyManager.assistantIdentifier) {
+            Log.shared.info("hotkey.registered", [
+                "hotkey": .string(config.assistantHotkey.label),
+                "role": .string("assistant"),
+            ])
+        } else {
+            Log.shared.error("hotkey.register.failed", ["hotkey": .string(config.assistantHotkey.label)])
+            Log.shared.warn("hotkey.role.unavailable", ["role": .string("assistant")])
+        }
         if manager.register(config.paletteHotkey, identifier: GlobalHotkeyManager.paletteIdentifier) {
             Log.shared.info("hotkey.registered", ["hotkey": .string(config.paletteHotkey.label), "role": .string("palette")])
         } else {
@@ -2062,16 +2246,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Which global shortcut the recorder is setting.
-    private enum ShortcutRole: Equatable {
+    enum ShortcutRole: Equatable {
         case record
         case paste
         case palette
+        case assistant
 
         var title: String {
             switch self {
             case .record: "Set Record Shortcut"
             case .paste: "Set Paste Shortcut"
             case .palette: "Set Palette Shortcut"
+            case .assistant: "Set Assistant Shortcut"
             }
         }
 
@@ -2080,6 +2266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .record: "record"
             case .paste: "paste"
             case .palette: "palette"
+            case .assistant: "assistant"
             }
         }
 
@@ -2088,6 +2275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .record: "Shortcut"
             case .paste: "Paste shortcut"
             case .palette: "Palette shortcut"
+            case .assistant: "Assistant shortcut"
             }
         }
     }
@@ -2102,6 +2290,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func choosePaletteShortcut() {
         chooseShortcut(for: .palette)
+    }
+
+    /// Opens the recorder for the assistant's shortcut.
+    func chooseAssistantShortcut() {
+        chooseShortcut(for: .assistant)
     }
 
     /// Opens the shortcut recorder for one of the two global shortcuts.
@@ -2125,6 +2318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .record: self.config.hotkey = hotkey
                 case .paste: self.config.pasteHotkey = hotkey
                 case .palette: self.config.paletteHotkey = hotkey
+                case .assistant: self.config.assistantHotkey = hotkey
                 }
                 self.saveConfiguration()
                 self.registerHotkeys()
@@ -2151,18 +2345,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The shortcuts a new one must not collide with.
     ///
-    /// All three are Dot's, and two of them can be on the same combination
+    /// All four are Dot's, and two of them can be on the same combination
     /// without Carbon telling anyone: the second registration simply never
     /// fires.
-    private static func otherHotkeys(
+    static func otherHotkeys(
         than role: ShortcutRole,
         config: DotConfig
     ) -> [Hotkey] {
-        switch role {
-        case .record: [config.pasteHotkey, config.paletteHotkey]
-        case .paste: [config.hotkey, config.paletteHotkey]
-        case .palette: [config.hotkey, config.pasteHotkey]
-        }
+        let all: [(ShortcutRole, Hotkey)] = [
+            (.record, config.hotkey),
+            (.paste, config.pasteHotkey),
+            (.palette, config.paletteHotkey),
+            (.assistant, config.assistantHotkey),
+        ]
+        return all.filter { $0.0 != role }.map(\.1)
     }
 
     // MARK: - Configuration
@@ -2242,6 +2438,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A queued save is superseded: this one writes the current values.
         pendingSave?.cancel()
         pendingSave = nil
+        // The tool log asks off the main actor whether it may write argument
+        // values, so the answer is mirrored where it can read it.
+        logArguments.set(config.logTranscripts)
         do {
             try config.save()
         } catch {

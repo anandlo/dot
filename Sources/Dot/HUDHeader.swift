@@ -98,3 +98,37 @@ enum HUDHeader {
         return trimmed.isEmpty ? nil : trimmed
     }
 }
+
+extension HUDHeader {
+    /// The title of the assistant's answer card.
+    ///
+    /// It keeps the transcript's cap: the answer card is the transcript card's
+    /// width, and an application name is as free to be long here as it is there.
+    ///
+    /// - Parameter state: what became of the answer.
+    /// - Returns: `"PASTED INTO MAIL"`, `"COPIED"`, `"SPEAKING"` or `"ANSWER"`.
+    static func title(for state: AssistantAnswerState) -> String {
+        switch state {
+        case .pasted(let name):
+            guard let name = normalized(name) else { return "PASTED" }
+            return truncated("PASTED INTO " + name.uppercased(), to: maximumTitleWidth)
+        case .copied: return "COPIED"
+        case .speaking: return "SPEAKING"
+        case .streaming, .spoken: return "ANSWER"
+        }
+    }
+
+    /// What VoiceOver reads for the assistant's header.
+    ///
+    /// - Parameter state: what became of the answer.
+    static func accessibilityLabel(for state: AssistantAnswerState) -> String {
+        switch state {
+        case .pasted(let name):
+            guard let name = normalized(name) else { return "Pasted" }
+            return "Pasted into \(name)"
+        case .copied: return "Copied"
+        case .speaking: return "Speaking"
+        case .streaming, .spoken: return "Answer"
+        }
+    }
+}

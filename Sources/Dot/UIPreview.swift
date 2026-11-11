@@ -449,6 +449,164 @@ enum UIPreview {
                 )
             }
         }
+
+        try renderAssistantSettings(to: directory, providers: providers)
+    }
+
+    /// Renders the Assistant, Voices and Connectors pages into `directory`.
+    ///
+    /// Every fact a page would read at run time is handed to it here: the keys a
+    /// service holds, the voices a provider offers and the permission each
+    /// connector was granted. A render must not read the Keychain, the installed
+    /// voices or the privacy database, and the two states of a page must be two
+    /// files rather than two different Macs.
+    private static func renderAssistantSettings(
+        to directory: URL,
+        providers: [MenuProvider]
+    ) throws {
+        let size = CGSize(width: 820, height: 1180)
+        var base = DotConfig.default
+        ProviderPreset.openAI.apply(to: &base)
+
+        let appleVoices = [
+            VoiceDescriptor(
+                providerID: VoiceProviderID.apple,
+                id: "com.apple.voice.premium.en-US.Ava",
+                name: "Ava",
+                language: "en-US",
+                quality: .premium,
+                detail: "Premium. American English."
+            ),
+            VoiceDescriptor(
+                providerID: VoiceProviderID.apple,
+                id: "com.apple.voice.enhanced.en-GB.Daniel",
+                name: "Daniel",
+                language: "en-GB",
+                quality: .enhanced,
+                detail: "Enhanced. British English."
+            ),
+        ]
+        let cloudVoices = [
+            VoiceDescriptor(
+                providerID: VoiceProviderID.elevenLabs,
+                id: "JBFqnCBsd6RMkjVDRZzb",
+                name: "George",
+                language: "en-GB",
+                quality: .premium,
+                detail: "Warm and British."
+            ),
+            VoiceDescriptor(
+                providerID: VoiceProviderID.elevenLabs,
+                id: "21m00Tcm4TlvDq8ikWAM",
+                name: "Rachel",
+                language: "en-US",
+                quality: .premium,
+                detail: "Calm and American."
+            ),
+        ]
+        let connectorRows = sampleConnectorSummaries()
+
+        func render(
+            _ name: String,
+            tab: Int,
+            keys: Set<String>,
+            voices: [VoiceDescriptor]? = nil,
+            connectors: [ConnectorSummary]? = nil,
+            configure: (inout DotConfig) -> Void
+        ) throws {
+            for scheme in [ColorScheme.light, ColorScheme.dark] {
+                var config = base
+                configure(&config)
+                if scheme == .dark {
+                    config.appearance = .dark
+                }
+                let suffix = scheme == .dark ? "-dark" : ""
+                try writeHosted(
+                    WindowPreview(size: size) {
+                        settingsPreview(
+                            config: config,
+                            providers: providers,
+                            tab: tab,
+                            assistantKeys: keys,
+                            voices: voices,
+                            connectors: connectors,
+                            height: size.height
+                        )
+                    },
+                    size: size,
+                    scheme: scheme,
+                    to: directory.appendingPathComponent("settings-\(name)\(suffix)-tall.png")
+                )
+            }
+        }
+
+        try render("assistant", tab: 5, keys: []) { config in
+            config.assistant.chat = AssistantSettings(
+                providerID: AssistantSettings.defaultProviderID,
+                model: "gpt-4o-mini"
+            )
+        }
+        try render("assistant-connected", tab: 5, keys: [AssistantSettings.defaultProviderID]) { config in
+            config.assistant.chat = AssistantSettings(
+                providerID: AssistantSettings.defaultProviderID,
+                model: "gpt-4o"
+            )
+        }
+        try render("voices", tab: 6, keys: [], voices: appleVoices) { config in
+            config.assistant.voice = VoiceSettings(providerID: VoiceProviderID.apple)
+        }
+        try render("voices-cloud", tab: 6, keys: [VoiceProviderID.elevenLabs], voices: cloudVoices) { config in
+            config.assistant.voice = VoiceSettings(
+                providerID: VoiceProviderID.elevenLabs,
+                voiceID: "JBFqnCBsd6RMkjVDRZzb",
+                speed: 1.2
+            )
+        }
+        try render("connectors", tab: 7, keys: [], connectors: connectorRows) { _ in }
+    }
+
+    /// Connector rows with a mixture of permission states, built from the
+    /// shipped connectors so the names, the symbols and the tools are the real
+    /// ones and only the permissions are sample.
+    private static func sampleConnectorSummaries() -> [ConnectorSummary] {
+        let states: [ConnectorID: ConnectorPermissionStatus] = [
+            .reminders: .granted,
+            .calendar: .notDetermined,
+            .contacts: .granted,
+            .notes: .denied,
+            .files: .granted,
+            .mail: .notDetermined,
+            .messages: .denied,
+            .apps: .granted,
+            .shortcuts: .restricted,
+            .music: .granted,
+            .spotify: .notDetermined,
+            .system: .granted,
+        ]
+        let settings = ConnectorSettings.default
+        return ConnectorCatalog.make().map { connector in
+            ConnectorSummary(
+                id: connector.id,
+                displayName: connector.displayName,
+                symbol: connector.symbol,
+                detail: connector.detail,
+                isEnabled: settings.isEnabled(connector.id),
+                permission: ConnectorPermission(
+                    status: states[connector.id] ?? .granted,
+                    service: connector.displayName,
+                    settingsURL: ConnectorPermission.Pane.automation.url
+                ),
+                tools: connector.tools().map { tool in
+                    ConnectorSummary.ToolSummary(
+                        name: tool.name,
+                        title: tool.title,
+                        detail: tool.description,
+                        risk: tool.risk,
+                        policy: ToolPolicy.derived(from: tool.risk)
+                    )
+                }
+            )
+        }
     }
 
     private static func settingsPreview(
@@ -457,6 +615,9 @@ enum UIPreview {
         tab: Int,
         aboutUpdate: AboutUpdateState? = nil,
         models: [AvailableModel]? = nil,
+        assistantKeys: Set<String>? = nil,
+        voices: [VoiceDescriptor]? = nil,
+        connectors: [ConnectorSummary]? = nil,
         height: CGFloat? = nil
     ) -> some View {
         SettingsView(
@@ -476,6 +637,9 @@ enum UIPreview {
         .environment(\.settingsDefaultInputUID, "DotRenderBuiltInMicrophone")
         .environment(\.settingsVersionOverride, "1.0")
         .environment(\.settingsHeightOverride, height)
+        .environment(\.assistantKeyedProviders, assistantKeys)
+        .environment(\.settingsVoiceOptions, voices)
+        .environment(\.settingsConnectorSummaries, connectors)
     }
 
     /// Renders the history window into `directory`.

@@ -81,6 +81,8 @@ enum HUDTheme {
     static let liveFont = Font.system(size: 13, weight: .regular)
     /// The message.
     static let messageFont = Font.system(size: 13, weight: .medium)
+    /// The one line of an assistant card that is not a transcript.
+    static let assistantFont = Font.system(size: 13, weight: .regular)
 
     /// The tracking of the small caps labels.
     static let labelTracking: CGFloat = 1.6

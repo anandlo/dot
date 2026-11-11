@@ -109,6 +109,16 @@ final class UIPreviewTests: XCTestCase {
             "settings-about-update-current.png",
             "settings-about-update-available.png",
             "settings-about-update-unreachable.png",
+            "settings-assistant-tall.png",
+            "settings-assistant-dark-tall.png",
+            "settings-assistant-connected-tall.png",
+            "settings-assistant-connected-dark-tall.png",
+            "settings-voices-tall.png",
+            "settings-voices-dark-tall.png",
+            "settings-voices-cloud-tall.png",
+            "settings-voices-cloud-dark-tall.png",
+            "settings-connectors-tall.png",
+            "settings-connectors-dark-tall.png",
         ]
         // Every engine has a page, and each page is drawn in both appearances.
         for preset in ProviderPreset.all {

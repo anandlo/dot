@@ -45,6 +45,29 @@ public struct ConnectorID: RawRepresentable, Hashable, Sendable, Codable,
     public static let messages: ConnectorID = "messages"
     public static let system: ConnectorID = "system"
 
+    /// The SF Symbol this connector is drawn with.
+    ///
+    /// The connectors declare their own symbol, and a card that has only an id
+    /// cannot ask them. The table is kept honest by a test that compares it with
+    /// the symbols the connectors themselves report, so the two cannot drift.
+    public var symbol: String {
+        switch rawValue {
+        case "reminders": "checklist"
+        case "calendar": "calendar"
+        case "contacts": "person.crop.circle"
+        case "notes": "note.text"
+        case "files": "folder"
+        case "apps": "app"
+        case "shortcuts": "bolt"
+        case "music": "music.note"
+        case "spotify": "music.note.list"
+        case "mail": "envelope"
+        case "messages": "message"
+        case "system": "gearshape"
+        default: "puzzlepiece.extension"
+        }
+    }
+
     /// Every connector this build ships, in the order the settings page lists
     /// them.
     public static let builtIn: [ConnectorID] = [

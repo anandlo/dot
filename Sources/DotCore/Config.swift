@@ -366,6 +366,11 @@ public struct DotConfig: Codable, Sendable, Equatable {
     public var pasteHotkey: Hotkey
     /// The shortcut that opens the dictation palette.
     public var paletteHotkey: Hotkey
+    /// The shortcut that asks the assistant.
+    ///
+    /// It is the same key in both directions: a press starts the question, the
+    /// next one sends it, and a press while the answer is arriving stops it.
+    public var assistantHotkey: Hotkey
     /// Whether the transcript is pasted into the frontmost application.
     public var autoPaste: Bool
     /// Whether single-clicking the menu bar icon starts or stops recording.
@@ -419,6 +424,12 @@ public struct DotConfig: Codable, Sendable, Equatable {
     /// provider never does. An empty book is the shipped state, and a device
     /// with no entry is drawn on the fixed window.
     public var microphoneCalibration: [String: MicrophoneCalibration]
+    /// Everything the voice assistant reads.
+    ///
+    /// One block, at the top level of the file. It is not a field of any
+    /// provider: the migration that retires dead providers deletes keys it
+    /// does not know from that table, and assistant settings must survive it.
+    public var assistant: AssistantConfiguration
 
     /// The configuration Dot starts with.
     public static let `default` = DotConfig(
@@ -441,7 +452,9 @@ public struct DotConfig: Codable, Sendable, Equatable {
         recordingMode: .toggle,
         outputGrammarEnabled: false,
         outputGrammarTargets: [:],
-        microphoneCalibration: [:]
+        microphoneCalibration: [:],
+        assistantHotkey: .defaultAssistant,
+        assistant: .default
     )
 
     /// The settings the providers start with.
@@ -502,7 +515,9 @@ public struct DotConfig: Codable, Sendable, Equatable {
         recordingMode: RecordingMode = .toggle,
         outputGrammarEnabled: Bool = false,
         outputGrammarTargets: [String: DictationTarget] = [:],
-        microphoneCalibration: [String: MicrophoneCalibration] = [:]
+        microphoneCalibration: [String: MicrophoneCalibration] = [:],
+        assistantHotkey: Hotkey = .defaultAssistant,
+        assistant: AssistantConfiguration = .default
     ) {
         self.provider = provider
         self.providers = providers
@@ -524,6 +539,8 @@ public struct DotConfig: Codable, Sendable, Equatable {
         self.outputGrammarEnabled = outputGrammarEnabled
         self.outputGrammarTargets = outputGrammarTargets
         self.microphoneCalibration = microphoneCalibration
+        self.assistantHotkey = assistantHotkey
+        self.assistant = assistant
     }
 
     /// The folder the configuration lives in, relative to the home directory.
@@ -684,6 +701,16 @@ extension DotConfig {
             forKey: .microphoneCalibration
         )
         self.microphoneCalibration = MicrophoneCalibrationBook.sanitized(storedBook ?? nil ?? [:])
+        // The assistant's block and its shortcut are read the tolerant way too:
+        // a file written before the assistant existed has neither, and one
+        // edited by hand may carry a block no build can decode. Either way the
+        // rest of the file, the dictation provider above all, stays as it was.
+        self.assistantHotkey = ((try? container.decodeIfPresent(Hotkey.self, forKey: .assistantHotkey)) ?? nil)
+            ?? fallback.assistantHotkey
+        self.assistant = ((try? container.decodeIfPresent(
+            AssistantConfiguration.self,
+            forKey: .assistant
+        )) ?? nil) ?? fallback.assistant
     }
 }
 

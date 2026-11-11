@@ -27,6 +27,7 @@ final class SettingsWindowController {
         onChangeShortcut: @escaping () -> Void,
         onChangePasteShortcut: @escaping () -> Void = {},
         onChangePaletteShortcut: @escaping () -> Void = {},
+        onChangeAssistantShortcut: @escaping () -> Void = {},
         onOpenWelcome: @escaping () -> Void = {}
     ) {
         let host = existingHost()
@@ -43,6 +44,7 @@ final class SettingsWindowController {
                 onChangeShortcut: onChangeShortcut,
                 onChangePasteShortcut: onChangePasteShortcut,
                 onChangePaletteShortcut: onChangePaletteShortcut,
+                onChangeAssistantShortcut: onChangeAssistantShortcut,
                 onOpenWelcome: onOpenWelcome
             )
         }

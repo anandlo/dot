@@ -252,6 +252,22 @@ final class HUD {
     ///
     /// - Parameter elapsed: the clock of the recording.
     func showRecording(elapsed: String) {
+        openRecordingCard(.recording(elapsed: elapsed))
+    }
+
+    /// Shows the recording state for a question to the assistant.
+    ///
+    /// - Parameter elapsed: the clock of the recording.
+    func showAssistantRecording(elapsed: String) {
+        openRecordingCard(.assistantRecording(elapsed: elapsed))
+    }
+
+    /// Opens the recording card in one of its two purposes.
+    ///
+    /// The microphone, the meter and the card are the same in both: the only
+    /// difference is the mark in the leading slot, which is the live dot for a
+    /// dictation and the assistant's own symbol for a question.
+    private func openRecordingCard(_ mode: HUDMode) {
         isPreviewingVisualizer = false
         model.clearLiveText()
         model.grammar = nil
@@ -268,7 +284,7 @@ final class HUD {
         spectrumClock = 0
         reveal = 0
         model.reveal = 0
-        setMode(.recording(elapsed: elapsed), size: HUDState.recordingCard.size)
+        setMode(mode, size: HUDState.recordingCard.size)
         present()
     }
 
@@ -561,6 +577,8 @@ final class HUD {
         model.isEditingTranscript = false
         model.hoveredAction = nil
         model.messageAction = nil
+        model.assistantAllow = nil
+        model.assistantCancel = nil
         panel.allowsKey = false
         dismissTimer?.invalidate()
         dismissTimer = nil
@@ -889,7 +907,7 @@ final class HUD {
         let items: [HUDAction]
         let headerH: CGFloat
         switch model.mode {
-        case .recording:
+        case .recording, .assistantRecording:
             items = HUDAction.available([.stop, .cancel], in: actions)
             headerH = model.liveText.isEmpty ? card.height : HUDState.headerHeight
         case .working:
@@ -903,6 +921,11 @@ final class HUD {
             headerH = card.height
         case .ready:
             items = HUDAction.available([.settings, .close], in: actions)
+            headerH = card.height
+        case .assistantThinking, .assistantTool, .assistantAnswer, .assistantConfirm:
+            // The assistant's cards have no icon buttons, so there is nothing
+            // under the pointer to report.
+            items = []
             headerH = card.height
         }
         guard !items.isEmpty else { return nil }
@@ -1135,6 +1158,8 @@ final class HUD {
             // A button belongs to the message that offered it. Leaving the
             // closure behind would let a card that cannot show it run it.
             model.messageAction = nil
+            model.assistantAllow = nil
+            model.assistantCancel = nil
             panel.allowsKey = false
         }
         guard changed else { return }
@@ -1153,7 +1178,12 @@ final class HUD {
              (.working, .working),
              (.transcript, .transcript),
              (.message, .message),
-             (.ready, .ready):
+             (.ready, .ready),
+             (.assistantRecording, .assistantRecording),
+             (.assistantThinking, .assistantThinking),
+             (.assistantTool, .assistantTool),
+             (.assistantAnswer, .assistantAnswer),
+             (.assistantConfirm, .assistantConfirm):
             true
         default:
             false
@@ -1249,8 +1279,66 @@ final class HUD {
         }
     }
 
-    // MARK: - Sizes
+    // MARK: - Assistant
 
+    /// Shows the question on its way to the service.
+    func showAssistantThinking(question: String) {
+        isPreviewingVisualizer = false
+        cancelDwellForAssistant()
+        setMode(.assistantThinking(question: question), size: HUDState.assistantCard.size)
+        present()
+    }
+
+    /// Shows the connected app the answer is using.
+    func showAssistantTool(connectorName: String) {
+        isPreviewingVisualizer = false
+        cancelDwellForAssistant()
+        setMode(.assistantTool(connectorName: connectorName), size: HUDState.assistantCard.size)
+        present()
+    }
+
+    /// Shows the answer as it arrives, or as it was delivered.
+    ///
+    /// The countdown is the transcript's: it starts when the answer has reached
+    /// a state a person can act on, and it runs while the card is not being
+    /// read. A streaming answer never counts down, because it is still changing.
+    func showAssistantAnswer(text: String, state: AssistantAnswerState) {
+        isPreviewingVisualizer = false
+        model.clearLiveText()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        setMode(
+            .assistantAnswer(text: trimmed, state: state),
+            size: Self.assistantAnswerSize(text: trimmed)
+        )
+        present()
+        switch state {
+        case .pasted:
+            startDwelling(duration: min(dwellSeconds, 3.5))
+        case .copied, .spoken:
+            startDwelling(duration: dwellSeconds)
+        case .streaming, .speaking:
+            cancelDwellForAssistant()
+        }
+    }
+
+    private func cancelDwellForAssistant() {
+        dismissTimer?.invalidate()
+        dismissTimer = nil
+        dwellClock = nil
+    }
+
+    /// The size of the assistant's answer card.
+    ///
+    /// It is the transcript's body under the transcript's header: the same font,
+    /// the same bounds, the same point at which it starts to scroll.
+    ///
+    /// - Parameter text: the answer.
+    static func assistantAnswerSize(text: String) -> CGSize {
+        let body = HUDTranscript.bodyHeight(contentHeight: transcriptContentHeight(text: text))
+        return HUDState.assistantAnswerCard(bodyHeight: body).size
+    }
+
+    // MARK: - Sizes
     /// The size of the transcript card.
     ///
     /// The card grows with the words up to the height at which the body
@@ -1288,8 +1376,7 @@ final class HUD {
         return CGFloat(lines) * HUDTheme.transcriptLineHeight + HUDTheme.verticalPadding * 2
     }
 
-    /// The width a message needs.
-    ///
+    /// The width a message needs.    ///
     /// - Parameters:
     ///   - text: the message.
     ///   - actionTitle: the title of the button the message offers, when it has
@@ -1314,4 +1401,79 @@ final class HUD {
         return min(max(width, 280), 560)
     }
 
+    // MARK: - Confirmation
+
+    /// Shows a connected app's request and the two ways to answer it.
+    ///
+    /// The card never takes the keyboard: the panel cannot become key, so a
+    /// Return typed into the application behind it reaches that application and
+    /// approves nothing. Escape reaches the coordinator, which declines.
+    ///
+    /// - Parameters:
+    ///   - request: what the app wants to do.
+    ///   - onAllow: what the allow button does.
+    ///   - onCancel: what the cancel button does.
+    func showAssistantConfirm(
+        _ request: ConfirmationRequest,
+        onAllow: @escaping () -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        isPreviewingVisualizer = false
+        model.clearLiveText()
+        cancelDwellForAssistant()
+        let lines = Self.assistantSummaryLines(request.summary)
+        setMode(
+            .assistantConfirm(request),
+            size: CGSize(
+                width: HUDConfirmLayout.width,
+                height: HUDConfirmLayout.height(summaryLines: lines)
+            )
+        )
+        // Set after the mode, so the state change cannot clear the buttons that
+        // belong to the request it just moved to.
+        model.assistantAllow = onAllow
+        model.assistantCancel = onCancel
+        present()
+        Log.shared.info("hud.confirm.shown", [
+            "connector": .string(request.connectorID.rawValue),
+            "risk": .string(request.risk.rawValue),
+            "lines": .int(lines),
+        ])
+    }
+
+    /// The number of lines the request needs on the card.
+    ///
+    /// It is measured, not estimated: the sentence is the whole of what the
+    /// person is deciding on, and the card is sized to hold it.
+    ///
+    /// - Parameter summary: the sentence the tool built.
+    static func assistantSummaryLines(_ summary: String) -> Int {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 2
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 14, weight: .regular),
+            .paragraphStyle: paragraph,
+        ]
+        let rect = (summary as NSString).boundingRect(
+            with: CGSize(width: HUDConfirmLayout.summaryWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: attributes
+        )
+        let lines = Int(ceil(rect.height / HUDConfirmLayout.summaryLineHeight))
+        return min(max(lines, 1), HUDConfirmLayout.maximumSummaryLines)
+    }
+}
+
+extension HUD: AssistantHUD {
+    func showAssistantMessage(_ text: String, symbol: String) {
+        showMessage(text: text, symbol: symbol)
+    }
+
+    func hideAssistantConfirm() {
+        hide()
+    }
+
+    func hideAssistant() {
+        hide()
+    }
 }

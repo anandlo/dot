@@ -38,6 +38,22 @@ public struct ConfirmationRequest: Sendable, Equatable {
     }
 }
 
+extension ConfirmationRequest {
+    /// What the button that allows the call reads.
+    ///
+    /// A call that only writes asks to be allowed. A call that destroys
+    /// something names what it is about to do instead, because "Allow" beside a
+    /// deletion is a word a person can read without noticing what it allows.
+    public var allowTitle: String {
+        guard risk == .destructive else { return "Allow" }
+        guard let verb = toolName.split(separator: "_").last, !verb.isEmpty else { return "Delete" }
+        return verb.prefix(1).uppercased() + verb.dropFirst()
+    }
+
+    /// Whether the primary button carries the red of a destructive call.
+    public var isDestructive: Bool { risk == .destructive }
+}
+
 /// The app's answer to "may this run?".
 ///
 /// The app installs a gate that puts the request in the HUD island and waits.

@@ -121,7 +121,216 @@ struct HUDView: View {
             message(text: text, symbol: symbol)
         case .ready(let shortcut):
             ready(shortcut: shortcut)
+        case .assistantRecording(let elapsed):
+            assistantRecording(elapsed: elapsed)
+        case .assistantThinking(let question):
+            assistantLine(text: question, color: HUDTheme.ink2)
+        case .assistantTool(let connectorName):
+            assistantLine(text: "Using \(connectorName)", color: HUDTheme.ink)
+        case .assistantAnswer(let text, let state):
+            assistantAnswer(text: text, state: state)
+        case .assistantConfirm(let request):
+            assistantConfirm(request)
         }
+    }
+
+    // MARK: - Assistant
+
+    /// The recording card, with the assistant's mark where the live dot is.
+    ///
+    /// Everything else is the recording card: the clock, the waveform, the two
+    /// buttons. A question is spoken into the same microphone as a dictation, so
+    /// the card that says it is recording is the same card.
+    private func assistantRecording(elapsed: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                Image(systemName: "sparkle")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(HUDTheme.live)
+                    .opacity(0.55 + 0.45 * model.pulse)
+                    .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
+
+                Color.clear.frame(width: 10)
+
+                Text("REC")
+                    .font(HUDTheme.labelFont)
+                    .tracking(HUDTheme.labelTracking)
+                    .foregroundStyle(HUDTheme.ink)
+
+                Color.clear.frame(width: 10)
+
+                Text(elapsed)
+                    .font(HUDTheme.clockFont)
+                    .foregroundStyle(HUDTheme.ink2)
+
+                Color.clear.frame(width: 14)
+
+                HUDWaveform(
+                    visualizer: model.visualizer,
+                    halfHeights: model.halfHeights,
+                    history: model.history,
+                    spectrumHistory: model.spectrumHistory,
+                    phase: model.phase,
+                    time: model.time,
+                    level: model.level,
+                    pulse: model.pulse,
+                    ceiling: model.ceiling,
+                    bars: model.bars,
+                    reveal: model.reveal
+                )
+                .frame(maxWidth: .infinity)
+                .frame(height: HUDTheme.waveformHeight)
+
+                controlsSection([.stop, .cancel])
+            }
+            .padding(.horizontal, HUDTheme.padding)
+            .frame(maxWidth: .infinity)
+            .frame(height: HUDState.recordingHeight)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    /// One line of the assistant at work: its mark, a sentence, and the dots.
+    private func assistantLine(text: String, color: Color) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "sparkle")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(HUDTheme.live)
+
+            Text(text)
+                .font(HUDTheme.assistantFont)
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 8)
+
+            AssistantPulseDots(time: model.time, reduceMotion: reduceMotion)
+        }
+        .padding(.horizontal, HUDTheme.padding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Assistant answer
+
+    /// The answer, in the transcript's clothes: a labelled header and a body
+    /// that grows to the limit and then scrolls.
+    private func assistantAnswer(text: String, state: AssistantAnswerState) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text(HUDHeader.title(for: state))
+                    .font(HUDTheme.labelFont)
+                    .tracking(HUDTheme.labelTracking)
+                    .foregroundStyle(assistantLabelColor(state))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: HUDHeader.maximumTitleWidth, alignment: .leading)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityLabel(Text(HUDHeader.accessibilityLabel(for: state)))
+
+                if state == .speaking {
+                    Image(systemName: "speaker.wave.2")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(HUDTheme.live)
+                        .opacity(0.55 + 0.45 * abs(sin(model.time * .pi * 1.6)))
+                }
+
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, HUDTheme.padding)
+            .frame(height: HUDTheme.headerHeight)
+
+            Rectangle()
+                .fill(HUDTheme.hairline)
+                .frame(height: 1)
+
+            ScrollView(.vertical) {
+                Text(text)
+                    .font(HUDTheme.transcriptFont)
+                    .lineSpacing(HUDTheme.transcriptLineSpacing)
+                    .foregroundStyle(HUDTheme.ink)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, HUDTheme.padding)
+                    .padding(.vertical, HUDTheme.verticalPadding)
+                    .id(Self.assistantAnswerAnchor)
+            }
+            .scrollIndicators(.never)
+            .scrollBounceBehavior(.basedOnSize)
+            .defaultScrollAnchor(.top)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .accessibilityLabel(Text("Answer"))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func assistantLabelColor(_ state: AssistantAnswerState) -> Color {
+        switch state {
+        case .pasted, .copied: HUDTheme.mint
+        case .speaking: HUDTheme.live
+        case .streaming, .spoken: HUDTheme.ink2
+        }
+    }
+
+    private static let assistantAnswerAnchor = "hud.assistant.answer"
+
+    // MARK: - Assistant confirmation
+
+    /// The card that asks before a connected app does something.
+    ///
+    /// It is not a dialog and it never takes the keyboard: the person is still
+    /// typing into the application behind it, and a Return meant for that
+    /// application must never approve this. The two buttons are the only way to
+    /// answer other than Escape.
+    private func assistantConfirm(_ request: ConfirmationRequest) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: request.connectorID.symbol)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(HUDTheme.ink2)
+
+                Text(request.connectorName.uppercased())
+                    .font(HUDTheme.labelFont)
+                    .tracking(HUDTheme.labelTracking)
+                    .foregroundStyle(HUDTheme.ink2)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+            }
+            .frame(height: HUDConfirmLayout.headerHeight)
+
+            Color.clear.frame(height: HUDConfirmLayout.rowGap)
+
+            Text(request.summary)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(HUDTheme.ink)
+                .lineLimit(HUDConfirmLayout.maximumSummaryLines)
+                .lineSpacing(2)
+                .frame(width: HUDConfirmLayout.summaryWidth, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: HUDConfirmLayout.buttonGap) {
+                Spacer(minLength: 0)
+
+                Button("Cancel") {
+                    model.assistantCancel?()
+                }
+                .buttonStyle(HUDConfirmButtonStyle(isPrimary: false, isDestructive: false))
+
+                Button(request.allowTitle) {
+                    model.assistantAllow?()
+                }
+                .buttonStyle(HUDConfirmButtonStyle(
+                    isPrimary: true,
+                    isDestructive: request.isDestructive
+                ))
+            }
+        }
+        .padding(.horizontal, HUDState.padding)
+        .padding(.vertical, HUDState.verticalPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     // MARK: - Recording
@@ -520,7 +729,7 @@ struct HUDView: View {
 
     private func activeControlItems() -> [HUDAction] {
         switch model.mode {
-        case .recording:
+        case .recording, .assistantRecording:
             return HUDAction.available([.stop, .cancel], in: actions)
         case .working:
             return HUDAction.available([.cancel], in: actions)
@@ -530,6 +739,11 @@ struct HUDView: View {
             return HUDAction.available([.close], in: actions)
         case .ready:
             return HUDAction.available([.settings, .close], in: actions)
+        case .assistantThinking, .assistantTool, .assistantAnswer, .assistantConfirm:
+            // The assistant's cards carry no buttons of their own: the shortcut
+            // stops the turn and Escape backs out, and a confirmation draws its
+            // own two.
+            return []
         }
     }
 
@@ -1142,5 +1356,85 @@ final class HUDTranscriptNSTextView: NSTextView {
             return
         }
         super.keyDown(with: event)
+    }
+}
+
+/// The three dots that say the assistant is working.
+///
+/// They pulse in sequence on a 1.2 second cycle, in the amber of the live dot.
+/// A person who asked for reduced motion gets the three of them at rest: the
+/// state is still readable from the mark and the sentence, and nothing on the
+/// card moves.
+struct AssistantPulseDots: View {
+    /// The seconds the card has been on screen.
+    var time: Double
+    /// Whether the motion is reduced.
+    var reduceMotion: Bool
+
+    /// The length of one pulse, in seconds.
+    static let cycle: Double = 1.2
+    /// The diameter of one dot, in points.
+    static let diameter: CGFloat = 4
+    /// The distance between two dots, in points.
+    static let gap: CGFloat = 4
+
+    var body: some View {
+        HStack(spacing: Self.gap) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .fill(HUDTheme.live)
+                    .frame(width: Self.diameter, height: Self.diameter)
+                    .opacity(alpha(index))
+            }
+        }
+        .frame(height: HUDTheme.dotDiameter)
+        .accessibilityHidden(true)
+    }
+
+    private func alpha(_ index: Int) -> Double {
+        guard !reduceMotion else { return 0.55 }
+        let phase = (time / Self.cycle + Double(index) * 0.18)
+            .truncatingRemainder(dividingBy: 1)
+        let wave = max(0, 1 - abs(phase - 0.5) * 2)
+        return 0.25 + 0.75 * wave
+    }
+}
+
+/// The two capsules of the confirmation card.
+///
+/// The primary one is the porcelain of the card's ink, unreadable nowhere and
+/// unmistakable; a call that destroys something fills it with the system's red
+/// instead, so the button that deletes does not look like the button that
+/// allows.
+private struct HUDConfirmButtonStyle: ButtonStyle {
+    /// Whether this is the button that allows the call.
+    var isPrimary: Bool
+    /// Whether the call destroys something.
+    var isDestructive: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 14)
+            .frame(height: HUDConfirmLayout.buttonHeight)
+            .background(Capsule(style: .circular).fill(background))
+            .overlay {
+                if !isPrimary {
+                    Capsule(style: .circular).strokeBorder(HUDTheme.actionBorderHover, lineWidth: 1)
+                }
+            }
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .contentShape(Capsule(style: .circular))
+    }
+
+    private var foreground: Color {
+        guard isPrimary else { return HUDTheme.ink }
+        return isDestructive ? .white : Color.black.opacity(0.86)
+    }
+
+    private var background: Color {
+        guard isPrimary else { return HUDTheme.actionFill }
+        return isDestructive ? Color(nsColor: .systemRed) : HUDTheme.ink
     }
 }

@@ -33,6 +33,8 @@ struct SettingsView: View {
     private let onChangePasteShortcut: () -> Void
     /// Opens the shortcut recorder for the palette shortcut.
     private let onChangePaletteShortcut: () -> Void
+    /// Opens the shortcut recorder for the assistant's shortcut.
+    private let onChangeAssistantShortcut: () -> Void
     /// Opens the welcome window.
     private let onOpenWelcome: () -> Void
     /// A state to draw in place of the update check, for a render.
@@ -87,7 +89,7 @@ struct SettingsView: View {
     ///   - config: The configuration every control reads and writes.
     ///   - providers: The providers the menu currently knows about.
     ///   - tab: The page to open: 0 General, 1 Provider, 2 Shortcuts,
-    ///     3 Appearance, 4 About.
+    ///     3 Appearance, 4 About, 5 Assistant, 6 Voices, 7 Connectors.
     ///   - onChange: Called once for every real configuration change.
     ///   - onSetAPIKey: Writes a key and returns an error, or `nil`.
     ///   - onDeleteAPIKey: Deletes a key and returns an error, or `nil`.
@@ -110,6 +112,7 @@ struct SettingsView: View {
         onChangeShortcut: @escaping () -> Void,
         onChangePasteShortcut: @escaping () -> Void = {},
         onChangePaletteShortcut: @escaping () -> Void = {},
+        onChangeAssistantShortcut: @escaping () -> Void = {},
         onOpenWelcome: @escaping () -> Void = {},
         aboutUpdatePreview: AboutUpdateState? = nil,
         modelPreview: [AvailableModel]? = nil
@@ -126,6 +129,7 @@ struct SettingsView: View {
         self.onChangeShortcut = onChangeShortcut
         self.onChangePasteShortcut = onChangePasteShortcut
         self.onChangePaletteShortcut = onChangePaletteShortcut
+        self.onChangeAssistantShortcut = onChangeAssistantShortcut
         self.onOpenWelcome = onOpenWelcome
         self.aboutUpdatePreview = aboutUpdatePreview
         self.modelPreview = modelPreview
@@ -345,9 +349,32 @@ struct SettingsView: View {
             shortcutsPage
         case .appearance:
             appearancePage
+        case .assistant:
+            AssistantPage(
+                config: $config,
+                onChange: settingsChanged,
+                onSetKey: onSetAPIKey,
+                onDeleteKey: onDeleteAPIKey
+            )
+        case .voices:
+            VoicesPage(
+                config: $config,
+                onChange: settingsChanged,
+                onSetKey: onSetAPIKey,
+                onDeleteKey: onDeleteAPIKey
+            )
+        case .connectors:
+            ConnectorsPage(config: $config, onChange: settingsChanged)
         case .about:
             aboutPage
         }
+    }
+
+    /// Writes a change back to the caller and makes this view a participant in
+    /// it, so the page it is drawing is rebuilt from the value it just stored.
+    private func settingsChanged() {
+        revision &+= 1
+        onChange()
     }
 
     private var pageTransition: AnyTransition {
@@ -1952,6 +1979,13 @@ struct SettingsView: View {
                     action: onChangePaletteShortcut,
                     hint: "Opens the recorder for the palette shortcut."
                 )
+                SettingsDivider()
+                shortcutRow(
+                    title: "Ask the assistant",
+                    keycap: config.assistantHotkey.keycapLabel,
+                    action: onChangeAssistantShortcut,
+                    hint: "Opens the recorder for the assistant shortcut."
+                )
             }
         }
     }
@@ -2332,12 +2366,21 @@ struct SettingsView: View {
         case groqPrompt
     }
 
+    /// One page of the window.
+    ///
+    /// The raw value is the tab number a caller passes to `show(tab:)`, which
+    /// the menu also uses to open the About page. The cases are declared in
+    /// sidebar order while the numbers stay put, so a page added in the middle
+    /// of the list does not move the page a caller already names.
     private enum Page: Int, CaseIterable, Identifiable {
-        case general
-        case provider
-        case shortcuts
-        case appearance
-        case about
+        case general = 0
+        case provider = 1
+        case shortcuts = 2
+        case appearance = 3
+        case assistant = 5
+        case voices = 6
+        case connectors = 7
+        case about = 4
 
         var id: Int { rawValue }
 
@@ -2347,6 +2390,9 @@ struct SettingsView: View {
             case .provider: "Provider"
             case .shortcuts: "Shortcuts"
             case .appearance: "Appearance"
+            case .assistant: "Assistant"
+            case .voices: "Voices"
+            case .connectors: "Connectors"
             case .about: "About"
             }
         }
@@ -2357,6 +2403,9 @@ struct SettingsView: View {
             case .provider: "waveform"
             case .shortcuts: "command"
             case .appearance: "circle.lefthalf.filled"
+            case .assistant: "sparkle"
+            case .voices: "speaker.wave.2"
+            case .connectors: "puzzlepiece.extension"
             case .about: "info.circle"
             }
         }

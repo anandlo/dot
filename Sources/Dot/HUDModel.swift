@@ -101,6 +101,17 @@ final class HUDModel: ObservableObject {
     /// Whether the user is editing the transcript directly inside the HUD island.
     @Published var isEditingTranscript: Bool = false
 
+    /// What the confirmation card's allow button does.
+    ///
+    /// The closures live on the model because the card that draws the buttons
+    /// and the turn that awaits them are different objects. They are cleared
+    /// with the state that showed them, so a button can never outlive its
+    /// request.
+    @Published var assistantAllow: (() -> Void)?
+
+    /// What the confirmation card's cancel button does.
+    @Published var assistantCancel: (() -> Void)?
+
     /// Updates the transcript text in place while editing inline on the HUD island.
     func updateTranscriptText(_ newText: String) {
         if case .transcript(_, let delivery, let elapsed, let destination) = mode {
@@ -134,8 +145,12 @@ final class HUDModel: ObservableObject {
 
     /// Updates the clock of the recording without touching the live partial.
     func updateRecording(elapsed: String) {
-        if case .recording = mode {
-            mode = .recording(elapsed: elapsed)
+        switch mode {
+        case .recording: mode = .recording(elapsed: elapsed)
+        case .assistantRecording: mode = .assistantRecording(elapsed: elapsed)
+        case .working, .transcript, .message, .ready,
+             .assistantThinking, .assistantTool, .assistantAnswer, .assistantConfirm:
+            break
         }
     }
 }

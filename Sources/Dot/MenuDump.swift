@@ -25,6 +25,7 @@ enum MenuDump {
         var state = MenuState()
         state.isRecording = false
         state.recordShortcut = MenuShortcuts.shortcut(for: config.hotkey)
+        state.assistantShortcut = MenuShortcuts.shortcut(for: config.assistantHotkey)
         state.pasteShortcut = MenuShortcuts.shortcut(for: config.pasteHotkey)
         state.history = [
             "The meeting is at four.",

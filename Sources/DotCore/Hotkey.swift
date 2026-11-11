@@ -93,6 +93,19 @@ public struct Hotkey: Codable, Sendable, Equatable, Hashable {
         label: "⌃⌥V"
     )
 
+    /// The default shortcut that asks the assistant: `⌥⌘A`.
+    ///
+    /// The three dictation shortcuts take D, V and control-option V, so the
+    /// assistant takes the first letter of its own verb with the pair the
+    /// recorder uses, and the two actions a person reaches for most keep the
+    /// keys they always had.
+    public static let defaultAssistant = Hotkey(
+        keyCode: 0, // kVK_ANSI_A
+        modifiers: HotkeyModifiers.mask(.option, .command),
+        label: Hotkey.makeLabel(keyCode: 0, modifiers: HotkeyModifiers.mask(.option, .command)),
+        ansiKeyCode: 0
+    )
+
     /// Whether the combination has one of the "strong" modifiers.
     public var hasStrongModifier: Bool {
         HotkeyModifiers.contains(modifiers, .command)
@@ -386,6 +399,8 @@ public final class GlobalHotkeyManager: @unchecked Sendable {
     public static let aliasIdentifier: UInt32 = 3
     /// The identifier the manager gives the palette hot key.
     public static let paletteIdentifier: UInt32 = 4
+    /// The identifier the manager gives the assistant hot key.
+    public static let assistantIdentifier: UInt32 = 5
 
     /// Every identifier Dot registers.
     ///
@@ -397,6 +412,7 @@ public final class GlobalHotkeyManager: @unchecked Sendable {
         pasteIdentifier,
         aliasIdentifier,
         paletteIdentifier,
+        assistantIdentifier,
     ]
 
     /// Called with the identifier of the hot key that was pressed.
