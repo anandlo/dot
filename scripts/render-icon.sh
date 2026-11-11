@@ -2,17 +2,18 @@
 #
 # Render the app icon and the menu bar glyph, then build Resources/AppIcon.icns.
 #
-# The drawings are code (Sources/Dot/DotMark.swift), so this script is the only
-# way an icon file is ever made: there is no hand-edited PNG in the tree.
+# The drawings are code (Sources/Dot/DotMark.swift and DotMarkDial.swift), and
+# `Dot --render-icon` is the only way an icon file is ever made: there is no
+# hand-edited PNG in the tree.
 #
 # Usage:
 #   scripts/render-icon.sh                     # install into Resources/
 #   scripts/render-icon.sh --out /tmp/icon     # write somewhere else
-#   scripts/render-icon.sh --direction ember   # pick a studied direction
+#   scripts/render-icon.sh --direction ember   # pick a studied plate
 #
-# The direction is the one `DotMark.chosen` names. While no direction has been
-# chosen the renderer falls back to `DotMark.fallback` and says so, so an icon
-# is never installed by accident from a direction nobody picked.
+# The mark is the one `DotMark.chosenDial` names, drawn on `DotMark.chosen`'s
+# plate, so a bare run writes the shipped icon. An explicit `--direction` draws
+# one of the four studied plates instead, which is how a review is reproduced.
 #
 # Every master is written without an alpha channel: a PNG that carries alpha is
 # a transparency declaration whatever its values are, and macOS masks an app
@@ -50,13 +51,13 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/dot-icon.XXXXXX")"
 trap 'rm -rf -- "$TMP"' EXIT
 
 cd -- "$PROJECT_DIR"
-swift build >/dev/null
+BIN="$(swift build --show-bin-path)/Dot"
 
 ARGS=(--render-icon "$TMP/masters")
 if [ -n "$DIRECTION" ]; then
     ARGS+=(--direction "$DIRECTION")
 fi
-".build/debug/Dot" "${ARGS[@]}"
+"$BIN" "${ARGS[@]}"
 
 MASTERS="$TMP/masters"
 ICONSET="$MASTERS/AppIcon.iconset"
@@ -91,9 +92,9 @@ log "building $OUT/AppIcon.icns"
 mkdir -p -- "$OUT"
 iconutil -c icns "$ICONSET" -o "$OUT/AppIcon.icns"
 
-for size in 1024 512 256 128 64 32 16; do
-    cp -- "$MASTERS/AppIcon-$size.png" "$OUT/AppIcon-$size.png"
-done
+# Only the 1024 master is installed besides the icns: the icon is resolved from
+# the icns, and the flat copies of the smaller sizes were files nothing read.
+cp -- "$MASTERS/AppIcon-1024.png" "$OUT/AppIcon-1024.png"
 cp -- "$MASTERS/MenuGlyph.png" "$OUT/MenuGlyph.png"
 cp -- "$MASTERS/MenuGlyph@2x.png" "$OUT/MenuGlyph@2x.png"
 
@@ -101,5 +102,5 @@ cp -- "$MASTERS/MenuGlyph@2x.png" "$OUT/MenuGlyph@2x.png"
 # iconset that was handed to iconutil.
 chunks="$(iconutil -c iconset "$OUT/AppIcon.icns" -o "$TMP/check.iconset" 2>/dev/null && ls "$TMP/check.iconset" | wc -l | tr -d ' ')"
 log "wrote $OUT/AppIcon.icns ($(( $(stat -f%z "$OUT/AppIcon.icns") / 1024 )) KB, ${chunks:-?} sizes)"
-log "wrote $OUT/AppIcon-{1024,512,256,128,64,32,16}.png (opaque, no alpha channel)"
+log "wrote $OUT/AppIcon-1024.png (opaque, no alpha channel)"
 log "wrote $OUT/MenuGlyph.png (18) and $OUT/MenuGlyph@2x.png (36), black on transparent"

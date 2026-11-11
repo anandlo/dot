@@ -2,18 +2,30 @@
 #
 # Build Dot and assemble Dot.app.
 #
-# The bundle is signed ad-hoc: Dot needs the microphone and the
-# Accessibility permission, and both of those are tied to the signature. An
-# ad-hoc signature is enough for a locally built app.
+# The bundle is signed with the self-signed identity from config.sh when it is
+# installed, and ad-hoc when it is not. Dot needs the microphone and the
+# Accessibility permission, and macOS records both against the code signature:
+# an ad-hoc signature is identified by the build's own hash, so every rebuild
+# would ask for them again. scripts/signing-identity.sh creates the identity.
 #
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 APP="$BUILD_DIR/Dot.app"
-BUNDLE_ID="${BUNDLE_ID:-com.anandlo.dot}"
+# The version and the identity come from the two files every script shares.
+# shellcheck source=scripts/config.sh
+. "$PROJECT_DIR/scripts/config.sh"
+# shellcheck source=scripts/signing.sh
+. "$PROJECT_DIR/scripts/signing.sh"
 
 log() { printf '%s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
+
+[ -n "$MARKETING_VERSION" ] || {
+  printf 'error: VERSION is empty\n' >&2
+  exit 1
+}
 
 cd -- "$PROJECT_DIR"
 
@@ -52,7 +64,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0-beta</string>
+	<string>$MARKETING_VERSION</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
@@ -64,7 +76,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dot records your microphone so it can turn your speech into text.</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Dot posts the paste keystroke so it can deliver a transcript to the app you are working in.</string>
+	<string>Dot controls Notes, Mail, Messages, Music, Spotify, System Events and your browser only when you ask it to, for example to add a note, send a message or change the track that is playing.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Dot adds reminders you ask for by voice.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Dot reads your calendars when you ask what is next and adds events you ask for.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Dot looks up a person's details when you ask it to write to them.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
@@ -79,9 +97,20 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
-SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
-log "signing the bundle ($SIGNING_IDENTITY)"
-codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$APP"
-codesign --verify --deep --strict --verbose=2 "$APP"
+dot_resolve_signing
+case "$DOT_SIGN_KIND" in
+  developer-id) log "signing with $DOT_SIGN_IDENTITY (hardened runtime, secure timestamp)" ;;
+  self-signed) log "signing with $DOT_SIGN_IDENTITY (hardened runtime)" ;;
+  adhoc)
+    warn "no code-signing identity named \"$SIGN_IDENTITY\" was found: signing ad-hoc."
+    warn "an ad-hoc signature is identified by this build's own hash, so macOS asks"
+    warn "for the microphone and Accessibility again after every rebuild."
+    warn "run ./scripts/signing-identity.sh once to make an identity that lasts."
+    ;;
+esac
+dot_sign_bundle "$DOT_SIGN_IDENTITY" "$APP" "$DOT_SIGN_TIMESTAMP" "$DOT_SIGN_ENTITLEMENTS"
+log "verifying the signature, nested code first, then the bundle"
+dot_verify_bundle "$APP"
 
 log "built $APP"
+log "designated requirement: $(dot_designated_requirement "$APP")"

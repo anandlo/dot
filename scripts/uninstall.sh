@@ -6,21 +6,27 @@
 #
 set -euo pipefail
 
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# The LaunchAgent label and the legacy labels come from the one file every
+# script shares.
+. "$PROJECT_DIR/scripts/config.sh"
 APP_NAME="Dot"
 INSTALLED_APP="/Applications/$APP_NAME.app"
-LABEL="com.local.dot"
+LABEL="$AGENT_LABEL"
 AGENT="$HOME/Library/LaunchAgents/$LABEL.plist"
 UID_VALUE="$(id -u)"
 
 log() { printf '%s\n' "$*"; }
 
 log "unloading the LaunchAgent"
-launchctl bootout "gui/$UID_VALUE/$LABEL" 2>/dev/null || true
-
-if [ -f "$AGENT" ]; then
-  log "removing $AGENT"
-  rm -f -- "$AGENT"
-fi
+for STALE_LABEL in $LABEL $LEGACY_AGENT_LABELS; do
+  launchctl bootout "gui/$UID_VALUE/$STALE_LABEL" 2>/dev/null || true
+  STALE_AGENT="$HOME/Library/LaunchAgents/$STALE_LABEL.plist"
+  if [ -f "$STALE_AGENT" ]; then
+    log "removing $STALE_AGENT"
+    rm -f -- "$STALE_AGENT"
+  fi
+done
 
 if [ -d "$INSTALLED_APP" ]; then
   log "removing $INSTALLED_APP"

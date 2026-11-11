@@ -4,35 +4,168 @@ on:
   push:
     tags:
       - "v*"
+  # A tag is still the normal way to cut a release. The manual trigger exists so
+  # a release can be rebuilt from a branch without deleting and re-pushing a tag.
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+# Mirrors ci.yml, except that a release in flight is never cancelled: a run that
+# dies between building and uploading leaves a release page with fewer files than
+# its SHA256SUMS claims, and the next run would have to repair it by hand.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-and-release:
     name: Build & Publish Release
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # macos-latest is the macOS 26 arm64 image and carries Xcode 26.x; the
+      # Xcode 15.4 this workflow used to pin lives on the macOS 14 image and
+      # cannot parse `swift-tools-version: 6.0`. The image's default Xcode is
+      # used, and the Swift version that actually ran is asserted, so the
+      # compiler is verified instead of assumed.
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode.app
+        run: |
+          sw_vers
+          xcodebuild -version
+          sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Assert the Swift version
+        run: |
+          swift --version
+          major="$(swift --version | sed -n 's/.*Swift version \([0-9][0-9]*\)\..*/\1/p' | head -1)"
+          if [ "${major:-0}" -lt 6 ]; then
+            echo "::error::Package.swift declares swift-tools-version 6.0; this image's default toolchain is Swift ${major:-unknown}. Move the job to a newer runner image."
+            exit 1
+          fi
+
+      # VERSION is the only place the version is spelled out, so the tag is
+      # checked against it rather than the other way round. A tag that disagrees
+      # would publish a bundle whose About window and update check both report a
+      # version the release does not have.
+      - name: Read the version and check it against the tag
+        id: release
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [ -z "$version" ]; then
+            echo "::error::VERSION is empty"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION ($version); expected v$version"
+            exit 1
+          fi
+          # A hyphen marks a prerelease: 0.1.0-beta, 1.0.0-rc1. Marking it on the
+          # release page hides it from /releases/latest, which is correct for a
+          # beta and is why scripts/install-remote.sh falls back to the full list.
+          case "$version" in
+            *-*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Version $version, prerelease=$prerelease"
 
       - name: Run Test Suite
         run: swift test --parallel
 
-      - name: Package Release DMG
+      # Dot's self-signed identity, when the repository has it. Two secrets hold
+      # it, and both have to be present:
+      #
+      #   DOT_SIGNING_CERTIFICATE_P12       the identity as a .p12, base64 encoded:
+      #                                    `scripts/signing-identity.sh --backup`
+      #                                    writes one, or export "Dot Self-Signed"
+      #                                    from Keychain Access (My Certificates,
+      #                                    Export Items). Then `base64 -i file.p12`.
+      #   DOT_SIGNING_CERTIFICATE_PASSWORD  that file's passphrase
+      #
+      # Without them the release stays ad-hoc, which is a working build but one
+      # whose designated requirement is its own hash: everyone who installs it
+      # grants microphone and Accessibility again on the next update. Nothing here
+      # fails when the secrets are absent, so a fork can still cut a release.
+      - name: Import the signing identity
+        id: identity
+        env:
+          DOT_SIGNING_CERTIFICATE_P12: ${{ secrets.DOT_SIGNING_CERTIFICATE_P12 }}
+          DOT_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.DOT_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DOT_SIGNING_CERTIFICATE_P12:-}" ] || [ -z "${DOT_SIGNING_CERTIFICATE_PASSWORD:-}" ]; then
+            echo "::notice::DOT_SIGNING_CERTIFICATE_P12 and DOT_SIGNING_CERTIFICATE_PASSWORD are not both set. The release will be ad-hoc signed, so the permissions granted to it will not survive the next update."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A private keychain with a password this run generates, so the key can
+          # be unlocked and its partition list set without a GUI prompt, which a
+          # runner cannot answer. The keychain is thrown away with the runner.
+          keychain="$RUNNER_TEMP/dot-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+
+          p12="$RUNNER_TEMP/dot-signing.p12"
+          umask 077
+          printf '%s' "$DOT_SIGNING_CERTIFICATE_P12" | base64 --decode > "$p12"
+          DOT_SIGN_KEYCHAIN="$keychain" \
+            KEYCHAIN_PASSWORD="$keychain_password" \
+            DOT_P12_PASSWORD="$DOT_SIGNING_CERTIFICATE_PASSWORD" \
+            ./scripts/signing-identity.sh --import "$p12"
+          rm -f "$p12"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Package Release
         run: ./scripts/release.sh
+
+      # The proof that the secrets did what they claim. An ad-hoc build has a
+      # cdhash for a requirement, which no release should publish by accident when
+      # the identity was meant to be used.
+      - name: Check the designated requirement
+        run: |
+          set -euo pipefail
+          requirement="$(codesign --display --requirements - build/Dot.app 2>&1 | sed -n 's/^#* *designated => //p')"
+          echo "designated requirement: $requirement"
+          if [ "${{ steps.identity.outputs.signed }}" = "true" ]; then
+            case "$requirement" in
+              *"certificate leaf"*) ;;
+              *)
+                echo "::error::the identity was imported but the build is not signed with it: $requirement"
+                exit 1
+                ;;
+            esac
+          fi
+
+      - name: Show what was built
+        run: |
+          cat build/release/SHA256SUMS
+          ls -l build/release
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # Named explicitly so a manual run creates or updates the same tag the
+          # version implies, instead of one named after the branch.
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: Dot ${{ steps.release.outputs.version }}
           files: |
-            build/release/Dot.dmg
-            build/release/Dot.dmg.sha256
+            build/release/Dot-*.dmg
+            build/release/Dot-*.zip
+            build/release/SHA256SUMS
+            build/release/homebrew/Casks/dot.rb
           draft: false
-          prerelease: true
+          prerelease: ${{ steps.release.outputs.prerelease == 'true' }}
           generate_release_notes: true
+          fail_on_unmatched_files: true

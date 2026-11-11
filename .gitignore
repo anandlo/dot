@@ -1,6 +1,10 @@
 .build/
 build/
-dist/
+# dist/ is build output, except the Homebrew tap contents: the cask and its
+# instructions are the source of truth for what gets published to the tap, so
+# they are tracked and reviewed with the code.
+dist/*
+!dist/homebrew/
 .swiftpm/
 *.xcodeproj
 *.xcworkspace
@@ -9,3 +13,4 @@ dist/
 */.DS_Store
 */**/.DS_Store
 *.log
+.taste-skill/

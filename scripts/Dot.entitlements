@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The hardened runtime, which every Dot signature uses, refuses these two
+	  resources to a process that does not declare them, before the privacy
+	  prompt would appear. Without the microphone one, AVFoundation fails and
+	  the Microphone switch in System Settings cannot help. Without the Apple
+	  Events one, a request to Notes, Mail or Music fails with -1743 and no
+	  Automation prompt is shown.
+
+	  Dot is not sandboxed, so it needs no other entitlement: file access, the
+	  network and the Accessibility API that pastes the transcript are not
+	  gated by the runtime.
+	-->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

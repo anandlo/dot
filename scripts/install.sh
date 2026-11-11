@@ -3,12 +3,20 @@
 # Install Dot: build the app, copy it into /Applications and install the
 # LaunchAgent that starts it at login.
 #
+# This is the from-source installer: it builds before it installs, and it also
+# removes the apps this product used to be called. For installing a published
+# release without a checkout, scripts/install-remote.sh is the same job done
+# over curl, and it deliberately touches nothing but Dot.
+#
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# The bundle identifier, the version and the legacy identities come from the one
+# file every script shares.
+. "$PROJECT_DIR/scripts/config.sh"
 APP_NAME="Dot"
 INSTALLED_APP="/Applications/$APP_NAME.app"
-LABEL="com.local.dot"
+LABEL="$AGENT_LABEL"
 AGENT="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME/Library/Logs/$APP_NAME"
 UID_VALUE="$(id -u)"
@@ -21,14 +29,15 @@ die() {
 
 "$PROJECT_DIR/scripts/build.sh"
 
-# MimoTalk, Rune and Ion were this product's earlier names. Remove their
-# agents and their apps on upgrade, so two menu bar items can never appear at
-# the same time and no stale agent keeps launching an old binary.
-for STALE_LABEL in com.mimotalk.app com.local.rune com.local.ion; do
+# MimoTalk, Rune and Ion were this product's earlier names, and com.local.dot was
+# its earlier agent label. Remove their agents and their apps on upgrade, so two
+# menu bar items can never appear at the same time and no stale agent keeps
+# launching an old binary.
+for STALE_LABEL in $LEGACY_AGENT_LABELS; do
   launchctl bootout "gui/$UID_VALUE/$STALE_LABEL" 2>/dev/null || true
   rm -f -- "$HOME/Library/LaunchAgents/$STALE_LABEL.plist"
 done
-for STALE_APP in MimoTalk Rune Ion; do
+for STALE_APP in $LEGACY_APP_NAMES; do
   rm -rf -- "/Applications/$STALE_APP.app"
 done
 
