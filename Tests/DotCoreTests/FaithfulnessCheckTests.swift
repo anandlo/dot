@@ -194,6 +194,75 @@ extension FaithfulnessCheckTests {
 }
 
 extension FaithfulnessCheckTests {
+    // MARK: - The structure of a prompt
+
+    private var brief: String {
+        "Add a retry to the uploader in Sources/Uploader.swift, and 3 tests."
+    }
+
+    private var structured: String {
+        """
+        ## Goal
+        Add a retry to the uploader and 3 tests.
+
+        ## Context
+        The uploader lives in Sources/Uploader.swift.
+
+        ## Requirements
+        1. Retry the upload in Sources/Uploader.swift.
+        2. Add 3 tests.
+
+        ## Constraints
+        Do not change the public interface.
+
+        ## Done when
+        [missing: how to verify]
+        """
+    }
+
+    func testAHeadingAndAListMarkerAreNotAddedArtefacts() {
+        let report = FaithfulnessCheck.check(original: brief, rewrite: structured, style: .prompt)
+        XCTAssertFalse(report.errors.contains(FaithfulnessCheck.somethingAdded), "\(report.errors)")
+        XCTAssertFalse(report.errors.contains(FaithfulnessCheck.numberChanged), "\(report.errors)")
+    }
+
+    func testTheMissingMarkerIsNotAnAddedArtefact() {
+        let rewrite = """
+        ## Goal
+        Add a retry to the uploader in Sources/Uploader.swift, and 3 tests.
+
+        ## Open questions
+        [missing: what]
+        """
+        let report = FaithfulnessCheck.check(original: brief, rewrite: rewrite, style: .prompt)
+        XCTAssertFalse(report.errors.contains(FaithfulnessCheck.somethingAdded), "\(report.errors)")
+    }
+
+    func testThePromptStyleStillCatchesAURLTheSpeakerNeverSaid() {
+        let rewrite = structured + "\n\nThe guide is at https://example.com/prompting."
+        let report = FaithfulnessCheck.check(original: brief, rewrite: rewrite, style: .prompt)
+        XCTAssertTrue(report.errors.contains(FaithfulnessCheck.somethingAdded))
+        XCTAssertTrue(report.blocksApply)
+    }
+
+    func testThePromptStyleStillCatchesADroppedNumber() {
+        let rewrite = structured.replacingOccurrences(of: "3", with: "")
+        let report = FaithfulnessCheck.check(original: brief, rewrite: rewrite, style: .prompt)
+        XCTAssertTrue(report.errors.contains(FaithfulnessCheck.numberChanged))
+    }
+
+    func testADroppedNegationIsAnErrorInAPromptToo() {
+        let original = "Add a retry, but do not change the public interface."
+        let rewrite = """
+        ## Goal
+        Add a retry and change the public interface.
+        """
+        let report = FaithfulnessCheck.check(original: original, rewrite: rewrite, style: .prompt)
+        XCTAssertTrue(report.errors.contains(FaithfulnessCheck.negationDropped))
+    }
+}
+
+extension FaithfulnessCheckTests {
     // MARK: - Names
 
     func testADroppedNameIsAWarning() {

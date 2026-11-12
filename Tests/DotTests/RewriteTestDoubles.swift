@@ -107,6 +107,7 @@ final class RewriteStreamSpy: ChatProvider, @unchecked Sendable {
 final class RewriteFactorySpy: RewriteProviderFactory {
     let provider: RewriteStreamSpy
     var providerID = "anthropic"
+    var isSetUp = true
     var keyPresent = true
     var modelName = "claude-3-5-haiku-20241022"
     var error: Error?
@@ -115,6 +116,13 @@ final class RewriteFactorySpy: RewriteProviderFactory {
 
     init(provider: RewriteStreamSpy) {
         self.provider = provider
+    }
+
+    var assistant: AssistantConfiguration {
+        var configuration = AssistantConfiguration.default
+        configuration.isSetUp = isSetUp
+        configuration.chat = AssistantSettings(providerID: providerID, model: modelName)
+        return configuration
     }
 
     func hasKey() -> Bool { keyPresent }

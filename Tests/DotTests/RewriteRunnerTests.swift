@@ -101,7 +101,7 @@ final class RewriteRunnerTests: XCTestCase {
         XCTAssertEqual(runner.card?.phase, .offered)
         XCTAssertEqual(runner.card?.original, original)
         XCTAssertEqual(runner.card?.choices.map(\.title), [
-            "Prompt", "Concise", "Plain English", "Casual", "Formal",
+            "Agent prompt", "Concise", "Plain English", "Casual", "Formal",
         ])
         XCTAssertEqual(runner.card?.destination, "Mail")
         XCTAssertEqual(cards.count, 1)
@@ -143,6 +143,16 @@ final class RewriteRunnerTests: XCTestCase {
         factory.providerID = "lmstudio"
         factory.keyPresent = false
         XCTAssertTrue(runner.offersRewrite(for: original, delivery: .pasted, configuration: configuration))
+    }
+
+    func testAnAssistantThatWasNeverSetUpOffersNoChips() {
+        // The key is there, because the speech provider stored it; the
+        // assistant was never chosen, so there is nothing to rewrite with.
+        factory.isSetUp = false
+        XCTAssertFalse(runner.offersRewrite(for: original, delivery: .pasted, configuration: configuration))
+        XCTAssertTrue(fields.calls.isEmpty, "the text field was touched: \(fields.calls)")
+        XCTAssertFalse(begin(anchor: false))
+        XCTAssertNil(runner.card)
     }
 
     // MARK: - Streaming
@@ -537,5 +547,110 @@ extension RewriteRunnerTests {
         // A rewrite that does not finish is not applied, whatever its length.
         _ = await wait { self.isBlocked() || self.isCopied() }
         XCTAssertEqual(localFields.writes, [])
+    }
+}
+
+extension RewriteRunnerTests {
+    // MARK: - The working rules
+
+    /// A runner whose stream answers with `text` and whose field holds the
+    /// original. Each call builds its own, so the rules tests do not share the
+    /// outer harness's stream.
+    private func makeLocalRunner(
+        answering text: String
+    ) -> (runner: RewriteRunner, fields: FakeTextFieldAccess) {
+        let stream = RewriteStreamSpy(deltas: chunks(of: text))
+        let factory = RewriteFactorySpy(provider: stream)
+        let fields = FakeTextFieldAccess(document: original)
+        let runner = RewriteRunner(
+            factory: factory,
+            textFields: fields,
+            copy: { _ in },
+            frontmost: { 42 },
+            now: { self.clock.value },
+            timing: RewriteRunner.Timing(total: 2, firstToken: 1, failureNote: 0.2)
+        )
+        let anchor = runner.captureAnchor(insertedText: original, at: clock.value)
+        _ = runner.begin(
+            text: original,
+            delivery: .pasted,
+            destination: "Mail",
+            configuration: configuration,
+            anchor: anchor
+        )
+        return (runner, fields)
+    }
+
+    func testThePromptStyleWritesTheRulesAfterTheModelOutput() async {
+        let local = makeLocalRunner(answering: original)
+        local.runner.choose(.prompt, configuration: configuration)
+        let applied = await wait {
+            if case .applied = local.runner.card?.phase { return true }
+            return false
+        }
+        XCTAssertTrue(applied, "phase was \(String(describing: local.runner.card?.phase))")
+        let expected = original + "\n\n" + RewriteConfiguration.defaultWorkingRules
+        XCTAssertEqual(local.fields.document, expected)
+        XCTAssertEqual(local.runner.card?.rewrite, expected, "the card shows what was written")
+        XCTAssertEqual(local.fields.writes, [expected])
+    }
+
+    func testTheRulesAreNotWrittenForAnotherStyle() async {
+        let local = makeLocalRunner(answering: rewritten)
+        local.runner.choose(.concise, configuration: configuration)
+        let applied = await wait {
+            if case .applied = local.runner.card?.phase { return true }
+            return false
+        }
+        XCTAssertTrue(applied, "phase was \(String(describing: local.runner.card?.phase))")
+        XCTAssertEqual(local.fields.document, rewritten)
+        XCTAssertFalse(local.fields.document.contains("## Working rules"))
+    }
+
+    func testTheRulesAreNotWrittenWhenTheSwitchIsOff() async {
+        var off = configuration
+        off.workingRulesEnabled = false
+        let local = makeLocalRunner(answering: original)
+        local.runner.choose(.prompt, configuration: off)
+        let applied = await wait {
+            if case .applied = local.runner.card?.phase { return true }
+            return false
+        }
+        XCTAssertTrue(applied)
+        XCTAssertEqual(local.fields.document, original, "the prompt style alone was written")
+    }
+
+    func testTheRulesAreNotWrittenWhenTheFieldIsEmpty() async {
+        var empty = configuration
+        empty.workingRules = ""
+        let local = makeLocalRunner(answering: original)
+        local.runner.choose(.prompt, configuration: empty)
+        let applied = await wait {
+            if case .applied = local.runner.card?.phase { return true }
+            return false
+        }
+        XCTAssertTrue(applied)
+        XCTAssertEqual(local.fields.document, original)
+    }
+
+    /// The check reads the model's output, not the text Dot writes.
+    ///
+    /// The output here is the transcript, which is inside the prompt style's
+    /// 0.8 to 3.0 band. The rules would take the text far past 3.0, so a check
+    /// that saw them would raise the length warning.
+    func testTheLengthCheckReadsTheOutputWithoutTheRules() async {
+        let local = makeLocalRunner(answering: original)
+        local.runner.choose(.prompt, configuration: configuration)
+        let applied = await wait {
+            if case .applied = local.runner.card?.phase { return true }
+            return false
+        }
+        XCTAssertTrue(applied)
+        XCTAssertNil(
+            local.runner.card?.warning,
+            "the rules were counted against the length band: \(String(describing: local.runner.card?.warning))"
+        )
+        let ratio = Double(local.fields.document.count) / Double(original.count)
+        XCTAssertGreaterThan(ratio, 3.0, "the rules are long enough to break the band")
     }
 }

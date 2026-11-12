@@ -35,6 +35,7 @@ final class AssistantConfigurationTests: XCTestCase {
         XCTAssertEqual(assistant.connectors, ConnectorSettings.default)
         XCTAssertEqual(assistant.delivery, .paste)
         XCTAssertTrue(assistant.actionsEnabled)
+        XCTAssertFalse(assistant.isSetUp, "a fresh install has no assistant service chosen")
         XCTAssertEqual(DotConfig.default.assistantHotkey, Hotkey.defaultAssistant)
     }
 

@@ -88,7 +88,7 @@ final class RewriteRunner {
     ) -> Bool {
         RewriteOffer.shouldOffer(
             rewrite: configuration,
-            providerID: factory.providerID,
+            assistant: factory.assistant,
             hasKey: factory.hasKey(),
             text: text,
             delivery: delivery
@@ -174,7 +174,12 @@ final class RewriteRunner {
         card?.note = nil
         attempt?.cancel()
         attempt = Task { [weak self] in
-            await self?.run(style: style, text: current.original, token: token)
+            await self?.run(
+                style: style,
+                text: current.original,
+                configuration: configuration,
+                token: token
+            )
         }
         watch(token: token)
     }
@@ -228,7 +233,12 @@ final class RewriteRunner {
         }
     }
 
-    private func run(style: RewriteStyle, text: String, token: Int) async {
+    private func run(
+        style: RewriteStyle,
+        text: String,
+        configuration: RewriteConfiguration,
+        token: Int
+    ) async {
         do {
             let provider = try await factory.makeProvider(temperature: RewritePrompt.temperature)
             let messages = RewritePrompt.messages(for: style, text: text)
@@ -249,7 +259,12 @@ final class RewriteRunner {
             }
             try Task.checkCancellation()
             guard generation == token else { return }
-            finish(style: style, text: accumulated, token: token)
+            finish(
+                style: style,
+                text: accumulated,
+                configuration: configuration,
+                token: token
+            )
         } catch {
             guard generation == token, !Task.isCancelled else { return }
             fail()
@@ -257,18 +272,28 @@ final class RewriteRunner {
     }
 
     /// Checks the finished rewrite and applies it, or asks first.
-    private func finish(style: RewriteStyle, text: String, token: Int) {
+    ///
+    /// The check reads the model's output alone; the working rules are appended
+    /// afterwards, so Dot's own words can never be blamed on the model or
+    /// counted against the style's length band.
+    private func finish(
+        style: RewriteStyle,
+        text: String,
+        configuration: RewriteConfiguration,
+        token: Int
+    ) {
         guard generation == token, let current = card else { return }
-        let rewrite = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rewrite.isEmpty else {
+        let output = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !output.isEmpty else {
             fail()
             return
         }
         let report = FaithfulnessCheck.check(
             original: current.original,
-            rewrite: rewrite,
+            rewrite: output,
             style: style
         )
+        let rewrite = RewritePrompt.finalText(output, style: style, configuration: configuration)
         card?.rewrite = rewrite
         card?.warning = report.firstWarning
         guard let error = report.firstError else {

@@ -8,14 +8,50 @@ import XCTest
 /// model is asked for, so every one of them is compared against the sentence it
 /// was specified with rather than against its own source.
 final class RewriteStyleTests: XCTestCase {
-    func testTheTemplatesAreTheSpecifiedSentences() {
+    func testThePromptTemplateIsTheSpecifiedTaskBrief() {
         XCTAssertEqual(RewriteStyleID.prompt.template, """
-        Rewrite the spoken request as an instruction for a coding agent. Keep every fact, name, \
-        path, number, library and constraint the speaker said. Do not add requirements, steps, \
-        tools or libraries that were not said. Use this shape: Goal, Context, Constraints, Done \
-        when. If a required detail was not said, write [missing: what] instead of inventing it. \
-        Output only the rewritten instruction.
+        You turn a developer's spoken request into a precise task prompt for an AI coding agent.
+        Rules:
+        - Use only what the speaker said. Keep every name, file, path, number, library, version, command and constraint exactly as said.
+        - Do not add requirements, features, steps, tools, libraries or opinions the speaker did not state.
+        - Where the speaker corrected themselves, keep only the final intent. Drop filler and repetition.
+        - Write in the imperative, plainly, as a senior engineer briefing another engineer.
+        Output these sections, in this order, as Markdown headings. Leave out a section only when the speaker said nothing for it, except Goal, which is always present:
+        ## Goal
+        One or two sentences.
+        ## Context
+        The facts the speaker gave: current behaviour, files, errors, environment.
+        ## Requirements
+        A numbered list, one testable requirement per line, only as stated.
+        ## Constraints
+        What must not change or must be respected, only as stated.
+        ## Done when
+        The checks that show the task is complete, taken from what was said. If none were said, write: [missing: how to verify]
+        ## Open questions
+        Each detail the task needs that was not said, written as [missing: what]. Leave the section out if there are none.
+        Output only the prompt.
         """)
+    }
+
+    func testThePromptTemplateAsksForTheSixSectionsInOrder() {
+        let template = RewriteStyleID.prompt.template
+        let headings = ["## Goal", "## Context", "## Requirements", "## Constraints",
+                        "## Done when", "## Open questions"]
+        var searchStart = template.startIndex
+        for heading in headings {
+            guard let range = template.range(of: heading, range: searchStart ..< template.endIndex)
+            else {
+                XCTFail("\(heading) is missing or out of order")
+                return
+            }
+            searchStart = range.upperBound
+        }
+        XCTAssertTrue(template.hasSuffix("Output only the prompt."))
+        XCTAssertTrue(template.contains("[missing: how to verify]"))
+        XCTAssertTrue(template.contains("[missing: what]"))
+    }
+
+    func testTheTemplatesAreTheSpecifiedSentences() {
         XCTAssertEqual(RewriteStyleID.concise.template, """
         Rewrite the transcript more concisely. Keep every fact, name, number, negation and \
         qualifier. Remove filler, repetition and hesitation. Do not add anything. Aim for 50 to \
@@ -27,10 +63,10 @@ final class RewriteStyleTests: XCTestCase {
         only the rewrite.
         """)
         XCTAssertEqual(RewriteStyleID.casual.template, """
-        Rewrite in a relaxed texting register, the way a Gen Z friend would write it: short \
-        sentences, contractions, lowercase is fine. Keep every fact, name, number and negation. \
-        Do not add emoji unless the original had them. Do not add or remove content. Output only \
-        the rewrite.
+        Rewrite in a casual, conversational Gen Z register, the way a friend texts: short \
+        sentences, contractions, everyday words, lowercase is fine, light slang only where it \
+        sounds natural. Keep every fact, name, number and negation. Do not add emoji unless the \
+        original had them. Do not add or remove content. Output only the rewrite.
         """)
         XCTAssertEqual(RewriteStyleID.formal.template, """
         Rewrite in a clear, formal register suitable for work email. Keep every fact, name, \
@@ -40,30 +76,38 @@ final class RewriteStyleTests: XCTestCase {
 
     func testTheChipLabelsAreTheSpecifiedWords() {
         XCTAssertEqual(RewriteStyleID.allCases.map(\.title), [
-            "Prompt", "Concise", "Plain English", "Casual", "Formal",
+            "Agent prompt", "Concise", "Plain English", "Casual", "Formal",
         ])
     }
 
     func testTheSettingsSentenceOfEveryStyleIsOneSentence() {
         // A single sentence ends with one full stop and has no second one.
         for style in RewriteStyleID.allCases {
-            let subtitle = style.subtitle.replacingOccurrences(of: "\n", with: " ")
             XCTAssertEqual(
-                subtitle.filter { $0 == "." }.count,
+                style.subtitle.filter { $0 == "." }.count,
                 1,
-                "\(style.rawValue) has a second sentence: \(subtitle)"
+                "\(style.rawValue) has a second sentence: \(style.subtitle)"
             )
-            XCTAssertTrue(subtitle.hasSuffix("."), style.rawValue)
+            XCTAssertTrue(style.subtitle.hasSuffix("."), style.rawValue)
         }
     }
 
-    func testOnlyTheLongDescriptionsWrap() {
-        let wrapped = RewriteStyleID.allCases.filter(\.wrapsSubtitle)
-        XCTAssertEqual(wrapped, [.prompt, .concise, .casual, .formal])
-        XCTAssertFalse(RewriteStyleID.plain.wrapsSubtitle)
-        for style in wrapped {
-            XCTAssertTrue(style.subtitle.contains("\n"), style.rawValue)
-            XCTAssertEqual(style.subtitle.split(separator: "\n").count, 2, style.rawValue)
+    func testNoSettingsSentenceCarriesALineBreak() {
+        // The row wraps a subtitle where the row's width ends, not where the
+        // sentence was broken by hand: a stored break shortened the line to a
+        // fragment of the space the row has.
+        for style in RewriteStyleID.allCases {
+            XCTAssertFalse(style.subtitle.contains("\n"), style.rawValue)
+        }
+    }
+
+    func testNoTemplateLineIsIndented() {
+        // The template is sent as written: a line that kept the source's own
+        // indentation would put spaces inside a heading or a bullet.
+        for style in RewriteStyleID.allCases {
+            for line in style.template.split(separator: "\n", omittingEmptySubsequences: false) {
+                XCTAssertNotEqual(line.first, " ", "\(style.rawValue) is indented: \(line)")
+            }
         }
     }
 

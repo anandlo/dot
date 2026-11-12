@@ -465,7 +465,8 @@ enum UIPreview {
         to directory: URL,
         providers: [MenuProvider]
     ) throws {
-        let size = CGSize(width: 820, height: 1180)
+        let width: CGFloat = 820
+        let tallPage: CGFloat = 1180
         var base = DotConfig.default
         ProviderPreset.openAI.apply(to: &base)
 
@@ -513,8 +514,11 @@ enum UIPreview {
             keys: Set<String>,
             voices: [VoiceDescriptor]? = nil,
             connectors: [ConnectorSummary]? = nil,
+            connection: AssistantConnectionState? = nil,
+            height: CGFloat? = nil,
             configure: (inout DotConfig) -> Void
         ) throws {
+            let size = CGSize(width: width, height: height ?? tallPage)
             for scheme in [ColorScheme.light, ColorScheme.dark] {
                 var config = base
                 configure(&config)
@@ -529,6 +533,7 @@ enum UIPreview {
                             providers: providers,
                             tab: tab,
                             assistantKeys: keys,
+                            assistantConnection: connection,
                             voices: voices,
                             connectors: connectors,
                             height: size.height
@@ -541,31 +546,104 @@ enum UIPreview {
             }
         }
 
-        try render("assistant", tab: 5, keys: []) { config in
+        // The rewrite page carries the working rules field under the prompt
+        // style, so it is drawn in a window tall enough to hold the whole card
+        // rather than a page cut at its last row.
+        let rewritePage: CGFloat = 1320
+        let customStyles = [
+            CustomRewriteStyle(
+                id: "haiku",
+                title: "Haiku",
+                instruction: "Rewrite as a three line haiku."
+            ),
+            CustomRewriteStyle(
+                id: "email",
+                title: "Email",
+                instruction: "Rewrite for a work email."
+            ),
+        ]
+
+        /// An assistant the person set up on one row, with the status a check
+        /// would have reported.
+        func setUp(_ config: inout DotConfig, providerID: String, model: String, isSetUp: Bool = true) {
+            config.assistant.isSetUp = isSetUp
+            config.assistant.chat = AssistantSettings(providerID: providerID, model: model)
+        }
+
+        // The status row's four states, and the two rows added after the first
+        // release. The first picture is the bug's own: a key the speech page
+        // stored, and no assistant chosen.
+        try render("assistant", tab: 5, keys: [AssistantSettings.defaultProviderID], connection: .notSetUp) { config in
             config.assistant.chat = AssistantSettings(
                 providerID: AssistantSettings.defaultProviderID,
                 model: "gpt-4o-mini"
             )
         }
-        try render("assistant-connected", tab: 5, keys: [AssistantSettings.defaultProviderID]) { config in
+        try render("assistant-no-key", tab: 5, keys: [], connection: .notSetUp) { config in
             config.assistant.chat = AssistantSettings(
                 providerID: AssistantSettings.defaultProviderID,
-                model: "gpt-4o"
+                model: "gpt-4o-mini"
             )
         }
-        try render("assistant-rewrite", tab: 5, keys: [AssistantSettings.defaultProviderID]) { config in
-            config.assistant.rewrite.custom = [
-                CustomRewriteStyle(
-                    id: "haiku",
-                    title: "Haiku",
-                    instruction: "Rewrite as a three line haiku."
-                ),
-                CustomRewriteStyle(
-                    id: "email",
-                    title: "Email",
-                    instruction: "Rewrite for a work email."
-                ),
-            ]
+        try render(
+            "assistant-checking",
+            tab: 5,
+            keys: [AssistantSettings.defaultProviderID],
+            connection: .checking
+        ) { config in
+            setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
+        }
+        try render("assistant-connected", tab: 5, keys: [AssistantSettings.defaultProviderID], connection: .connected) { config in
+            setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
+        }
+        try render(
+            "assistant-unreachable",
+            tab: 5,
+            keys: [AssistantSettings.defaultProviderID],
+            connection: .notConnected("Rejected the key (401)")
+        ) { config in
+            setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
+        }
+        // The two rows added after the first release. Their names, ids and
+        // addresses come from the catalogue: the UI may not carry a vendor's
+        // name in a string.
+        let planRow = AssistantProviderCatalogue.row(for: AssistantProviderID.xiaomi)
+        let subscriptionRow = AssistantProviderCatalogue.row(for: AssistantProviderID.openCodeGo)
+        let planName = "assistant-" + planRow.id
+        let tokenPlanName = planName + "-token-plan"
+        let subscriptionName = "assistant-" + subscriptionRow.id
+        let planModel = planRow.defaultModels.first ?? ""
+        let planAddress = planRow.plans.first { $0.id == "token-plan" }?.baseURL?.absoluteString
+        try render(planName, tab: 5, keys: [planRow.id], connection: .connected) { config in
+            setUp(&config, providerID: planRow.id, model: planModel)
+        }
+        try render(tokenPlanName, tab: 5, keys: [planRow.id], connection: .connected) { config in
+            setUp(&config, providerID: planRow.id, model: planModel)
+            config.assistant.chat.baseURL = planAddress
+        }
+        let subscriptionModel = subscriptionRow.defaultModels.first ?? ""
+        try render(subscriptionName, tab: 5, keys: [subscriptionRow.id], connection: .connected) { config in
+            setUp(&config, providerID: subscriptionRow.id, model: subscriptionModel)
+        }
+        try render(
+            "assistant-rewrite",
+            tab: 5,
+            keys: [AssistantSettings.defaultProviderID],
+            connection: .connected,
+            height: rewritePage
+        ) { config in
+            config.assistant.isSetUp = true
+            config.assistant.rewrite.custom = customStyles
+        }
+        try render(
+            "assistant-rewrite-rules-off",
+            tab: 5,
+            keys: [AssistantSettings.defaultProviderID],
+            connection: .connected
+        ) { config in
+            config.assistant.isSetUp = true
+            config.assistant.rewrite.custom = customStyles
+            config.assistant.rewrite.workingRulesEnabled = false
         }
         try render("voices", tab: 6, keys: [], voices: appleVoices) { config in
             config.assistant.voice = VoiceSettings(providerID: VoiceProviderID.apple)
@@ -631,6 +709,7 @@ enum UIPreview {
         aboutUpdate: AboutUpdateState? = nil,
         models: [AvailableModel]? = nil,
         assistantKeys: Set<String>? = nil,
+        assistantConnection: AssistantConnectionState? = nil,
         voices: [VoiceDescriptor]? = nil,
         connectors: [ConnectorSummary]? = nil,
         height: CGFloat? = nil
@@ -653,6 +732,7 @@ enum UIPreview {
         .environment(\.settingsVersionOverride, "1.0")
         .environment(\.settingsHeightOverride, height)
         .environment(\.assistantKeyedProviders, assistantKeys)
+        .environment(\.assistantConnectionPreview, assistantConnection)
         .environment(\.settingsVoiceOptions, voices)
         .environment(\.settingsConnectorSummaries, connectors)
     }

@@ -65,6 +65,16 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
     public var actionsEnabled: Bool
     /// Which rewrites the transcript card offers after a dictation.
     public var rewrite: RewriteConfiguration
+    /// Whether the person set the assistant up on purpose.
+    ///
+    /// A chat key is the Keychain item the speech provider writes, so a stored
+    /// key says nothing about whether an assistant was chosen: an install with
+    /// an OpenAI speech key would otherwise be reported as a connected
+    /// assistant by a person who never picked one. Only the Assistant page sets
+    /// this, and only after the person picked a service and gave it a key (or
+    /// picked one that runs on this Mac) or accepted the key the Provider page
+    /// already stored.
+    public var isSetUp: Bool
 
     /// The voice a fresh configuration speaks with: the one on this Mac.
     public static let defaultVoice = VoiceSettings(providerID: VoiceProviderID.apple)
@@ -84,7 +94,8 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
         connectors: ConnectorSettings = .default,
         delivery: AnswerDelivery = .paste,
         actionsEnabled: Bool = true,
-        rewrite: RewriteConfiguration = .default
+        rewrite: RewriteConfiguration = .default,
+        isSetUp: Bool = false
     ) {
         self.chat = chat
         self.voice = voice
@@ -92,6 +103,7 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
         self.delivery = delivery
         self.actionsEnabled = actionsEnabled
         self.rewrite = rewrite
+        self.isSetUp = isSetUp
     }
 
     /// The model id a turn is asked for, resolved from the catalogue.
@@ -106,6 +118,7 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
         case delivery
         case actionsEnabled
         case rewrite
+        case isSetUp
     }
 
     public init(from decoder: Decoder) throws {
@@ -122,6 +135,11 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
             ?? fallback.actionsEnabled
         rewrite = ((try? container.decodeIfPresent(RewriteConfiguration.self, forKey: .rewrite)) ?? nil)
             ?? fallback.rewrite
+        // A file written before the assistant was chosen says nothing about
+        // being set up, and a file this build cannot read says nothing either:
+        // the assistant is only ever set up by the person, on its page.
+        isSetUp = ((try? container.decodeIfPresent(Bool.self, forKey: .isSetUp)) ?? nil)
+            ?? fallback.isSetUp
         // A voice block with no provider is not a choice of silence: the voice
         // on this Mac fills in, and the speed the person set is kept.
         var storedVoice = ((try? container.decodeIfPresent(VoiceSettings.self, forKey: .voice)) ?? nil)

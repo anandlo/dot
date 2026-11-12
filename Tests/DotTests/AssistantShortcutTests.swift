@@ -70,4 +70,12 @@ final class AssistantShortcutTests: XCTestCase {
         let item = MenuBuilder.items(for: state).first { $0.action == .askAssistant }
         XCTAssertNil(item?.shortcut, "an unset state draws no shortcut and no wrong one")
     }
+
+    func testTheMenuGreysTheAssistantWhenNothingIsSetUp() {
+        var state = MenuState()
+        state.assistantUsable = false
+        let item = MenuBuilder.items(for: state).first { $0.action == .askAssistant }
+        XCTAssertEqual(item?.isEnabled, false, "the item says the key does nothing yet")
+        XCTAssertEqual(item?.title, "Ask the assistant", "and stays where the person learned it")
+    }
 }

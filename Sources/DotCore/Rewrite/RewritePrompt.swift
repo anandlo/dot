@@ -39,6 +39,27 @@ public enum RewritePrompt {
         ]
     }
 
+    /// The text Dot writes: the model's output, and the working rules after it.
+    ///
+    /// The rules are Dot's own words, appended here rather than asked for from
+    /// the model, so a model that ignores the instruction still cannot drop
+    /// them. They are one blank line below the output and never touch the
+    /// faithfulness check, which reads the model's output alone.
+    ///
+    /// - Parameters:
+    ///   - modelOutput: what the service produced.
+    ///   - style: the style that was asked for.
+    ///   - configuration: the person's rewrite settings, which carry the rules.
+    public static func finalText(
+        _ modelOutput: String,
+        style: RewriteStyle,
+        configuration: RewriteConfiguration
+    ) -> String {
+        let output = modelOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let block = configuration.workingRulesBlock(for: style) else { return output }
+        return output + "\n\n" + block
+    }
+
     /// The longest rewrite that is kept, in characters.
     ///
     /// - Parameter inputCharacters: the length of the transcript.

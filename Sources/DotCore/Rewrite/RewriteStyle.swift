@@ -15,7 +15,7 @@ public enum RewriteStyleID: String, Codable, Sendable, CaseIterable {
     /// The label on the chip, and the title of the row in Settings.
     public var title: String {
         switch self {
-        case .prompt: "Prompt"
+        case .prompt: "Agent prompt"
         case .concise: "Concise"
         case .plain: "Plain English"
         case .casual: "Casual"
@@ -23,21 +23,14 @@ public enum RewriteStyleID: String, Codable, Sendable, CaseIterable {
         }
     }
 
-    /// Whether the Settings sentence is written on two lines.
-    ///
-    /// The long descriptions are broken where the sentence reads as two lines
-    /// rather than as a widow, because a two-line description under a one-line
-    /// title is what keeps the row's ink level with its switch.
-    public var wrapsSubtitle: Bool { subtitle.contains("\n") }
-
     /// The one sentence Settings puts under the title.
     public var subtitle: String {
         switch self {
-        case .prompt: "Turns a spoken request into an instruction\nfor a coding agent."
-        case .concise: "Shorter,\nsame facts."
-        case .plain: "Simpler words."
-        case .casual: "Relaxed, like a text\nto a friend."
-        case .formal: "Clear and\nprofessional."
+        case .prompt: "Turns a spoken request into a structured task for a coding agent."
+        case .concise: "Shorter, with every fact kept."
+        case .plain: "Simpler words, same meaning."
+        case .casual: "Relaxed and conversational, like a text to a friend."
+        case .formal: "Clear and professional."
         }
     }
 
@@ -46,11 +39,26 @@ public enum RewriteStyleID: String, Codable, Sendable, CaseIterable {
         switch self {
         case .prompt:
             """
-            Rewrite the spoken request as an instruction for a coding agent. Keep every fact, name, \
-            path, number, library and constraint the speaker said. Do not add requirements, steps, \
-            tools or libraries that were not said. Use this shape: Goal, Context, Constraints, Done \
-            when. If a required detail was not said, write [missing: what] instead of inventing it. \
-            Output only the rewritten instruction.
+            You turn a developer's spoken request into a precise task prompt for an AI coding agent.
+            Rules:
+            - Use only what the speaker said. Keep every name, file, path, number, library, version, command and constraint exactly as said.
+            - Do not add requirements, features, steps, tools, libraries or opinions the speaker did not state.
+            - Where the speaker corrected themselves, keep only the final intent. Drop filler and repetition.
+            - Write in the imperative, plainly, as a senior engineer briefing another engineer.
+            Output these sections, in this order, as Markdown headings. Leave out a section only when the speaker said nothing for it, except Goal, which is always present:
+            ## Goal
+            One or two sentences.
+            ## Context
+            The facts the speaker gave: current behaviour, files, errors, environment.
+            ## Requirements
+            A numbered list, one testable requirement per line, only as stated.
+            ## Constraints
+            What must not change or must be respected, only as stated.
+            ## Done when
+            The checks that show the task is complete, taken from what was said. If none were said, write: [missing: how to verify]
+            ## Open questions
+            Each detail the task needs that was not said, written as [missing: what]. Leave the section out if there are none.
+            Output only the prompt.
             """
         case .concise:
             """
@@ -66,10 +74,10 @@ public enum RewriteStyleID: String, Codable, Sendable, CaseIterable {
             """
         case .casual:
             """
-            Rewrite in a relaxed texting register, the way a Gen Z friend would write it: short \
-            sentences, contractions, lowercase is fine. Keep every fact, name, number and negation. \
-            Do not add emoji unless the original had them. Do not add or remove content. Output only \
-            the rewrite.
+            Rewrite in a casual, conversational Gen Z register, the way a friend texts: short \
+            sentences, contractions, everyday words, lowercase is fine, light slang only where it \
+            sounds natural. Keep every fact, name, number and negation. Do not add emoji unless the \
+            original had them. Do not add or remove content. Output only the rewrite.
             """
         case .formal:
             """

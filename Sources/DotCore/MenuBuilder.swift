@@ -221,6 +221,12 @@ public struct MenuState: Equatable, Sendable {
     public var fastRecordEnabled: Bool
     /// Whether Dot starts when the machine does.
     public var launchAtLogin: Bool
+    /// Whether the assistant has a service it can ask.
+    ///
+    /// The item is shown either way: a person who has not set the assistant up
+    /// still has the key they recorded, and a greyed item beside the shortcut
+    /// says why it does nothing.
+    public var assistantUsable: Bool
 
     /// Creates the state of the menu.
     public init(
@@ -237,7 +243,8 @@ public struct MenuState: Equatable, Sendable {
         selectedPresetID: String = "",
         autoPasteEnabled: Bool = true,
         fastRecordEnabled: Bool = false,
-        launchAtLogin: Bool = false
+        launchAtLogin: Bool = false,
+        assistantUsable: Bool = true
     ) {
         self.isRecording = isRecording
         self.recordShortcut = recordShortcut
@@ -253,6 +260,7 @@ public struct MenuState: Equatable, Sendable {
         self.autoPasteEnabled = autoPasteEnabled
         self.fastRecordEnabled = fastRecordEnabled
         self.launchAtLogin = launchAtLogin
+        self.assistantUsable = assistantUsable
     }
 }
 
@@ -288,7 +296,8 @@ public enum MenuBuilder {
         items.append(MenuItem(
             title: "Ask the assistant",
             action: .askAssistant,
-            shortcut: state.assistantShortcut
+            shortcut: state.assistantShortcut,
+            isEnabled: state.assistantUsable
         ))
 
         items.append(.separator)

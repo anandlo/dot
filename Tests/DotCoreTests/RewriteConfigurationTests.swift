@@ -32,7 +32,7 @@ final class RewriteConfigurationTests: XCTestCase {
         XCTAssertEqual(rewrite.styles, [.prompt, .concise, .plain, .casual, .formal])
         XCTAssertEqual(rewrite.custom, [])
         XCTAssertEqual(rewrite.choices.map(\.title), [
-            "Prompt", "Concise", "Plain English", "Casual", "Formal",
+            "Agent prompt", "Concise", "Plain English", "Casual", "Formal",
         ])
     }
 
@@ -140,5 +140,142 @@ final class RewriteConfigurationTests: XCTestCase {
         XCTAssertEqual(rewrite.style(for: "mine")?.title, "Mine")
         XCTAssertEqual(rewrite.style(for: "concise")?.title, "Concise")
         XCTAssertNil(rewrite.style(for: "formal"), "a style that is off is not offered")
+    }
+}
+
+extension RewriteConfigurationTests {
+    // MARK: - Working rules
+
+    func testTheWorkingRulesAreTheShippedOnes() {
+        let rewrite = DotConfig.default.assistant.rewrite
+        XCTAssertTrue(rewrite.workingRulesEnabled)
+        XCTAssertEqual(rewrite.workingRules, """
+        ## Working rules
+        - Read the relevant code before you change it.
+        - Keep changes within the scope of this request.
+        - Ask before adding a dependency or changing a public interface.
+        - Run the build and the tests, and report the results.
+        - If something is unclear, ask instead of guessing.
+        """)
+        XCTAssertEqual(
+            RewriteConfiguration.maximumWorkingRulesLength,
+            1_200,
+            "the cap the field and the decoder share"
+        )
+    }
+
+    func testNoWorkingRulesLineIsIndented() {
+        for line in RewriteConfiguration.defaultWorkingRules
+            .split(separator: "\n", omittingEmptySubsequences: false) {
+            XCTAssertNotEqual(line.first, " ", "the shipped rules are indented: \(line)")
+        }
+    }
+
+    func testACallerThatOmitsTheRulesGetsTheShippedOnes() {
+        let rewrite = RewriteConfiguration(styles: [.concise])
+        XCTAssertTrue(rewrite.workingRulesEnabled)
+        XCTAssertEqual(rewrite.workingRules, RewriteConfiguration.defaultWorkingRules)
+    }
+
+    func testTheRulesFollowThePromptStyleOnly() {
+        let rewrite = RewriteConfiguration.default
+        XCTAssertEqual(
+            rewrite.workingRulesBlock(for: RewriteStyle(.prompt)),
+            RewriteConfiguration.defaultWorkingRules
+        )
+        for style in RewriteStyle.builtIns where style.kind != .builtIn(.prompt) {
+            XCTAssertNil(rewrite.workingRulesBlock(for: style), style.id)
+        }
+        let custom = RewriteStyle(CustomRewriteStyle(title: "Mine", instruction: "Rewrite."))
+        XCTAssertNil(rewrite.workingRulesBlock(for: custom))
+    }
+
+    func testTheBlockIsAbsentWhenTheSwitchIsOffOrTheFieldIsEmpty() {
+        var rewrite = RewriteConfiguration.default
+        rewrite.workingRulesEnabled = false
+        XCTAssertNil(rewrite.workingRulesBlock(for: RewriteStyle(.prompt)))
+        rewrite.workingRulesEnabled = true
+        rewrite.workingRules = "   \n  "
+        XCTAssertNil(
+            rewrite.workingRulesBlock(for: RewriteStyle(.prompt)),
+            "an empty field is how the block is turned off without turning off the style"
+        )
+    }
+
+    func testAFileWithoutTheRulesKeepsTheDefaults() throws {
+        let config = try load(#"{"assistant": {"rewrite": {"styles": ["concise"]}}}"#)
+        XCTAssertTrue(config.assistant.rewrite.workingRulesEnabled)
+        XCTAssertEqual(
+            config.assistant.rewrite.workingRules,
+            RewriteConfiguration.defaultWorkingRules
+        )
+        XCTAssertEqual(config.assistant.rewrite.styles, [.concise], "the rest of the block survived")
+    }
+
+    func testABadWorkingRulesValueResetsOnlyThatField() throws {
+        let config = try load(#"""
+        {"assistant": {"rewrite": {
+          "enabled": false,
+          "styles": ["plain", "formal"],
+          "workingRulesEnabled": "yes",
+          "workingRules": 42
+        }}}
+        """#)
+        XCTAssertTrue(config.assistant.rewrite.workingRulesEnabled, "the bad boolean fell back")
+        XCTAssertEqual(config.assistant.rewrite.workingRules, RewriteConfiguration.defaultWorkingRules)
+        XCTAssertFalse(config.assistant.rewrite.enabled, "the neighbour field survived")
+        XCTAssertEqual(config.assistant.rewrite.styles, [.plain, .formal])
+    }
+
+    func testTheRulesAreCappedWhenTheyAreRead() throws {
+        let long = String(repeating: "a", count: 2_000)
+        let config = try load(#"{"assistant": {"rewrite": {"workingRules": "\#(long)"}}}"#)
+        XCTAssertEqual(
+            config.assistant.rewrite.workingRules.count,
+            RewriteConfiguration.maximumWorkingRulesLength
+        )
+    }
+
+    func testTheRulesRoundTripAndAreWrittenUnderTheRewriteKey() throws {
+        var config = DotConfig.default
+        config.assistant.rewrite.workingRulesEnabled = false
+        config.assistant.rewrite.workingRules = "## Rules\n- Keep it short."
+        let data = try JSONEncoder().encode(config)
+        let restored = try JSONDecoder().decode(DotConfig.self, from: data)
+        XCTAssertEqual(restored.assistant.rewrite, config.assistant.rewrite)
+
+        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let assistant = try XCTUnwrap(payload?["assistant"] as? [String: Any])
+        let rewrite = try XCTUnwrap(assistant["rewrite"] as? [String: Any])
+        XCTAssertEqual(rewrite["workingRulesEnabled"] as? Bool, false)
+        XCTAssertEqual(rewrite["workingRules"] as? String, "## Rules\n- Keep it short.")
+    }
+
+    /// A file written before the styles changed still opens with its settings.
+    ///
+    /// The five ids this feature shipped with are read as they are, an id this
+    /// build does not know is dropped, and every other field of the block keeps
+    /// the value the person stored.
+    func testAFileWithTheOldStyleIDsKeepsEverySetting() throws {
+        let config = try load(#"""
+        {"assistant": {"rewrite": {
+          "enabled": false,
+          "styles": ["formal", "prompt", "concise", "plain", "casual", "shout"],
+          "custom": [{"id": "haiku", "title": "Haiku", "instruction": "Rewrite as a haiku."}],
+          "workingRulesEnabled": false,
+          "workingRules": "## Working rules\n- Mine."
+        }}}
+        """#)
+        let rewrite = config.assistant.rewrite
+        XCTAssertFalse(rewrite.enabled, "the switch the person turned off is still off")
+        XCTAssertEqual(
+            rewrite.styles,
+            [.formal, .prompt, .concise, .plain, .casual],
+            "the order the person kept, without the id this build does not know"
+        )
+        XCTAssertEqual(rewrite.custom.map(\.id), ["haiku"])
+        XCTAssertFalse(rewrite.workingRulesEnabled)
+        XCTAssertEqual(rewrite.workingRules, "## Working rules\n- Mine.")
+        XCTAssertEqual(rewrite.choices.map(\.id), ["formal", "prompt", "concise", "plain", "casual", "haiku"])
     }
 }

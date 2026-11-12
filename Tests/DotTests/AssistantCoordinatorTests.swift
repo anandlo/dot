@@ -23,13 +23,16 @@ final class AssistantCoordinatorTests: XCTestCase {
         events: [ChatEvent]? = nil,
         scripts: [[ChatEvent]]? = nil,
         hasKey: Bool = true,
+        isSetUp: Bool = true,
         pace: ScriptedChatProvider.Pace = .instant
     ) -> AssistantCoordinator {
         provider = scripts.map { ScriptedChatProvider(scripts: $0, pace: pace) }
             ?? ScriptedChatProvider(events: events ?? [], pace: pace)
         factory = FakeChatFactory(provider: provider, hasKey: hasKey)
         let clock = self.clock
-        let configuration = self.configuration
+        var snapshot = self.configuration
+        snapshot.isSetUp = isSetUp
+        let configuration = snapshot
         let paster = self.paster
         let hud = self.hud
         return AssistantCoordinator(
@@ -74,10 +77,27 @@ final class AssistantCoordinatorTests: XCTestCase {
         coordinator.ask("What is the weather?", frontmost: mail, frontmostName: "Mail")
         XCTAssertEqual(
             hud.events,
-            [.message("Connect an assistant service in Settings.", "sparkle")]
+            [.message("Set up an assistant service in Settings.", "sparkle")]
         )
         XCTAssertEqual(provider.callCount, 0, "no request may be made without a key")
         XCTAssertEqual(factory.providerCallCount, 0)
+        XCTAssertEqual(coordinator.createdComponents, 0)
+        XCTAssertEqual(coordinator.phase, .idle)
+    }
+
+    func testASpeechKeyAloneAsksForSetupAndMakesNoRequest() async {
+        // The bug: the chat key is the speech key's own Keychain item, so a
+        // stored key looked like a chosen assistant and the shortcut went
+        // straight into a request.
+        let coordinator = makeCoordinator(events: answering("Hello."), isSetUp: false)
+        coordinator.ask("What is the weather?", frontmost: mail, frontmostName: "Mail")
+        XCTAssertEqual(
+            hud.events,
+            [.message("Set up an assistant service in Settings.", "sparkle")]
+        )
+        XCTAssertEqual(provider.callCount, 0)
+        XCTAssertEqual(factory.providerCallCount, 0)
+        XCTAssertEqual(factory.toolCallCount, 0)
         XCTAssertEqual(coordinator.createdComponents, 0)
         XCTAssertEqual(coordinator.phase, .idle)
     }
@@ -197,7 +217,10 @@ extension AssistantCoordinatorTests {
     func testTheConversationIsCarriedForTwoMinutesAndThenDropped() async {
         let coordinator = makeCoordinator(events: answering("First."))
         coordinator.ask("First question", frontmost: mail)
-        await expect({ self.provider.callCount == 1 && self.hud.lastAnswerText == "First." }, "the first answer never arrived")
+        await expect(
+            { self.provider.callCount == 1 && self.hud.lastAnswerText == "First." && coordinator.phase == .idle },
+            "the first answer never arrived"
+        )
 
         clock.advance(60)
         coordinator.ask("Second question", frontmost: mail)
@@ -208,6 +231,7 @@ extension AssistantCoordinatorTests {
             "a conversation inside two minutes carries the earlier question"
         )
         XCTAssertTrue(second.contains { $0.role == .assistant && $0.text == "First." })
+        await expect({ coordinator.phase == .idle }, "the second answer never finished")
 
         clock.advance(122)
         coordinator.ask("Third question", frontmost: mail)

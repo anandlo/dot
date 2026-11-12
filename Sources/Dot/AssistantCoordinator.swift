@@ -122,8 +122,8 @@ final class AssistantCoordinator {
             return
         }
         let runtime = settings()
-        guard isReachable(runtime.configuration.chat) else {
-            hud.showAssistantMessage("Connect an assistant service in Settings.", symbol: "sparkle")
+        guard isReachable(runtime.configuration) else {
+            hud.showAssistantMessage("Set up an assistant service in Settings.", symbol: "sparkle")
             return
         }
         frontmostAtPress = frontmost
@@ -140,14 +140,17 @@ final class AssistantCoordinator {
 
     /// Whether a service can be asked at all.
     ///
-    /// A service on this Mac needs no key: it is reachable as soon as the
-    /// address answers, which the request itself finds out. Everything else
-    /// needs a stored key, and without one the person is sent to Settings
-    /// rather than into a request that can only fail.
-    private func isReachable(_ chat: AssistantSettings) -> Bool {
-        let row = AssistantProviderCatalogue.row(for: chat.providerID)
-        guard row.requiresKey else { return true }
-        return factory.hasKey(for: chat.providerID)
+    /// It is the rule the page, the chips and the menu item use: the person set
+    /// an assistant up, and the service needs no key or has one. A speech key
+    /// alone is not enough, because it says the transcriber was set up rather
+    /// than the assistant, and the person is sent to Settings instead of into a
+    /// request that can only fail.
+    private func isReachable(_ configuration: AssistantConfiguration) -> Bool {
+        let row = AssistantProviderCatalogue.row(for: configuration.chat.providerID)
+        return AssistantAvailability.isUsable(
+            config: configuration,
+            hasKey: row.requiresKey ? factory.hasKey(for: row.id) : false
+        )
     }
 
     private func startTurn(prompt: String, runtime: AssistantRuntimeSettings) {

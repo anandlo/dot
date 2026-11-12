@@ -111,10 +111,24 @@ final class UIPreviewTests: XCTestCase {
             "settings-about-update-unreachable.png",
             "settings-assistant-tall.png",
             "settings-assistant-dark-tall.png",
+            "settings-assistant-no-key-tall.png",
+            "settings-assistant-no-key-dark-tall.png",
+            "settings-assistant-checking-tall.png",
+            "settings-assistant-checking-dark-tall.png",
             "settings-assistant-connected-tall.png",
             "settings-assistant-connected-dark-tall.png",
+            "settings-assistant-unreachable-tall.png",
+            "settings-assistant-unreachable-dark-tall.png",
+            "settings-assistant-xiaomi-tall.png",
+            "settings-assistant-xiaomi-dark-tall.png",
+            "settings-assistant-xiaomi-token-plan-tall.png",
+            "settings-assistant-xiaomi-token-plan-dark-tall.png",
+            "settings-assistant-opencode-go-tall.png",
+            "settings-assistant-opencode-go-dark-tall.png",
             "settings-assistant-rewrite-tall.png",
             "settings-assistant-rewrite-dark-tall.png",
+            "settings-assistant-rewrite-rules-off-tall.png",
+            "settings-assistant-rewrite-rules-off-dark-tall.png",
             "settings-voices-tall.png",
             "settings-voices-dark-tall.png",
             "settings-voices-cloud-tall.png",
@@ -149,9 +163,74 @@ final class UIPreviewTests: XCTestCase {
             let isTall = name.contains("-tall")
                 || name.contains("settings-about-update")
                 || name.contains("settings-provider-connected")
-            let expectedHeight = isTall ? 2360 : 1200
+            // The rewrite page holds the working rules field as well as the two
+            // custom styles, so its window is taller than the other assistant
+            // pages and its bitmap is too. Only the pages with the field are
+            // taller: the rules-off render is an ordinary tall page.
+            let showsTheRulesField = name == "settings-assistant-rewrite-tall.png"
+                || name == "settings-assistant-rewrite-dark-tall.png"
+            let expectedHeight = showsTheRulesField ? 2640 : (isTall ? 2360 : 1200)
             XCTAssertEqual(bitmap.pixelsHigh, expectedHeight, "\(name) height")
         }
+
+        // A page with nothing set up is one card: the service, its key and the
+        // status. Model, Answers and Rewrite are settings for an assistant that
+        // does not exist yet, so nothing may be drawn below the Service card.
+        let notSetUp = try lastInkRow(in: directory.appendingPathComponent("settings-assistant-no-key-tall.png"))
+        XCTAssertLessThan(
+            notSetUp,
+            1_000,
+            "the not-set-up page drew a card below the Service card, which is where Model and Rewrite would be"
+        )
+        let sharedKey = try lastInkRow(in: directory.appendingPathComponent("settings-assistant-tall.png"))
+        XCTAssertLessThan(sharedKey, 1_000, "a stored speech key is not a set-up assistant")
+        let connected = try lastInkRow(in: directory.appendingPathComponent("settings-assistant-connected-tall.png"))
+        XCTAssertGreaterThan(
+            connected,
+            1_900,
+            "a set-up page draws its Model, Answers and Rewrite sections"
+        )
+    }
+
+    /// The last row of a settings render that carries anything but the page's
+    /// own background.
+    ///
+    /// The background is sampled beside the card on every row, so the page's
+    /// gradient never reads as ink. The value is the bottom of the last card:
+    /// a page of one card ends under the status row, a configured page ends
+    /// under the Rewrite section.
+    ///
+    /// - Parameter url: the render.
+    /// - Returns: the row, in device pixels.
+    private func lastInkRow(in url: URL) throws -> Int {
+        let data = try Data(contentsOf: url)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data), "\(url.lastPathComponent) is not a PNG")
+        // The card's content spans these columns at two times scale, and the
+        // page's background is clear beside the card's trailing edge.
+        let contentLeft = 486
+        let contentRight = 1_551
+        let backgroundColumn = 1_600
+        func colour(_ x: Int, _ y: Int) -> (Int, Int, Int) {
+            guard let colour = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB)
+            else { return (0, 0, 0) }
+            return (
+                Int(colour.redComponent * 255),
+                Int(colour.greenComponent * 255),
+                Int(colour.blueComponent * 255)
+            )
+        }
+        func distance(_ first: (Int, Int, Int), _ second: (Int, Int, Int)) -> Int {
+            max(abs(first.0 - second.0), max(abs(first.1 - second.1), abs(first.2 - second.2)))
+        }
+        var last: Int?
+        for y in 120 ..< (bitmap.pixelsHigh - 20) {
+            let background = colour(backgroundColumn, y)
+            let ink = stride(from: contentLeft, through: contentRight, by: 8).contains { x in
+                distance(colour(x, y), background) > 10
+            }
+            if ink { last = y }
+        }
+        return try XCTUnwrap(last, "\(url.lastPathComponent) is blank")
     }
 
     /// The island, in the states the transcript change touches.

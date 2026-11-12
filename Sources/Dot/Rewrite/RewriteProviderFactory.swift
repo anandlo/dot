@@ -8,9 +8,10 @@ import Foundation
 /// settings-to-provider step the assistant already performs.
 @MainActor
 protocol RewriteProviderFactory {
-    /// The assistant's catalogue id.
-    var providerID: String { get }
-    /// Whether a key is stored, answered without decrypting it.
+    /// The assistant's block of the configuration.
+    var assistant: AssistantConfiguration { get }
+    /// Whether a key is stored for the chosen service, answered without
+    /// decrypting it.
     func hasKey() -> Bool
     /// The model a rewrite is asked for.
     func model() -> String
@@ -25,10 +26,10 @@ struct AssistantRewriteProviderFactory: RewriteProviderFactory {
     /// The assistant's block of the configuration.
     let configuration: () -> AssistantConfiguration
 
-    var providerID: String { configuration().chat.providerID }
+    var assistant: AssistantConfiguration { configuration() }
 
     func hasKey() -> Bool {
-        AssistantCredentials.hasKey(for: providerID)
+        AssistantCredentials.hasKey(for: assistant.chat.providerID)
     }
 
     func model() -> String {
@@ -46,7 +47,10 @@ struct AssistantRewriteProviderFactory: RewriteProviderFactory {
         return try AssistantProviderCatalogue.makeProvider(
             settings: chat,
             apiKey: key,
-            temperature: temperature
+            temperature: temperature,
+            // A rewrite is two sentences: a vendor whose row can turn its
+            // reasoning off for one does.
+            forRewrite: true
         )
     }
 }

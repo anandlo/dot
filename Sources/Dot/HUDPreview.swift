@@ -32,6 +32,7 @@ enum HUDPreview {
         case rewriteRunning
         case rewriteAppliedFaithful
         case rewriteAppliedCheck
+        case rewritePromptApplied
         case rewriteBlocked
         case rewriteCopied
     }
@@ -97,6 +98,33 @@ enum HUDPreview {
     /// length band holds and the render of the applied card is the render of a
     /// rewrite that would really have been applied.
     static let rewrite = "Dot records the microphone, transcribes the words and pastes them back where you were."
+
+    /// The prompt an applied Agent prompt render shows.
+    ///
+    /// It is a plausible answer to the transcript render: the sections the
+    /// style asks for, with the one detail the speaker did not give written as
+    /// the style's own [missing: what] line.
+    static let promptRewrite = """
+    ## Goal
+    Record, transcribe and paste the words back where the cursor was.
+
+    ## Context
+    Dot records the microphone end to end, transcribes the words, and pastes them back into the application that had focus.
+
+    ## Requirements
+    1. Record from the microphone.
+    2. Transcribe the recording.
+    3. Paste the transcript back where the cursor was.
+
+    ## Constraints
+    Do not lose the words when the paste is refused.
+
+    ## Done when
+    [missing: how to verify]
+
+    ## Open questions
+    [missing: which applications were tested]
+    """
 
     /// The shortcut the launch render shows.
     static let readyShortcut = "⌥⌘D"
@@ -352,7 +380,7 @@ enum HUDPreview {
             model.assistantAllow = {}
             model.assistantCancel = {}
         case .rewriteOffered, .rewriteRunning, .rewriteAppliedFaithful,
-             .rewriteAppliedCheck, .rewriteBlocked, .rewriteCopied:
+             .rewriteAppliedCheck, .rewritePromptApplied, .rewriteBlocked, .rewriteCopied:
             applyRewriteState(state, to: model)
         }
         return model
@@ -385,6 +413,18 @@ enum HUDPreview {
             card.phase = .applied(styleID: style.id)
             card.rewrite = rewrite
             card.warning = FaithfulnessCheck.nameChanged
+            card.canUndo = true
+        case .rewritePromptApplied:
+            // The render goes through the shipped assembly, so what it draws is
+            // the model output and Dot's working rules in the order the paste
+            // writes them.
+            let prompt = RewriteStyle.prompt
+            card.phase = .applied(styleID: prompt.id)
+            card.rewrite = RewritePrompt.finalText(
+                promptRewrite,
+                style: prompt,
+                configuration: .default
+            )
             card.canUndo = true
         case .rewriteBlocked:
             card.phase = .blocked(styleID: style.id, error: FaithfulnessCheck.numberChanged)

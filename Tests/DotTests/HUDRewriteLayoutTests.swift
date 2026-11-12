@@ -184,3 +184,49 @@ final class HUDRewriteLayoutTests: XCTestCase {
         XCTAssertTrue(title.hasSuffix("…"))
     }
 }
+
+extension HUDRewriteLayoutTests {
+    // MARK: - The chip row
+
+    /// The five chips at their labels' width, gaps included.
+    private func chipRowWidth(_ styles: [RewriteStyle]) -> CGFloat {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: HUDRewriteLayout.chipFontSize, weight: .medium),
+        ]
+        let widths = styles.map { style in
+            ceil((style.title as NSString).size(withAttributes: attributes).width)
+                + HUDRewriteLayout.chipHPadding * 2
+        }
+        return widths.reduce(0, +)
+            + CGFloat(max(0, widths.count - 1)) * HUDRewriteLayout.chipGap
+    }
+
+    func testTheFiveChipsFitOneRow() {
+        let width = chipRowWidth(RewriteStyle.builtIns)
+        let available = HUDState.transcriptWidth - HUDTheme.padding * 2
+        XCTAssertLessThanOrEqual(
+            width,
+            available,
+            "the chips need \(width) pt of a \(available) pt row"
+        )
+        XCTAssertEqual(RewriteStyle.builtIns.map(\.title), [
+            "Agent prompt", "Concise", "Plain English", "Casual", "Formal",
+        ])
+    }
+
+    func testAnAppliedPromptCardFitsThePanel() {
+        let text = HUDPreview.transcript
+        var card = offeredCard(text)
+        card.phase = .applied(styleID: "prompt")
+        card.rewrite = RewritePrompt.finalText(
+            HUDPreview.promptRewrite,
+            style: .prompt,
+            configuration: .default
+        )
+        let size = HUD.transcriptSize(text: text, rewrite: card)
+        XCTAssertLessThanOrEqual(size.height, HUD.maximumCardHeight)
+        let body = size.height - HUDTheme.headerHeight - 1
+            - HUD.rewriteExtraHeight(card)
+        XCTAssertEqual(body, HUDTranscript.maxBodyHeight, accuracy: 1, "the body scrolls at its cap")
+    }
+}

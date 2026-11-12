@@ -48,6 +48,11 @@ enum MenuDump {
         state.selectedPresetID = ProviderPreset.presenting(config).id
         state.autoPasteEnabled = config.autoPaste
         state.launchAtLogin = LaunchAtLogin.isEnabled
+        let assistantRow = AssistantProviderCatalogue.row(for: config.assistant.chat.providerID)
+        state.assistantUsable = AssistantAvailability.isUsable(
+            config: config.assistant,
+            hasKey: assistantRow.requiresKey ? CredentialStore.hasKey(for: assistantRow.id) : false
+        )
 
         print("Dot — menu bar menu")
         print(MenuBuilder.plainText(for: state))

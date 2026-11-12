@@ -10,16 +10,26 @@ import XCTest
 final class RewriteOfferTests: XCTestCase {
     private let text = "Send the report to Priya by 5 pm."
 
+    /// An assistant the person set up, on the row the test asks about.
+    private func setUpAssistant(
+        providerID: String = AssistantSettings.defaultProviderID
+    ) -> AssistantConfiguration {
+        var configuration = AssistantConfiguration.default
+        configuration.isSetUp = true
+        configuration.chat.providerID = providerID
+        return configuration
+    }
+
     private func offers(
         rewrite: RewriteConfiguration = .default,
-        providerID: String = AssistantSettings.defaultProviderID,
+        assistant: AssistantConfiguration? = nil,
         hasKey: Bool = true,
         text: String? = nil,
         delivery: HUDDelivery = .pasted
     ) -> Bool {
         RewriteOffer.shouldOffer(
             rewrite: rewrite,
-            providerID: providerID,
+            assistant: assistant ?? setUpAssistant(),
             hasKey: hasKey,
             text: text ?? self.text,
             delivery: delivery
@@ -35,13 +45,29 @@ final class RewriteOfferTests: XCTestCase {
     }
 
     func testAServiceOnThisMacNeedsNoKey() {
-        XCTAssertTrue(offers(providerID: "ollama", hasKey: false))
-        XCTAssertTrue(offers(providerID: "lmstudio", hasKey: false))
+        XCTAssertTrue(offers(assistant: setUpAssistant(providerID: "ollama"), hasKey: false))
+        XCTAssertTrue(offers(assistant: setUpAssistant(providerID: "lmstudio"), hasKey: false))
     }
 
     func testAnUnknownServiceIsTreatedAsACustomEndpoint() {
         // A custom row needs no key, which is what a hand-filled endpoint is.
-        XCTAssertTrue(offers(providerID: "my-endpoint", hasKey: false))
+        XCTAssertTrue(offers(assistant: setUpAssistant(providerID: "my-endpoint"), hasKey: false))
+    }
+
+    func testASpeechKeyAloneOffersNoChips() {
+        // The chat key is the speech key's own Keychain item: a person who set
+        // the transcriber up has one and never chose an assistant, and the
+        // chips must not appear in front of them.
+        let never = AssistantConfiguration.default
+        XCTAssertFalse(never.isSetUp, "a configuration this build wrote is not set up")
+        XCTAssertFalse(offers(assistant: never, hasKey: true))
+    }
+
+    func testALocalServiceIsNotOfferedBeforeTheAssistantIsSetUp() {
+        XCTAssertFalse(offers(assistant: AssistantConfiguration.default, hasKey: false))
+        var local = AssistantConfiguration.default
+        local.chat.providerID = "ollama"
+        XCTAssertFalse(offers(assistant: local, hasKey: false))
     }
 
     func testTheSwitchTurnsTheChipsOff() {
@@ -75,9 +101,4 @@ final class RewriteOfferTests: XCTestCase {
         XCTAssertTrue(offers(delivery: .pasted))
     }
 
-    func testTheServiceIsUsableWhenTheRowNeedsNoKey() {
-        XCTAssertTrue(RewriteOffer.serviceIsUsable(providerID: "ollama", hasKey: false))
-        XCTAssertTrue(RewriteOffer.serviceIsUsable(providerID: "anthropic", hasKey: true))
-        XCTAssertFalse(RewriteOffer.serviceIsUsable(providerID: "anthropic", hasKey: false))
-    }
 }

@@ -613,6 +613,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.autoPasteEnabled = config.autoPaste
         state.fastRecordEnabled = config.fastRecord
         state.launchAtLogin = LaunchAtLogin.isEnabled
+        // The item is drawn either way; a person who never set the assistant up
+        // sees it greyed rather than pressing a key that answers with a
+        // sentence.
+        let assistantRow = AssistantProviderCatalogue.row(for: config.assistant.chat.providerID)
+        state.assistantUsable = AssistantAvailability.isUsable(
+            config: config.assistant,
+            hasKey: assistantRow.requiresKey ? CredentialStore.hasKey(for: assistantRow.id) : false
+        )
         statusItem.menuState = state
     }
 

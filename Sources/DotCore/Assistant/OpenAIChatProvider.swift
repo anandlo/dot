@@ -30,6 +30,9 @@ public struct OpenAIChatProvider: ChatProvider {
     /// endpoints that do not know the field may reject it, so it is off unless
     /// the catalogue turns it on for a vendor that documents it.
     public let includeUsage: Bool
+    /// Body members the catalogue names for this call, e.g. a vendor's
+    /// reasoning switch. A member the request already writes is never replaced.
+    public let extraBody: [String: JSONValue]
     public let timeout: TimeInterval
     public let limits: AssistantStreamLimits
     private let session: URLSession
@@ -43,6 +46,7 @@ public struct OpenAIChatProvider: ChatProvider {
         extraHeaders: [String: String] = [:],
         temperature: Double? = nil,
         includeUsage: Bool = false,
+        extraBody: [String: JSONValue] = [:],
         timeout: TimeInterval = 120,
         limits: AssistantStreamLimits = .default,
         session: URLSession = OpenAIChatProvider.makeSession()
@@ -55,6 +59,7 @@ public struct OpenAIChatProvider: ChatProvider {
         self.extraHeaders = extraHeaders
         self.temperature = temperature
         self.includeUsage = includeUsage
+        self.extraBody = extraBody
         self.timeout = timeout
         self.limits = limits
         self.session = session
@@ -107,7 +112,8 @@ public struct OpenAIChatProvider: ChatProvider {
             tools: tools.isEmpty ? nil : tools.map(OpenAIToolPayload.init),
             stream: true,
             temperature: temperature,
-            streamOptions: includeUsage ? OpenAIStreamOptions(includeUsage: true) : nil
+            streamOptions: includeUsage ? OpenAIStreamOptions(includeUsage: true) : nil,
+            extraBody: extraBody
         )
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -223,14 +229,54 @@ private struct OpenAIRequestBody: Encodable {
     var stream: Bool
     var temperature: Double?
     var streamOptions: OpenAIStreamOptions?
+    /// Members the catalogue adds for one call, e.g. a reasoning switch.
+    var extraBody: [String: JSONValue] = [:]
 
-    enum CodingKeys: String, CodingKey {
-        case model
-        case messages
-        case tools
-        case stream
-        case temperature
-        case streamOptions = "stream_options"
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: OpenAIJSONKey.self)
+        // The members this shape owns. A row may add to the body; it may not
+        // replace a member the request already writes.
+        var written: Set<String> = ["model", "messages", "stream"]
+        try container.encode(model, forKey: OpenAIJSONKey("model"))
+        try container.encode(messages, forKey: OpenAIJSONKey("messages"))
+        if let tools {
+            written.insert("tools")
+            try container.encode(tools, forKey: OpenAIJSONKey("tools"))
+        }
+        try container.encode(stream, forKey: OpenAIJSONKey("stream"))
+        if let temperature {
+            written.insert("temperature")
+            try container.encode(temperature, forKey: OpenAIJSONKey("temperature"))
+        }
+        if let streamOptions {
+            written.insert("stream_options")
+            try container.encode(streamOptions, forKey: OpenAIJSONKey("stream_options"))
+        }
+        for (name, value) in extraBody where !written.contains(name) {
+            try container.encode(value, forKey: OpenAIJSONKey(name))
+        }
+    }
+}
+
+/// A body member of the chat completion request.
+///
+/// The members are named rather than listed in a `CodingKeys` enum because a
+/// catalogue row adds one this file has never heard of, and one container can
+/// only be keyed by one type.
+private struct OpenAIJSONKey: CodingKey {
+    var stringValue: String
+    var intValue: Int? { nil }
+
+    init(_ name: String) {
+        stringValue = name
+    }
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+    }
+
+    init?(intValue: Int) {
+        nil
     }
 }
 

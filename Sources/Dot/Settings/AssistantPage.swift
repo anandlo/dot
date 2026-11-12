@@ -21,7 +21,21 @@ struct SettingsConnectorSummariesKey: EnvironmentKey {
     static let defaultValue: [ConnectorSummary]? = nil
 }
 
+/// The status an offscreen render draws on the Assistant page.
+///
+/// A render must not ask a service whether it answers: the four states are four
+/// pictures, and none of them may depend on the network or on who is signed in.
+struct AssistantConnectionPreviewKey: EnvironmentKey {
+    static let defaultValue: AssistantConnectionState? = nil
+}
+
 extension EnvironmentValues {
+    /// The connection status to draw instead of checking, if any.
+    var assistantConnectionPreview: AssistantConnectionState? {
+        get { self[AssistantConnectionPreviewKey.self] }
+        set { self[AssistantConnectionPreviewKey.self] = newValue }
+    }
+
     /// The provider ids a render assumes are connected, if any.
     var assistantKeyedProviders: Set<String>? {
         get { self[AssistantKeyedProvidersKey.self] }
@@ -58,12 +72,26 @@ struct AssistantPage: View {
     let onDeleteKey: (String) -> String?
 
     @Environment(\.assistantKeyedProviders) private var keyedProviders
+    @Environment(\.assistantConnectionPreview) private var connectionPreview
+    @Environment(\.settingsHeadless) private var headless
 
     @State private var storedKeys: Set<String>?
     @State private var keyField = ""
     @State private var connecting = false
     @State private var note: KeyNote?
     @State private var isCustomModel = false
+    /// The service the person picked during this visit to the page.
+    ///
+    /// The pop-up says "None" while the assistant is not set up, but a service
+    /// that was just picked and not yet given a key is not set up either, and
+    /// the page still has to ask for that key. The pick is kept here so the two
+    /// facts stay apart: a service can be chosen without the assistant being
+    /// ready.
+    @State private var chosenServiceID: String?
+    @State private var connection: AssistantConnectionState = .notSetUp
+    @State private var checkTask: Task<Void, Never>?
+    @State private var models: [String] = []
+    @State private var modelsTask: Task<Void, Never>?
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable {
@@ -95,11 +123,19 @@ struct AssistantPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             serviceSection
-            modelSection
-            answersSection
-            rewriteSection
+            // Until the person sets a service up, the page is the one question
+            // it can still answer: which service, and whether it works. A model
+            // list, an answer destination and a set of rewrite styles are
+            // settings for something that does not exist yet, and showing them
+            // beside "Not set up" is how the page came to look configured.
+            if config.assistant.isSetUp {
+                modelSection
+                answersSection
+                rewriteSection
+            }
         }
-        .onAppear(perform: readStoredKeys)
+        .onAppear(perform: appeared)
+        .onDisappear(perform: cancelled)
     }
 
     // MARK: - Service
@@ -109,33 +145,50 @@ struct AssistantPage: View {
             SettingsRow("Service") {
                 DotSelect(
                     label: "Service",
-                    options: AssistantProviderCatalogue.rows.map { row in
-                        DotSelectOption(value: row.id, title: row.name)
-                    },
-                    selection: providerBinding,
+                    options: serviceOptions,
+                    selection: serviceBinding,
                     placeholder: "Choose a service",
                     width: 220
                 )
             }
-            if !Self.runsOnThisMac(row) {
+            if showsSharedKeyRow {
                 SettingsDivider()
-                AssistantKeyRow(
-                    field: $keyField,
-                    hasStoredKey: hasKey(row.id),
-                    isConnecting: connecting,
-                    onConnect: connect,
-                    onDelete: deleteKey
-                )
+                sharedKeyRow
+            }
+            if isServiceChosen {
+                if !Self.runsOnThisMac(row) {
+                    SettingsDivider()
+                    AssistantKeyRow(
+                        field: $keyField,
+                        hasStoredKey: hasKey(row.id),
+                        isConnecting: connecting,
+                        onConnect: connect,
+                        onDelete: deleteKey,
+                        subtitle: row.keyNote
+                    )
+                }
+                if showsPlanRow {
+                    SettingsDivider()
+                    SettingsRow("Plan") {
+                        DotSelect(
+                            label: "Plan",
+                            options: planOptions,
+                            selection: planBinding,
+                            placeholder: planOptions.first?.title ?? "",
+                            width: 220
+                        )
+                    }
+                }
             }
             SettingsDivider()
             SettingsRow(
                 "Status",
-                subtitle: note?.detail,
+                subtitle: statusDetail,
                 subtitleTone: note?.tone.color ?? DotTheme.ink3
             ) {
                 statusChip
             }
-            if Self.needsAddress(row) {
+            if isServiceChosen, Self.needsAddress(row) {
                 SettingsDivider()
                 SettingsRow("Base URL") {
                     TextField(baseURLPlaceholder, text: baseURLBinding)
@@ -151,20 +204,88 @@ struct AssistantPage: View {
     /// The dot and the words that say whether a turn would be able to run.
     private var statusChip: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(isConnected ? DotTheme.switchOn : DotTheme.ink3)
-                .frame(width: 6, height: 6)
-            Text(isConnected ? "Connected" : "Not connected")
+            switch displayedConnection {
+            case .checking:
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+                    .frame(width: 12, height: 12)
+            case .notSetUp, .connected, .notConnected:
+                Circle()
+                    .fill(statusDotColour)
+                    .frame(width: 6, height: 6)
+            }
+            Text(displayedConnection.title)
                 .font(.system(size: 11.5))
-                .foregroundStyle(isConnected ? DotTheme.ink2 : DotTheme.ink3)
+                .foregroundStyle(displayedConnection == .notSetUp ? DotTheme.ink3 : DotTheme.ink2)
         }
         .accessibilityElement(children: .combine)
     }
 
-    /// Whether a request would find what it needs: a key, or a service that
-    /// runs on this Mac and asks for none.
-    private var isConnected: Bool {
-        !row.requiresKey || hasKey(row.id)
+    /// The colour of the status dot.
+    private var statusDotColour: Color {
+        switch displayedConnection {
+        case .connected: DotTheme.switchOn
+        case .notConnected: DotTheme.amber
+        case .notSetUp, .checking: DotTheme.ink3
+        }
+    }
+
+    /// The line under the status row: why a check failed, or what the last key
+    /// change did.
+    private var statusDetail: String? {
+        displayedConnection.detail ?? note?.detail
+    }
+
+    /// The state the page draws: a render's preview, or what the last check
+    /// found.
+    private var displayedConnection: AssistantConnectionState {
+        connectionPreview ?? connection
+    }
+
+    /// Whether the assistant can be used right now.
+    private var isUsable: Bool {
+        AssistantAvailability.isUsable(config: config.assistant, hasKey: hasKey(row.id))
+    }
+
+    /// Whether a service has been chosen at all.
+    private var isServiceChosen: Bool {
+        chosenServiceID != nil || config.assistant.isSetUp
+    }
+
+    /// Whether the page offers the key the Provider page already stored.
+    ///
+    /// A chat key is the speech key's own Keychain item, so a person who set the
+    /// transcriber up already has one. It is offered rather than used: pressing
+    /// the button is what says the assistant is wanted, and a key that appears
+    /// without a word is how the page came to look connected to someone who
+    /// never chose a service.
+    private var showsSharedKeyRow: Bool {
+        !config.assistant.isSetUp && row.requiresKey && hasKey(row.id)
+    }
+
+    private var sharedKeyRow: some View {
+        SettingsRow("Speech key", subtitle: "The Provider page stored a key for \(row.name).") {
+            Button("Use the key from Speech", action: useSharedKey)
+                .buttonStyle(DotSecondaryButtonStyle())
+                .accessibilityHint("Sets the assistant up with the key stored on the Provider page.")
+        }
+    }
+
+    /// The choices the Service pop-up offers: none, then every row.
+    private var serviceOptions: [DotSelectOption<String>] {
+        [DotSelectOption(value: nil, title: "None")]
+            + AssistantProviderCatalogue.rows.map { DotSelectOption(value: $0.id, title: $0.name) }
+    }
+
+    /// The plans the chosen vendor sells, when it sells more than one.
+    private var showsPlanRow: Bool {
+        row.plans.count > 1
+    }
+
+    private var planOptions: [DotSelectOption<String>] {
+        row.plans.map { DotSelectOption(value: $0.id, title: $0.title) }
     }
 
     // MARK: - Model
@@ -193,10 +314,15 @@ struct AssistantPage: View {
         }
     }
 
+    /// The ids the picker offers: what the service listed, or its suggestions.
+    private var modelChoices: [String] {
+        models.isEmpty ? row.defaultModels : models
+    }
+
     /// The catalogue's suggestions for the chosen service, and the row that
     /// opens a field for anything else.
     private var modelOptions: [DotSelectOption<String>] {
-        var options = row.defaultModels.map { DotSelectOption(value: $0, title: $0) }
+        var options = modelChoices.map { DotSelectOption(value: $0, title: $0) }
         let current = storedModel
         if !current.isEmpty, !options.contains(where: { $0.value == current }) {
             options.insert(DotSelectOption(value: current, title: current), at: 0)
@@ -209,8 +335,8 @@ struct AssistantPage: View {
     /// model when the service suggests none.
     private var showsModelField: Bool {
         isCustomModel
-            || row.defaultModels.isEmpty
-            || (!storedModel.isEmpty && !row.defaultModels.contains(storedModel))
+            || modelChoices.isEmpty
+            || (!storedModel.isEmpty && !modelChoices.contains(storedModel))
     }
 
     private var storedModel: String {
@@ -221,7 +347,7 @@ struct AssistantPage: View {
         Binding(
             get: {
                 if showsModelField { return Self.customChoice }
-                return storedModel.isEmpty ? (row.defaultModels.first ?? Self.customChoice) : storedModel
+                return storedModel.isEmpty ? (modelChoices.first ?? Self.customChoice) : storedModel
             },
             set: { value in
                 if value == Self.customChoice {
@@ -279,7 +405,8 @@ struct AssistantPage: View {
     /// A switch per built-in style, then the person's own: a row of two fields
     /// and the control that removes it, and the button that adds another. The
     /// chips on the card show exactly the styles that are on here, built-ins
-    /// first.
+    /// first. The prompt style carries Dot's working rules, so its switch is
+    /// followed by the control that keeps them and the field that edits them.
     private var rewriteSection: some View {
         SettingsSection("Rewrite") {
             SettingsToggleRow(
@@ -294,10 +421,17 @@ struct AssistantPage: View {
                     subtitle: style.subtitle,
                     isOn: styleBinding(style)
                 )
-                // A two-line description under a one-line title leaves the
-                // row's ink high in its cell, so those rows carry three points
-                // more air below it. A one-line description is already level.
-                .padding(.bottom, style.wrapsSubtitle ? 3 : 0)
+                if style == .prompt {
+                    SettingsDivider()
+                    SettingsToggleRow(
+                        title: "Add working rules to agent prompts",
+                        isOn: workingRulesEnabledBinding
+                    )
+                    if config.assistant.rewrite.workingRulesEnabled {
+                        SettingsDivider()
+                        WorkingRulesRow(text: workingRulesBinding, onReset: resetWorkingRules)
+                    }
+                }
             }
             ForEach(config.assistant.rewrite.custom) { style in
                 SettingsDivider()
@@ -371,23 +505,73 @@ struct AssistantPage: View {
         AssistantProviderCatalogue.row(for: config.assistant.chat.providerID)
     }
 
-    private var providerBinding: Binding<String> {
+    /// The chosen service, or none.
+    ///
+    /// The pop-up says "None" until the person has set the assistant up: the
+    /// provider id a fresh install stores is what the build wrote, not a choice
+    /// the person made, and showing it as one is how an install that never
+    /// touched the assistant came to look configured.
+    private var serviceBinding: Binding<String?> {
         Binding(
-            get: { config.assistant.chat.providerID },
+            get: {
+                if let chosenServiceID { return chosenServiceID }
+                return config.assistant.isSetUp ? config.assistant.chat.providerID : nil
+            },
             set: { id in
-                guard config.assistant.chat.providerID != id else { return }
-                config.assistant.chat.providerID = id
-                // A model and an address belong to the service they were typed
-                // for: a model id from one vendor means nothing to another, and
-                // a typed address would silently replace the new row's.
-                config.assistant.chat.model = ""
-                if !Self.needsAddress(AssistantProviderCatalogue.row(for: id)) {
-                    config.assistant.chat.baseURL = nil
-                }
-                isCustomModel = false
+                chosenServiceID = id
                 note = nil
                 keyField = ""
+                models = []
+                isCustomModel = false
+                guard let id else {
+                    config.assistant.isSetUp = false
+                    connection = .notSetUp
+                    onChange()
+                    return
+                }
+                let service = AssistantProviderCatalogue.row(for: id)
+                if config.assistant.chat.providerID != id {
+                    config.assistant.chat.providerID = id
+                    // A model and an address belong to the service they were
+                    // typed for: a model id from one vendor means nothing to
+                    // another, and a typed address would silently replace the
+                    // new row's.
+                    config.assistant.chat.model = ""
+                    if !Self.needsAddress(service) {
+                        config.assistant.chat.baseURL = nil
+                    }
+                }
+                // A service that runs on this Mac asks for no key, so picking
+                // it is the whole setup. Anything else waits for a key, and a
+                // key the Provider page already stored is offered rather than
+                // assumed.
+                if !service.requiresKey {
+                    config.assistant.isSetUp = true
+                }
                 onChange()
+                apply(.availability(isUsable: isUsable))
+                check(forced: true)
+                loadModels()
+            }
+        )
+    }
+
+    /// The plan the chosen vendor's address belongs to.
+    private var planBinding: Binding<String> {
+        Binding(
+            get: {
+                AssistantProviderCatalogue.plan(for: config.assistant.chat, row: row)?.id
+                    ?? row.plans.first?.id ?? ""
+            },
+            set: { id in
+                guard let plan = row.plans.first(where: { $0.id == id }) else { return }
+                let address = plan.baseURL?.absoluteString
+                guard config.assistant.chat.baseURL != address else { return }
+                config.assistant.chat.baseURL = address
+                note = nil
+                onChange()
+                apply(.availability(isUsable: isUsable))
+                check(forced: true)
             }
         )
     }
@@ -404,6 +588,8 @@ struct AssistantPage: View {
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
                 config.assistant.chat.baseURL = trimmed.isEmpty ? nil : value
                 onChange()
+                apply(.availability(isUsable: isUsable))
+                check(forced: true)
             }
         )
     }
@@ -428,6 +614,39 @@ struct AssistantPage: View {
                 onChange()
             }
         )
+    }
+
+    private var workingRulesEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { config.assistant.rewrite.workingRulesEnabled },
+            set: { value in
+                guard config.assistant.rewrite.workingRulesEnabled != value else { return }
+                config.assistant.rewrite.workingRulesEnabled = value
+                onChange()
+            }
+        )
+    }
+
+    /// The rules as they are typed, held to the length the configuration keeps.
+    private var workingRulesBinding: Binding<String> {
+        Binding(
+            get: { config.assistant.rewrite.workingRules },
+            set: { value in
+                let capped = String(
+                    value.prefix(RewriteConfiguration.maximumWorkingRulesLength)
+                )
+                guard config.assistant.rewrite.workingRules != capped else { return }
+                config.assistant.rewrite.workingRules = capped
+                onChange()
+            }
+        )
+    }
+
+    private func resetWorkingRules() {
+        let rules = RewriteConfiguration.defaultWorkingRules
+        guard config.assistant.rewrite.workingRules != rules else { return }
+        config.assistant.rewrite.workingRules = rules
+        onChange()
     }
 
     private func styleBinding(_ style: RewriteStyleID) -> Binding<Bool> {
@@ -497,6 +716,68 @@ struct AssistantPage: View {
         (storedKeys ?? keyedProviders ?? []).contains(id)
     }
 
+    /// The page is on screen: read the stored keys, check the service and read
+    /// the model list, once.
+    private func appeared() {
+        readStoredKeys()
+        guard connectionPreview == nil else { return }
+        apply(.availability(isUsable: isUsable))
+        check(forced: false)
+        loadModels()
+    }
+
+    /// The page is going away: no check and no model list may outlive it.
+    private func cancelled() {
+        checkTask?.cancel()
+        modelsTask?.cancel()
+    }
+
+    /// Reports a change to the status row.
+    private func apply(_ event: AssistantConnectionEvent) {
+        connection = event.applied(to: connection)
+    }
+
+    /// Asks the service whether it answers.
+    ///
+    /// The answer is reused for ten minutes, so leaving the page and coming back
+    /// does not send a second request, and nothing is asked before the page is
+    /// on screen: an install that never opens Settings never makes the call. A
+    /// render and a headless run never make it either.
+    ///
+    /// - Parameter forced: whether a change the person just made is the reason,
+    ///   in which case a cached answer is not reused.
+    private func check(forced: Bool) {
+        checkTask?.cancel()
+        guard !headless, connectionPreview == nil, isUsable else { return }
+        let settings = config.assistant.chat
+        let service = AssistantConnectionCache.serviceKey(settings)
+        let cache = AssistantConnectionCache.shared
+        let serviceID = row.id
+        let needsKey = row.requiresKey
+        checkTask = Task { @MainActor in
+            if !forced, let fresh = await cache.result(for: service, now: Date()) {
+                connection = fresh.state
+                return
+            }
+            apply(.checkStarted)
+            let key = needsKey ? await AssistantCredentials.resolvedKey(for: serviceID) : nil
+            guard !Task.isCancelled else { return }
+            let result = await AssistantConnectionVerifier.verify(
+                settings: settings,
+                apiKey: key,
+                session: AssistantConnectionVerifier.sharedSession
+            )
+            guard !Task.isCancelled else { return }
+            await cache.store(result, for: service, at: Date())
+            switch result {
+            case .connected:
+                apply(.checkSucceeded)
+            case .notConnected(let reason):
+                apply(.checkFailed(reason))
+            }
+        }
+    }
+
     private func readStoredKeys() {
         guard storedKeys == nil else { return }
         if let keyedProviders {
@@ -531,8 +812,34 @@ struct AssistantPage: View {
         }
         storedKeys = (storedKeys ?? keyedProviders ?? []).union([service.id])
         keyField = ""
+        // A key that belongs to the vendor's other plan moves the address to
+        // that plan, and says so: a request sent to the wrong host of a vendor
+        // that runs two of them is refused for a reason no one would guess.
+        if let moved = AssistantProviderCatalogue.movedPlan(
+            forStoredKey: secret,
+            settings: config.assistant.chat,
+            row: service
+        ) {
+            config.assistant.chat.baseURL = moved.baseURL?.absoluteString
+            note = KeyNote(detail: "Using the \(moved.title) address.", tone: .neutral)
+        } else {
+            note = KeyNote(detail: nil, tone: .good)
+        }
+        // The person picked a service and gave it a key: that, and only that,
+        // is what sets the assistant up.
+        config.assistant.isSetUp = true
+        onChange()
+        apply(.availability(isUsable: isUsable))
+        check(forced: true)
+    }
+
+    /// The person accepted the key the Provider page already stored.
+    private func useSharedKey() {
+        config.assistant.isSetUp = true
         note = KeyNote(detail: nil, tone: .good)
         onChange()
+        apply(.availability(isUsable: isUsable))
+        check(forced: true)
     }
 
     private func deleteKey() {
@@ -545,6 +852,33 @@ struct AssistantPage: View {
         keyField = ""
         note = KeyNote(detail: nil, tone: .neutral)
         onChange()
+        apply(.availability(isUsable: isUsable))
+    }
+
+    /// Reads the model list from the service.
+    ///
+    /// The list is what the Model pop-up offers, so it is read once the page is
+    /// on screen and again whenever the service changes: a service that adds a
+    /// model after this build ships still appears in the pop-up. A refusal
+    /// leaves the catalogue's suggestions in place, and the status row says why
+    /// the service is not answering.
+    private func loadModels() {
+        modelsTask?.cancel()
+        guard !headless, connectionPreview == nil, isUsable else { return }
+        let settings = config.assistant.chat
+        let service = row
+        modelsTask = Task { @MainActor in
+            let key = service.requiresKey
+                ? await AssistantCredentials.resolvedKey(for: service.id)
+                : nil
+            let fetched = await AssistantModelCatalog.fetch(
+                settings: settings,
+                apiKey: key,
+                session: AssistantConnectionVerifier.sharedSession
+            )
+            guard !Task.isCancelled, !fetched.isEmpty else { return }
+            models = fetched
+        }
     }
 }
 
@@ -595,7 +929,15 @@ struct AssistantKeyRow: View {
     }
 
     var body: some View {
-        SettingsRow("API key", subtitle: subtitle, subtitleTone: subtitleTone) {
+        SettingsRow(
+            "API key",
+            subtitle: subtitle,
+            subtitleTone: subtitleTone,
+            // The field and its buttons take most of the row, which leaves the
+            // sentence beside them too narrow to read: the note is drawn under
+            // them at the row's full width.
+            wideSubtitle: subtitle != nil
+        ) {
             HStack(spacing: 8) {
                 SecureField(placeholder, text: $field)
                     .modifier(DotFieldStyle(focused: isFocused))
@@ -608,6 +950,10 @@ struct AssistantKeyRow: View {
                 Button(isConnecting ? "Connecting…" : "Connect", action: onConnect)
                     .buttonStyle(DotPrimaryButtonStyle())
                     .disabled(isConnecting || trimmed.isEmpty)
+                    // The label is two words and the row may carry a wrapped
+                    // line beside it: a button that shrinks its own word is not
+                    // a button.
+                    .fixedSize()
                     .accessibilityHint("Stores the key in the macOS Keychain.")
 
                 if hasStoredKey {
@@ -646,5 +992,48 @@ struct SettingsToggleRow: View {
                 .toggleStyle(DotToggleStyle())
                 .accessibilityLabel(title)
         }
+    }
+}
+
+/// The working rules the prompt style carries: the field that edits them and
+/// the control that puts the shipped ones back.
+///
+/// The block is Dot's own text, appended after the model's output, so it is
+/// edited as data rather than described as an instruction to the model.
+@MainActor
+struct WorkingRulesRow: View {
+    @Binding var text: String
+    let onReset: () -> Void
+
+    @FocusState private var isFocused: Bool
+
+    /// The line height of the field's 12.5 pt text.
+    private static let lineHeight: CGFloat = {
+        let font = NSFont.systemFont(ofSize: 12.5)
+        return (font.ascender - font.descender + font.leading).rounded(.up)
+    }()
+
+    /// Five visible lines of rules, plus the field's own vertical padding.
+    static var height: CGFloat { lineHeight * 5 + 14 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextEditor(text: $text)
+                .modifier(DotFieldStyle(focused: isFocused))
+                .focused($isFocused)
+                .scrollContentBackground(.hidden)
+                .frame(height: Self.height)
+                .accessibilityLabel("Working rules")
+
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                Button("Reset", action: onReset)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(DotTheme.ink)
+                    .accessibilityLabel("Put the shipped working rules back")
+            }
+        }
+        .padding(.vertical, 9)
     }
 }

@@ -22,6 +22,14 @@ struct SettingsRow<Trailing: View>: View {
     var titleTone: Color = DotTheme.ink
     /// The colour of the subtitle, for a line that reports a result.
     var subtitleTone: Color = DotTheme.ink3
+    /// Whether the subtitle is drawn under the title and its control, across
+    /// the row's whole width.
+    ///
+    /// A sentence that describes the control beside it has to share the row
+    /// with that control, and a wide control leaves it a column too narrow to
+    /// read. Two lines under a full-width row keep the sentence whole and the
+    /// control where the person expects it.
+    var wideSubtitle: Bool = false
     @ViewBuilder var trailing: Trailing
 
     init(
@@ -31,6 +39,7 @@ struct SettingsRow<Trailing: View>: View {
         appIcon: NSImage? = nil,
         titleTone: Color = DotTheme.ink,
         subtitleTone: Color = DotTheme.ink3,
+        wideSubtitle: Bool = false,
         @ViewBuilder trailing: () -> Trailing
     ) {
         self.title = title
@@ -39,39 +48,56 @@ struct SettingsRow<Trailing: View>: View {
         self.appIcon = appIcon
         self.titleTone = titleTone
         self.subtitleTone = subtitleTone
+        self.wideSubtitle = wideSubtitle
         self.trailing = trailing()
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            if let appIcon {
-                Image(nsImage: appIcon)
-                    .resizable()
-                    .frame(width: 20, height: 20)
-                    .accessibilityHidden(true)
-            } else if let symbol {
-                Image(systemName: symbol)
-                    .font(.system(size: 16, weight: .regular))
-                    .foregroundStyle(DotTheme.ink2)
-                    .frame(width: 20, alignment: .leading)
-                    .accessibilityHidden(true)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 13))
-                    .foregroundStyle(titleTone)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.system(size: 11))
-                        .foregroundStyle(subtitleTone)
-                        .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 12) {
+                if let appIcon {
+                    Image(nsImage: appIcon)
+                        .resizable()
+                        .frame(width: 20, height: 20)
+                        .accessibilityHidden(true)
+                } else if let symbol {
+                    Image(systemName: symbol)
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(DotTheme.ink2)
+                        .frame(width: 20, alignment: .leading)
+                        .accessibilityHidden(true)
                 }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 13))
+                        .foregroundStyle(titleTone)
+                    if !wideSubtitle, let subtitle {
+                        subtitleLine(subtitle)
+                    }
+                }
+                // The words take the width they need before the gap beside the
+                // control is given any: without this the title column is
+                // offered half the row, and a sentence that fits on one line
+                // wraps at a width no reader would choose.
+                .layoutPriority(1)
+                Spacer(minLength: 16)
+                trailing
             }
-            Spacer(minLength: 16)
-            trailing
+            if wideSubtitle, let subtitle {
+                subtitleLine(subtitle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(.vertical, 9)
         .frame(minHeight: 40)
+    }
+
+    /// One line of the fact under the title.
+    private func subtitleLine(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(subtitleTone)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
