@@ -33,17 +33,21 @@ public struct SpectrumScale: Sendable {
     public static let peakSeeds: (Double, Double, Double, Double, Double) =
         (0.55, 0.55, 0.55, 0.55, 0.55)
 
-    /// The narrowest window a band is drawn on, in the recorder's band domain.
+    /// The window a band is drawn on, in the recorder's band domain.
     ///
-    /// `0.20` is twelve decibels, which is the spread ordinary speech covers in
-    /// one band, so the quietest and the loudest moment of a voice fill the grid
-    /// instead of the lower half of it. The guard is still needed: without it a
-    /// band that has been nearly still all take would have a window a couple of
-    /// decibels wide, and its room tone would be blown up to the top of the grid
-    /// as if someone were speaking. The recorder's own silence gate already keeps
-    /// the room out of the measurement, which is why this no longer has to be
-    /// wide enough to do that work as well.
-    public static let minimumSpan: Double = 0.20
+    /// `0.18` is ten point eight decibels, which is the spread ordinary speech
+    /// covers in one band, so the quietest and the loudest moment of a voice fill
+    /// the grid instead of the lower half of it. It is both bounds of the window:
+    /// the guard raises the top when it would be narrower, and the floor is held
+    /// no more than this under the top (`normalised`), which is what stops a
+    /// syllable's tail — a frame that clears the recorder's gate but carries
+    /// almost no band energy — from dragging the bottom of the window down and
+    /// spreading a real voice over two thirds of the grid. A real microphone
+    /// produces those frames on every syllable, so the window measured a
+    /// twenty-nine decibel span on real speech while the voice itself covered
+    /// eight; the dots then all sat in the same high slice of the ramp and read
+    /// as one dull tone.
+    public static let minimumSpan: Double = 0.18
 
     /// How fast the bottom of a window climbs while the band stays above it,
     /// in band units per second. `0.08` is four point eight decibels per
@@ -52,11 +56,13 @@ public struct SpectrumScale: Sendable {
     /// not lift the floor above the word.
     public static let floorRise: Double = 0.08
 
-    /// How fast the top of a window falls, in band units per second. `0.05` is
-    /// three decibels per second: a syllable that is louder than the voice so far
-    /// raises the top of the window at once, and the top comes down again quickly
-    /// enough that one loud word does not pin the take for its whole length.
-    public static let peakFall: Double = 0.05
+    /// How fast the top of a window falls, in band units per second. `0.15` is
+    /// nine decibels per second: a syllable that is louder than the voice so far
+    /// raises the top of the window at once, and the top comes down again fast
+    /// enough that a loud word lets go of the take in a fraction of a second
+    /// instead of pinning it for four. Three decibels a second held the window
+    /// open above the next, quieter syllables for seconds, which flattened them.
+    public static let peakFall: Double = 0.15
 
     /// The bottom of each band's window, in the recorder's `0...1` band domain.
     public private(set) var floors: (Double, Double, Double, Double, Double) = SpectrumScale.floorSeeds
@@ -128,6 +134,14 @@ public struct SpectrumScale: Sendable {
             peak = level
         } else {
             peak -= fall
+        }
+        // The bottom never sits further under the top than the window is wide.
+        // A frame that clears the recorder's gate can still carry only the tail
+        // of a syllable, and letting that tail set the floor stretched the
+        // window to three times the span a voice covers, which drew every dot
+        // in the same high slice of the ramp.
+        if floor < peak - minimumSpan {
+            floor = peak - minimumSpan
         }
         if peak < floor + minimumSpan {
             peak = floor + minimumSpan
