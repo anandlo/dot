@@ -30,6 +30,15 @@ struct SettingsRow<Trailing: View>: View {
     /// read. Two lines under a full-width row keep the sentence whole and the
     /// control where the person expects it.
     var wideSubtitle: Bool = false
+    /// Whether the section above the row already says the row's name.
+    ///
+    /// A section called "Model" holding one row also called "Model" says the
+    /// word twice in four lines. The row then is the control: the control takes
+    /// the width of the card and keeps the accessible name it already had, and
+    /// the heading over the card is what a reader sees. It is passed at the call
+    /// site rather than guessed from the text: a duplicate is a fact about one
+    /// card, and two rows that happen to share a word are not a duplicate.
+    var isNamedBySection: Bool = false
     @ViewBuilder var trailing: Trailing
 
     init(
@@ -40,6 +49,7 @@ struct SettingsRow<Trailing: View>: View {
         titleTone: Color = DotTheme.ink,
         subtitleTone: Color = DotTheme.ink3,
         wideSubtitle: Bool = false,
+        isNamedBySection: Bool = false,
         @ViewBuilder trailing: () -> Trailing
     ) {
         self.title = title
@@ -49,39 +59,49 @@ struct SettingsRow<Trailing: View>: View {
         self.titleTone = titleTone
         self.subtitleTone = subtitleTone
         self.wideSubtitle = wideSubtitle
+        self.isNamedBySection = isNamedBySection
         self.trailing = trailing()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .center, spacing: 12) {
-                if let appIcon {
-                    Image(nsImage: appIcon)
-                        .resizable()
-                        .frame(width: 20, height: 20)
-                        .accessibilityHidden(true)
-                } else if let symbol {
-                    Image(systemName: symbol)
-                        .font(.system(size: 16, weight: .regular))
-                        .foregroundStyle(DotTheme.ink2)
-                        .frame(width: 20, alignment: .leading)
-                        .accessibilityHidden(true)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 13))
-                        .foregroundStyle(titleTone)
-                    if !wideSubtitle, let subtitle {
-                        subtitleLine(subtitle)
-                    }
-                }
-                // The words take the width they need before the gap beside the
-                // control is given any: without this the title column is
-                // offered half the row, and a sentence that fits on one line
-                // wraps at a width no reader would choose.
-                .layoutPriority(1)
-                Spacer(minLength: 16)
+            if isNamedBySection {
+                // The card is one control, and the heading over it already says
+                // what the control sets. A labelled row would say it twice and
+                // leave the control in a column beside a word it does not need,
+                // so the control takes the width of the card instead.
                 trailing
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(alignment: .center, spacing: 12) {
+                    if let appIcon {
+                        Image(nsImage: appIcon)
+                            .resizable()
+                            .frame(width: 20, height: 20)
+                            .accessibilityHidden(true)
+                    } else if let symbol {
+                        Image(systemName: symbol)
+                            .font(.system(size: 16, weight: .regular))
+                            .foregroundStyle(DotTheme.ink2)
+                            .frame(width: 20, alignment: .leading)
+                            .accessibilityHidden(true)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(.system(size: 13))
+                            .foregroundStyle(titleTone)
+                        if !wideSubtitle, let subtitle {
+                            subtitleLine(subtitle)
+                        }
+                    }
+                    // The words take the width they need before the gap beside
+                    // the control is given any: without this the title column is
+                    // offered half the row, and a sentence that fits on one line
+                    // wraps at a width no reader would choose.
+                    .layoutPriority(1)
+                    Spacer(minLength: 16)
+                    trailing
+                }
             }
             if wideSubtitle, let subtitle {
                 subtitleLine(subtitle)
@@ -137,10 +157,13 @@ struct SettingsDivider: View {
 
 /// A titled group of rows.
 ///
-/// The title sits above the card rather than inside it: a header inside the
-/// card competes with the first row for the same weight, and it has to be
-/// repeated in every card. The card supplies the inset, so the header is
-/// indented to the same edge as the row titles.
+/// The title sits above the card rather than inside it: a header inside the card
+/// competes with the first row for the same weight, and it has to be repeated in
+/// every card. It is set in the page title's serif one rank down and aligned
+/// with the card's own leading edge, so a page reads as a sequence of titled
+/// cards rather than a field of labels. The card supplies the inset, so the
+/// header stays outside it: the title belongs to the whole card, not to the
+/// column of words inside it.
 struct SettingsSection<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
@@ -151,11 +174,10 @@ struct SettingsSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(DotTheme.ink2)
-                .padding(.leading, 16)
+                .font(DotTheme.displayFont(17))
+                .foregroundStyle(DotTheme.ink)
                 .accessibilityAddTraits(.isHeader)
             DotCard {
                 VStack(spacing: 0) {
@@ -163,5 +185,10 @@ struct SettingsSection<Content: View>: View {
                 }
             }
         }
+        // The page stacks its sections 22 points apart. A title is larger than a
+        // row title, and a card under it needs more air over it than a label
+        // did: the extra 8 makes the space between one card and the next title
+        // 30 points, which is what the larger line wants.
+        .padding(.top, 8)
     }
 }

@@ -63,6 +63,12 @@ struct DotSelect<Value: Hashable>: View {
     private let placeholder: String
     /// The drawn width of the trigger; `nil` draws the settings column.
     private let width: CGFloat?
+    /// Whether the trigger draws the width it is offered instead of its own.
+    ///
+    /// A card whose only row is the picker has no label column beside the
+    /// control: the control is the card, and a 220 point field floating at the
+    /// trailing edge of an empty row reads as a setting that lost its name.
+    private let fillsWidth: Bool
     private let isEnabled: Bool
 
     /// Creates a select whose list offers its own "none".
@@ -82,6 +88,7 @@ struct DotSelect<Value: Hashable>: View {
         selection: Binding<Value?>,
         placeholder: String = "Choose…",
         width: CGFloat? = 220,
+        fillsWidth: Bool = false,
         isEnabled: Bool = true
     ) {
         self.label = label
@@ -89,6 +96,7 @@ struct DotSelect<Value: Hashable>: View {
         _selection = selection
         self.placeholder = placeholder
         self.width = width
+        self.fillsWidth = fillsWidth
         self.isEnabled = isEnabled
     }
 
@@ -99,6 +107,7 @@ struct DotSelect<Value: Hashable>: View {
         selection: Binding<Value>,
         placeholder: String = "Choose…",
         width: CGFloat? = 220,
+        fillsWidth: Bool = false,
         isEnabled: Bool = true
     ) {
         let optional = Binding<Value?>(
@@ -114,6 +123,7 @@ struct DotSelect<Value: Hashable>: View {
             selection: optional,
             placeholder: placeholder,
             width: width,
+            fillsWidth: fillsWidth,
             isEnabled: isEnabled
         )
     }
@@ -125,6 +135,7 @@ struct DotSelect<Value: Hashable>: View {
             rows: rows,
             selectedIndex: selectedIndex,
             width: width ?? DotSelectMetrics.settingsColumn,
+            fillsWidth: fillsWidth,
             isEnabled: isEnabled
         ) { index in
             guard options.indices.contains(index) else { return }
@@ -161,6 +172,7 @@ private struct DotSelectTrigger: View {
     let rows: [DotSelectRow]
     let selectedIndex: Int?
     let width: CGFloat
+    let fillsWidth: Bool
     let isEnabled: Bool
     let onSelect: (Int) -> Void
 
@@ -175,7 +187,8 @@ private struct DotSelectTrigger: View {
             .accessibilityHidden(true)
             .padding(.horizontal, 10)
             .frame(height: DotSelectMetrics.height)
-            .frame(width: width)
+            .frame(width: fillsWidth ? nil : width)
+            .frame(maxWidth: fillsWidth ? .infinity : nil)
             .background(
                 RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous)
                     .fill(isHovering && isEnabled ? DotTheme.fieldFillFocused : DotTheme.fieldFill)

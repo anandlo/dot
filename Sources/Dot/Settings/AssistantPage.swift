@@ -292,13 +292,14 @@ struct AssistantPage: View {
 
     private var modelSection: some View {
         SettingsSection("Model") {
-            SettingsRow("Model") {
+            SettingsRow("Model", isNamedBySection: true) {
                 DotSelect(
                     label: "Model",
                     options: modelOptions,
                     selection: modelBinding,
                     placeholder: "No model",
-                    width: 220
+                    width: 220,
+                    fillsWidth: true
                 )
             }
             if showsModelField {

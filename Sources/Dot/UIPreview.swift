@@ -219,6 +219,33 @@ enum UIPreview {
         }
     }
 
+    /// The configuration every settings render is drawn from.
+    ///
+    /// The input card's calibration line is part of the shipped surface, so the
+    /// rendered General page carries a device Dot has learned rather than hiding
+    /// the row behind a fresh install. The output-grammar card is opt-in, so the
+    /// render turns it on and gives it two overrides: one that changes the
+    /// table's answer and one that restores the plain text for an app the table
+    /// knows.
+    private static func settingsSampleConfig() -> DotConfig {
+        var config = DotConfig.default
+        ProviderPreset.openAI.apply(to: &config)
+        config.outputGrammarEnabled = true
+        config.outputGrammarTargets = [
+            "com.tinyspeck.slackmacgap": .chat,
+            "com.apple.dt.Xcode": .plain,
+        ]
+        config.microphoneCalibration = [
+            "DotRenderBuiltInMicrophone": MicrophoneCalibration(
+                noiseFloorDBFS: -62,
+                peakDBFS: -9,
+                observedSamples: 14,
+                updatedAt: Date(timeIntervalSinceReferenceDate: 0)
+            ),
+        ]
+        return config
+    }
+
     /// Renders the settings pages into `directory`.
     ///
     /// The sample uses the first row of the picker, so the connect card shows a
@@ -228,27 +255,7 @@ enum UIPreview {
     static func renderSettings(to directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        var sampleConfig = DotConfig.default
-        ProviderPreset.openAI.apply(to: &sampleConfig)
-        // The input card's calibration line is part of the shipped surface, so
-        // the rendered General page carries a device Dot has learned rather than
-        // hiding the row behind a fresh install.
-        // The output-grammar card is opt-in, so the render turns it on and
-        // gives it two overrides: one that changes the table's answer and one
-        // that restores the plain text for an app the table knows.
-        sampleConfig.outputGrammarEnabled = true
-        sampleConfig.outputGrammarTargets = [
-            "com.tinyspeck.slackmacgap": .chat,
-            "com.apple.dt.Xcode": .plain,
-        ]
-        sampleConfig.microphoneCalibration = [
-            "DotRenderBuiltInMicrophone": MicrophoneCalibration(
-                noiseFloorDBFS: -62,
-                peakDBFS: -9,
-                observedSamples: 14,
-                updatedAt: Date(timeIntervalSinceReferenceDate: 0)
-            ),
-        ]
+        let sampleConfig = settingsSampleConfig()
 
         // The same list the app builds, without asking the Keychain whether a
         // key is there: a render must not depend on the person's Keychain.
