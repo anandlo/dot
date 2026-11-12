@@ -293,13 +293,30 @@ enum DotSelectMetrics {
 /// it ended up in and the frame it occupies in screen space.
 @MainActor
 final class DotSelectAnchor {
-    weak var window: NSWindow?
-    var screenFrame: NSRect = .zero
+    /// The view that stood in for the trigger last.
+    ///
+    /// The frame is read from it every time it is asked for, never remembered:
+    /// scrolling a page moves the trigger on the screen without laying the
+    /// trigger out again, so a frame cached at the last layout is the frame of
+    /// the place the trigger used to be, and a list placed from it opens below
+    /// where the trigger is.
+    private weak var view: NSView?
+
+    var window: NSWindow? { view?.window }
+
+    /// Where the trigger is on the screen, read now.
+    var screenFrame: NSRect {
+        guard let view, let window = view.window else { return .zero }
+        return window.convertToScreen(view.convert(view.bounds, to: nil))
+    }
 
     func record(_ view: NSView) {
-        window = view.window
-        guard let window else { return }
-        screenFrame = window.convertToScreen(view.convert(view.bounds, to: nil))
+        self.view = view
+    }
+
+    /// The scroll view the trigger sits in, when the page can scroll under it.
+    var hostScrollView: NSScrollView? {
+        view?.enclosingScrollView
     }
 }
 
