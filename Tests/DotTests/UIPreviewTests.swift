@@ -118,6 +118,22 @@ final class UIPreviewTests: XCTestCase {
             "settings-provider-azure.png",
             "settings-provider-connected.png",
             "settings-provider-connected-dark.png",
+            "settings-provider-checking.png",
+            "settings-provider-checking-dark.png",
+            "settings-provider-verified.png",
+            "settings-provider-verified-dark.png",
+            "settings-provider-rejected.png",
+            "settings-provider-rejected-dark.png",
+            "settings-provider-service-error.png",
+            "settings-provider-service-error-dark.png",
+            "settings-provider-unreachable.png",
+            "settings-provider-unreachable-dark.png",
+            "settings-provider-needs-setup.png",
+            "settings-provider-needs-setup-dark.png",
+            "settings-provider-not-saved.png",
+            "settings-provider-not-saved-dark.png",
+            "settings-provider-unavailable.png",
+            "settings-provider-unavailable-dark.png",
             "settings-about-update-current.png",
             "settings-about-update-available.png",
             "settings-about-update-unreachable.png",
@@ -147,6 +163,10 @@ final class UIPreviewTests: XCTestCase {
             "settings-assistant-rewrite-concise-dark-tall.png",
             "settings-assistant-rewrite-custom-tall.png",
             "settings-assistant-rewrite-custom-dark-tall.png",
+            "settings-assistant-rewrite-standing-rules-off-tall.png",
+            "settings-assistant-rewrite-standing-rules-off-dark-tall.png",
+            "settings-assistant-rewrite-standing-rules-on-tall.png",
+            "settings-assistant-rewrite-standing-rules-on-dark-tall.png",
             "settings-assistant-rewrite-deleted-tall.png",
             "settings-assistant-rewrite-deleted-dark-tall.png",
             "settings-assistant-rewrite-empty-tall.png",
@@ -229,6 +249,30 @@ final class UIPreviewTests: XCTestCase {
             promptCard,
             1_500,
             "the agent prompt card did not draw its prompt editor"
+        )
+        // The standing rules' field is drawn under the Agent prompt's editor
+        // when the switch is on, and not when it is off: the card with the
+        // switch on ends lower than the card that stores the same text with the
+        // switch off.
+        let rulesOff = try lastInkRow(
+            in: directory.appendingPathComponent(
+                "settings-assistant-rewrite-standing-rules-off-tall.png"
+            )
+        )
+        let rulesOn = try lastInkRow(
+            in: directory.appendingPathComponent(
+                "settings-assistant-rewrite-standing-rules-on-tall.png"
+            )
+        )
+        XCTAssertGreaterThan(
+            rulesOn,
+            rulesOff + 150,
+            "the switch being on did not draw the standing rules field"
+        )
+        XCTAssertLessThan(
+            rulesOn,
+            2_300,
+            "the standing rules field was cut off by the render's fold"
         )
         let conciseCard = try lastInkRow(
             in: directory.appendingPathComponent("settings-assistant-rewrite-concise-tall.png")

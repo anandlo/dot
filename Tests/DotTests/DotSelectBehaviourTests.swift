@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 @testable import Dot
+import QuartzCore
 import SwiftUI
 import XCTest
 
@@ -707,6 +708,480 @@ final class DotSelectBehaviourTests: XCTestCase {
         )
     }
 
+    /// The list is drawn at the row it opens on: the offset is placed before the
+    /// card's first frame, and the opening animation does not move it.
+    ///
+    /// The offsets are worked out here from the row heights and the card, not
+    /// read back from the code under test. Fifteen rows without details travel
+    /// 118 points; eight rows that all carry a detail travel 18, which is the
+    /// speech provider list in the app.
+    func testTheListOpensAlreadyShowingTheSelectedRow() throws {
+        let cases: [(name: String, rows: Int, detail: Bool, selected: Int, travel: CGFloat)] = [
+            ("first of fifteen", 15, false, 0, 118),
+            ("middle of fifteen", 15, false, 7, 118),
+            ("last of fifteen", 15, false, 14, 118),
+            ("first of eight with details", 8, true, 0, 18),
+            ("middle of eight with details", 8, true, 4, 18),
+            ("last of eight with details", 8, true, 7, 18),
+        ]
+        for item in cases {
+            let fixture = try makeFixture(
+                rows: 3,
+                options: item.rows,
+                selected: item.selected,
+                detail: item.detail
+            )
+            let scroll = try openAndRead(fixture, "Setting 01")
+            let viewport = scroll.contentView.bounds.height
+            let content = try XCTUnwrap(scroll.documentView).frame.height
+            XCTAssertEqual(
+                content - viewport,
+                item.travel,
+                accuracy: 0.5,
+                "\(item.name): this case needs the travel the brief names"
+            )
+            let expected = Self.openingOffset(
+                rows: item.rows,
+                detail: item.detail,
+                selected: item.selected,
+                viewport: viewport
+            )
+            for (index, reading) in offsetReadings(scroll, in: fixture).enumerated() {
+                XCTAssertEqual(
+                    reading,
+                    expected,
+                    accuracy: 0.5,
+                    "\(item.name): reading \(index) is \(reading), not the \(expected) the row needs"
+                )
+            }
+        }
+    }
+
+    /// A reused panel does not open where the last list left it: a list scrolled
+    /// to its foot is closed, and the next open on its first row is at the top.
+    func testAReopenedListLosesTheOffsetTheLastOneWasLeftAt() throws {
+        let fixture = try makeFixture(rows: 3, options: 15, selected: 0)
+        _ = try openAndRead(fixture, "Setting 01")
+        fixture.scrollList(to: 10_000)
+        XCTAssertGreaterThan(fixture.listOffset, 100, "this case needs a list at its foot")
+
+        DotSelectListController.shared.close()
+        fixture.settle(0.05)
+        XCTAssertFalse(DotSelectListController.shared.isShowing, "the list did not close")
+
+        let reopened = try openAndRead(fixture, "Setting 01")
+        XCTAssertEqual(
+            reopened.contentView.bounds.origin.y,
+            0,
+            accuracy: 0.5,
+            "the list opened where the last one was left"
+        )
+    }
+
+    /// The row a list opens on is inside the card and clear of both fades in the
+    /// frame the card is first drawn in.
+    func testTheSelectedRowIsClearOfTheFadesOnTheFirstFrame() throws {
+        let fixture = try makeFixture(rows: 3, options: 15, selected: 7)
+        let scroll = try openAndRead(fixture, "Setting 01")
+        let visible = scroll.contentView.bounds
+        let height = DotSelectPlacement.rowHeight(detail: nil)
+        let row = CGRect(
+            x: 0,
+            y: DotSelectPlacement.inset + 7 * height,
+            width: visible.width,
+            height: height
+        )
+        let above = row.minY - visible.minY
+        let below = visible.maxY - row.maxY
+
+        XCTAssertGreaterThanOrEqual(above, DotSelectListMetrics.fade, "the row opened behind the top fade")
+        XCTAssertGreaterThanOrEqual(below, DotSelectListMetrics.fade, "the row opened behind the bottom fade")
+        XCTAssertGreaterThanOrEqual(above, 12, "the row opened inside the top fade band")
+        XCTAssertGreaterThanOrEqual(below, 12, "the row opened inside the bottom fade band")
+    }
+
+    /// A click while the card is still growing lands on the row drawn under the
+    /// pointer.
+    ///
+    /// The card is drawn at 0.97 of its size at the first frame, so a row's drawn
+    /// edges are up to nine points above the frames SwiftUI hit-tests. A press two
+    /// points inside the drawn edge of row 12 must choose row 12, and two points
+    /// inside the drawn bottom edge of row 11 must choose row 11, at the first
+    /// frame and at the fifth of a second the growth is a third of the way
+    /// through. A list opening above its trigger grows from its bottom edge, so
+    /// the same check is made on row 4, whose edge is far from that fixed edge.
+    /// The growth's clock is stopped before each press, so the press is made
+    /// against the frame it is measured on.
+    func testAClickDuringTheOpenLandsOnTheRowItIsDrawnOver() throws {
+        let cases: [(above: Bool, time: TimeInterval, row: Int, edge: String, expected: String)] = [
+            (false, 0.00, 12, "top", "Voice 12"),
+            (false, 0.00, 11, "bottom", "Voice 11"),
+            (false, 0.05, 12, "top", "Voice 12"),
+            (false, 0.05, 11, "bottom", "Voice 11"),
+            (true, 0.00, 4, "top", "Rachel"),
+            (true, 0.00, 4, "bottom", "Rachel"),
+            (true, 0.05, 4, "top", "Rachel"),
+            (true, 0.05, 4, "bottom", "Rachel"),
+        ]
+        for item in cases {
+            let fixture = try makeFixture(rows: 3, options: 15, selected: 7, atScreenBottom: item.above)
+            let scroll = try openAndRead(fixture, "Setting 01")
+            let panel = try XCTUnwrap(DotSelectListController.shared.panel)
+            let layer = try XCTUnwrap(panel.contentView?.layer, "the card has no layer")
+            // The growth is a real animation. Its clock is stopped at once, before
+            // the run loop can finish it, and its own time is set to the frame the
+            // case names: waiting for a tick would sample whatever the machine's
+            // load allowed, and a slow one lands after the growth has ended.
+            layer.speed = 0
+            CATransaction.flush()
+            let growth = try XCTUnwrap(
+                layer.animation(forKey: "openingScale") as? CABasicAnimation,
+                "the card is not growing"
+            )
+            // The animation is re-added with a known start so the stopped clock
+            // can be put on the frame the case names, whatever begin time Core
+            // Animation filled in. The copy the layer hands out is immutable.
+            let frozen = try XCTUnwrap(
+                growth.mutableCopy() as? CABasicAnimation,
+                "the growth could not be copied"
+            )
+            frozen.beginTime = 0
+            layer.removeAnimation(forKey: "openingScale")
+            layer.timeOffset = item.time
+            layer.add(frozen, forKey: "openingScale")
+            CATransaction.flush()
+            defer {
+                layer.speed = 1
+                layer.timeOffset = 0
+            }
+            let frame: ClosedRange<CGFloat> = item.time > 0 ? 0.980...0.995 : 0.960...0.975
+
+            let scale = try XCTUnwrap(
+                layer.presentation()?.sublayerTransform.m11,
+                "the card is not presenting a transform"
+            )
+            XCTAssertTrue(frame.contains(scale), "the growth was stopped at \(scale), not in \(frame)")
+            let origin = try XCTUnwrap(panel.growthOrigin, "the open recorded no growth")
+            let contentHeight = try XCTUnwrap(panel.contentView).bounds.height
+            // The edge the growth leaves still is the card's top when it hangs
+            // below its trigger and its bottom when it opens above it.
+            XCTAssertEqual(
+                origin.y,
+                item.above ? contentHeight : 0,
+                accuracy: 0.5,
+                "the card did not grow from the edge it hangs from"
+            )
+            let rowHeight = DotSelectPlacement.rowHeight(detail: nil)
+            // The edge the two cases share is the top of row 12, which is also
+            // the bottom of row 11.
+            let boundary = item.edge == "top" ? item.row : item.row + 1
+            let edge = panel.shadowInset
+                + DotSelectPlacement.inset
+                + CGFloat(boundary) * rowHeight
+                - scroll.contentView.bounds.origin.y
+            let drawn = origin.y + (edge - origin.y) * scale
+            let top = item.edge == "top" ? drawn + 2 : drawn - 2
+            try click(panel, atTop: CGPoint(x: 60, y: top))
+
+            fixture.settle(0.12)
+            let chosen = model?.selection["Setting 01"]
+            print(String(
+                format: "SELECTCLICK %@ row %d %@ t%.2f scale %.4f drawnEdge %.1f press %.1f chose %@",
+                item.above ? "above" : "below",
+                item.row,
+                item.edge,
+                item.time,
+                scale,
+                drawn,
+                top,
+                chosen ?? "nothing"
+            ))
+            XCTAssertEqual(
+                chosen,
+                item.expected,
+                "at \(item.time) s, \(item.above ? "above" : "below"): a press 2 pt inside the drawn \(item.edge) edge of row \(item.row)"
+            )
+            DotSelectListController.shared.close()
+        }
+    }
+
+    /// A list whose card was never built has nothing to place against: it says so
+    /// once and opens at the top.
+    func testAListStillMissingAfterATurnIsReportedOnce() throws {
+        _ = NSApplication.shared
+        OffscreenScreen.install()
+        var lines: [String] = []
+        let previous = DotSelectLog.write
+        DotSelectLog.write = { lines.append($0) }
+        DotSelectLog.reportedMissingList = false
+        defer {
+            DotSelectLog.write = previous
+            DotSelectLog.reportedMissingList = false
+            OffscreenScreen.restore()
+        }
+
+        // A card whose content was never built: an empty container, so the open
+        // has no scroll view to place against, now or on the next turn.
+        let hosting = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 310))
+        let model = DotSelectListModel(highlight: 3)
+        let heights = Array(repeating: DotSelectPlacement.rowHeight, count: 15)
+
+        for _ in 0..<2 {
+            DotSelectPanel.placeOpeningWhenBuilt(
+                in: hosting,
+                scroll: model.scroll,
+                rowHeights: heights,
+                selected: 3
+            )
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+
+        XCTAssertEqual(DotSelectLog.missingList, "select.open.noscroll")
+        XCTAssertEqual(lines, [DotSelectLog.missingList], "the missing list was reported \(lines.count) times")
+        XCTAssertEqual(model.scroll.offset, 0, "a list with no scroll view was given an offset")
+    }
+
+    /// A card that arrives a turn after the open is placed when it arrives, and is
+    /// not reported as missing.
+    func testACardThatArrivesOnTheNextTurnIsPlaced() throws {
+        var lines: [String] = []
+        let previous = DotSelectLog.write
+        DotSelectLog.write = { lines.append($0) }
+        DotSelectLog.reportedMissingList = false
+        defer {
+            DotSelectLog.write = previous
+            DotSelectLog.reportedMissingList = false
+        }
+
+        let hosting = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 310))
+        let model = DotSelectListModel(highlight: 7)
+        let heights = Array(repeating: DotSelectPlacement.rowHeight, count: 15)
+        DotSelectPanel.placeOpeningWhenBuilt(
+            in: hosting,
+            scroll: model.scroll,
+            rowHeights: heights,
+            selected: 7
+        )
+        // The card arrives after the first look, before the retry.
+        let scroll = Self.makeListScroll(content: 428, viewport: 310)
+        hosting.addSubview(scroll)
+
+        let deadline = Date().addingTimeInterval(1)
+        while Date() < deadline, model.scroll.offset == 0 {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        XCTAssertTrue(lines.isEmpty, "a card that arrived was reported missing")
+        XCTAssertEqual(
+            scroll.contentView.bounds.origin.y,
+            59,
+            accuracy: 0.5,
+            "the list was not placed when its card arrived"
+        )
+        XCTAssertEqual(model.scroll.offset, 59, accuracy: 0.5)
+    }
+
+    /// A retry left by an open the controller has replaced must not move the
+    /// list that replaced it.
+    ///
+    /// The old open's first look finds no scroll view and leaves a retry; before
+    /// that turn the panel is re-presented, the new list is measured and placed
+    /// at its own row, and the old retry must be dropped by the open's identity
+    /// rather than scrolling the new list to the old row.
+    func testASupersededRetryDoesNotMoveTheNextList() throws {
+        let hosting = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 310))
+        let first = DotSelectListModel(highlight: 10)
+        let second = DotSelectListModel(highlight: 7)
+        let heights = Array(repeating: DotSelectPlacement.rowHeight, count: 15)
+        var open = 1
+        var checks = 0
+
+        DotSelectPanel.placeOpeningWhenBuilt(
+            in: hosting,
+            scroll: first.scroll,
+            rowHeights: heights,
+            selected: 10,
+            isCurrent: {
+                checks += 1
+                return open == 1
+            }
+        )
+        // The second open replaces the first before the retry turn. Its card is
+        // built and placed at its own row, 59 for row 7 of this list; the first
+        // open's row 10 would place it at 118.
+        open = 2
+        let scroll = Self.makeListScroll(content: 428, viewport: 310)
+        hosting.addSubview(scroll)
+        DotSelectPanel.placeOpening(in: hosting, scroll: second.scroll, rowHeights: heights, selected: 7)
+
+        let deadline = Date().addingTimeInterval(0.5)
+        while Date() < deadline, checks == 0 {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        XCTAssertEqual(checks, 1, "the retry did not run")
+        XCTAssertEqual(
+            scroll.contentView.bounds.origin.y,
+            59,
+            accuracy: 0.5,
+            "the superseded retry moved the new list to the old row"
+        )
+        XCTAssertEqual(second.scroll.offset, 59, accuracy: 0.5)
+    }
+
+    /// A list whose card never arrived, closed before the retry turn, leaves
+    /// nothing behind: the close is a newer generation, so the retry neither
+    /// reports the missing card nor touches the list it left.
+    func testAClosedOpenDropsItsRetry() throws {
+        var lines: [String] = []
+        let previous = DotSelectLog.write
+        DotSelectLog.write = { lines.append($0) }
+        DotSelectLog.reportedMissingList = false
+        defer {
+            DotSelectLog.write = previous
+            DotSelectLog.reportedMissingList = false
+        }
+
+        let fixture = try makeFixture(rows: 3, options: 15, selected: 7)
+        DotSelectPanel.skipsFirstPlacement = true
+        DotSelectPanel.retriesPastTheCheck = 0
+        defer {
+            DotSelectPanel.skipsFirstPlacement = false
+            DotSelectPanel.retriesPastTheCheck = 0
+        }
+        let scroll = try openAndRead(fixture, "Setting 01")
+        let model = try XCTUnwrap(DotSelectListController.shared.model)
+        let before = scroll.contentView.bounds.origin.y
+        DotSelectListController.shared.close()
+
+        // Turn the run loop so the retry would run if the close had not dropped it.
+        let deadline = Date().addingTimeInterval(0.5)
+        while Date() < deadline, lines.isEmpty {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        XCTAssertTrue(lines.isEmpty, "a closed open reported its missing card: \(lines)")
+        XCTAssertEqual(
+            DotSelectPanel.retriesPastTheCheck,
+            0,
+            "the closed open's retry got past the generation check"
+        )
+        XCTAssertEqual(
+            scroll.contentView.bounds.origin.y,
+            before,
+            "a closed open moved the list it left"
+        )
+        XCTAssertEqual(model.scroll.offset, 0, "a closed open wrote an offset to the list it left")
+    }
+
+    /// A card that is closed while it is still growing, and opened again at once, is
+    /// not drawn through the growth it left behind.
+    ///
+    /// The reopen is checked with Reduce Motion on, where no growth is started, and
+    /// off, where the new growth starts from its first frame. Either way a press at
+    /// the centre of row 12 must choose row 12.
+    func testAReopenedListDoesNotInheritTheLastGrowth() throws {
+        for reduceMotion in [false, true] {
+            let fixture = try makeFixture(rows: 3, options: 15, selected: 7)
+            _ = try openAndRead(fixture, "Setting 01")
+            fixture.settle(0.05)
+            DotSelectListController.shared.close()
+
+            DotMotion.reducesMotionOverride = reduceMotion
+            defer { DotMotion.reducesMotionOverride = nil }
+            let scroll = try openAndRead(fixture, "Setting 01")
+            let panel = try XCTUnwrap(DotSelectListController.shared.panel)
+            let layer = try XCTUnwrap(panel.contentView?.layer, "the card has no layer")
+            CATransaction.flush()
+            let presented = (layer.presentation() ?? layer).sublayerTransform
+            if reduceMotion {
+                XCTAssertTrue(
+                    CATransform3DIsIdentity(presented),
+                    "the reopened card is drawn through the growth it left behind (\(presented.m11))"
+                )
+                XCTAssertNil(layer.animation(forKey: "openingScale"), "the last growth is still on the layer")
+                XCTAssertNil(panel.growthOrigin, "a growth that was never started recorded an origin")
+            } else {
+                XCTAssertNotNil(panel.growthOrigin, "the reopened card did not grow")
+                XCTAssertLessThan(
+                    presented.m11,
+                    1,
+                    "the reopened card did not start its growth from its first frame"
+                )
+            }
+
+            let rowHeight = DotSelectPlacement.rowHeight(detail: nil)
+            let centre = panel.shadowInset
+                + DotSelectPlacement.inset
+                + 12 * rowHeight
+                + rowHeight / 2
+                - scroll.contentView.bounds.origin.y
+            try click(panel, atTop: drawn(CGPoint(x: 60, y: centre), in: panel))
+            fixture.settle(0.12)
+            XCTAssertEqual(
+                model?.selection["Setting 01"],
+                "Voice 12",
+                "reduce motion \(reduceMotion): the press did not land on the row it was made over"
+            )
+            DotSelectListController.shared.close()
+        }
+    }
+
+    /// A pointer resting over a row is read once: when the growth ends, or at
+    /// the open itself under Reduce Motion, where there is no growth to wait for.
+    /// A hover that arrives during the growth moves nothing.
+    func testHoverIsReadOnceWhenTheGrowthEnds() throws {
+        // The pointer rests over row 9 and does not move again. The point is
+        // worked out from the list the panel is drawing at the moment of the
+        // read, because under Reduce Motion the read happens inside the open,
+        // before the test can hold the panel.
+        let previous = DotSelectPanel.pointerLocation
+        DotSelectPanel.pointerLocation = {
+            guard let panel = DotSelectListController.shared.panel,
+                  let content = panel.contentView,
+                  let scroll = DotSelectListController.shared.model?.scroll.reporter?.listScrollView
+            else { return .zero }
+            let rowHeight = DotSelectPlacement.rowHeight(detail: nil)
+            let centre = panel.shadowInset
+                + DotSelectPlacement.inset
+                + 9 * rowHeight
+                + rowHeight / 2
+                - scroll.contentView.bounds.origin.y
+            return panel.convertPoint(toScreen: NSPoint(x: 60, y: content.bounds.height - centre))
+        }
+        defer { DotSelectPanel.pointerLocation = previous }
+
+        for reduceMotion in [false, true] {
+            DotMotion.reducesMotionOverride = reduceMotion
+            defer { DotMotion.reducesMotionOverride = nil }
+            let fixture = try makeFixture(rows: 3, options: 15, selected: 0)
+            _ = try openAndRead(fixture, "Setting 01")
+            let session = try XCTUnwrap(DotSelectListController.shared.session)
+            let model = try XCTUnwrap(DotSelectListController.shared.model)
+
+            if reduceMotion {
+                XCTAssertEqual(
+                    model.highlight,
+                    9,
+                    "Reduce Motion: the row under the pointer was not read at the open"
+                )
+            } else {
+                XCTAssertNotEqual(model.highlight, 9, "the row under the pointer was highlighted at once")
+                fixture.settle(0.05)
+                session.hover(9)
+                XCTAssertNotEqual(model.highlight, 9, "a hover during the growth moved the highlight")
+                XCTAssertNotEqual(session.keyboard.highlight, 9, "a hover during the growth moved the keyboard")
+
+                let deadline = Date().addingTimeInterval(0.4)
+                while Date() < deadline, model.highlight != 9 {
+                    fixture.settle(0.02)
+                }
+                XCTAssertEqual(model.highlight, 9, "the row under the pointer never highlighted")
+            }
+            DotSelectListController.shared.close()
+        }
+    }
+
     /// A key that reaches an end stops there, and the wheel owns the list again
     /// afterwards: the end is a placement, not a position the list is pinned to.
     func testTheKeysStopAtTheEndsAndTheWheelMovesFreelyAfterwards() throws {
@@ -750,12 +1225,21 @@ final class DotSelectBehaviourTests: XCTestCase {
         XCTAssertEqual(fixture.listOffset, 120, accuracy: 0.5, "the list was pulled back to the top")
     }
 
-    /// A key pressed while the list is still opening is where the reader is:
-    /// the end the opening asked for does not jump the list back when it ends.
-    func testAKeyPressedWhileTheListOpensDropsTheEndItWasWaitingFor() throws {
+    /// A key pressed while the list is still opening moves it from the row it
+    /// opened on: the list is already at the foot, and the keys take it to the
+    /// row the reader asked for without anything pulling it back.
+    func testAKeyPressedWhileTheListOpensMovesItFromTheRowItOpenedOn() throws {
         let fixture = try makeFixture(rows: 3, options: 30, selected: 29)
         let trigger = try XCTUnwrap(fixture.trigger("Setting 01"))
         XCTAssertTrue(trigger.accessibilityPerformPress())
+        let scroll = try XCTUnwrap(fixture.listScrollView)
+        let foot = try XCTUnwrap(scroll.documentView).frame.height - scroll.contentView.bounds.height
+        XCTAssertEqual(
+            scroll.contentView.bounds.origin.y,
+            foot,
+            accuracy: 0.5,
+            "the list did not open at the row it was opened on"
+        )
         let session = try XCTUnwrap(DotSelectListController.shared.session)
 
         for _ in 0..<11 {
@@ -764,13 +1248,11 @@ final class DotSelectBehaviourTests: XCTestCase {
         fixture.settle(0.05)
         fixture.settle(0.4)
 
-        let scroll = try XCTUnwrap(fixture.listScrollView)
-        let foot = try XCTUnwrap(scroll.documentView).frame.height - scroll.contentView.bounds.height
         XCTAssertEqual(session.keyboard.highlight, 18)
         XCTAssertLessThan(
             fixture.listOffset,
             foot - 100,
-            "the list jumped to the end the opening asked for"
+            "the list stayed at the foot instead of the row the reader asked for"
         )
         XCTAssertNil(DotSelectListController.shared.model?.scroll.pendingEnd)
     }
@@ -952,6 +1434,110 @@ final class DotSelectBehaviourTests: XCTestCase {
         OffscreenScreen.frame
     }
 
+    /// The point the card draws a point of its own geometry at.
+    ///
+    /// At rest there is no growth and the point is unchanged.
+    private func drawn(_ point: CGPoint, in panel: DotSelectPanel) -> CGPoint {
+        guard let origin = panel.growthOrigin else { return point }
+        let scale = panel.contentView?.layer
+            .flatMap { ($0.presentation() ?? $0).sublayerTransform.m11 } ?? 1
+        return CGPoint(
+            x: origin.x + (point.x - origin.x) * scale,
+            y: origin.y + (point.y - origin.y) * scale
+        )
+    }
+
+    /// A scroll view shaped like the list's: a flipped document of its own height
+    /// inside a viewport.
+    private static func makeListScroll(content: CGFloat, viewport: CGFloat) -> NSScrollView {
+        let window = OffscreenWindow(size: CGSize(width: 240, height: viewport), styleMask: [.borderless])
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 240, height: viewport))
+        scroll.hasVerticalScroller = false
+        scroll.drawsBackground = false
+        window.contentView = scroll
+        scroll.documentView = FlippedListDocument(
+            frame: NSRect(x: 0, y: 0, width: 240, height: content)
+        )
+        scroll.tile()
+        scroll.layoutSubtreeIfNeeded()
+        Self.openWindows.append(window)
+        return scroll
+    }
+
+    /// Sends a click at a point counted from the top left of the panel's content,
+    /// which is the way the drawing is measured.
+    private func click(_ panel: DotSelectPanel, atTop point: CGPoint) throws {
+        let content = try XCTUnwrap(panel.contentView)
+        let location = NSPoint(x: point.x, y: content.bounds.height - point.y)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: type,
+                location: location,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: panel.windowNumber,
+                context: nil,
+                eventNumber: 1,
+                clickCount: 1,
+                pressure: 1
+            ))
+            panel.sendEvent(event)
+        }
+    }
+
+    /// Opens a trigger and hands back the list as it was drawn, before the run
+    /// loop turns: the frame a person sees the moment the card appears.
+    private func openAndRead(
+        _ fixture: SelectWindowFixture,
+        _ label: String
+    ) throws -> NSScrollView {
+        let trigger = try XCTUnwrap(fixture.trigger(label))
+        XCTAssertTrue(trigger.accessibilityPerformPress(), "\(label) did not open")
+        let panel = try XCTUnwrap(DotSelectListController.shared.panel)
+        // The list is never drawn on a display the Mac owns.
+        panel.setFrameOrigin(OffscreenWindow.origin)
+        // The list the panel is drawing now. After a second open the panel's
+        // tree still holds the scroll view the last one drew, so the list is
+        // named by the scroll model rather than found by a search.
+        let content = try XCTUnwrap(panel.contentView)
+        return try XCTUnwrap(
+            DotSelectListController.shared.model?.scroll.reporter?.listScrollView
+                ?? SelectWindowFixture.scrollView(in: content),
+            "the list did not exist when the open returned"
+        )
+    }
+
+    /// The list's offset as it was drawn, then after bounded waits at 0.05, 0.14
+    /// and 0.30 seconds from the open.
+    private func offsetReadings(
+        _ scroll: NSScrollView,
+        in fixture: SelectWindowFixture
+    ) -> [CGFloat] {
+        var readings = [scroll.contentView.bounds.origin.y]
+        var waited: TimeInterval = 0
+        for moment in [0.05, 0.14, 0.30] {
+            fixture.settle(moment - waited)
+            waited = moment
+            readings.append(scroll.contentView.bounds.origin.y)
+        }
+        return readings
+    }
+
+    /// The offset a list opens on, worked out from the row heights and the card:
+    /// the row's own top edge less half the viewport, held inside the two ends.
+    private static func openingOffset(
+        rows: Int,
+        detail: Bool,
+        selected: Int,
+        viewport: CGFloat
+    ) -> CGFloat {
+        let height = DotSelectPlacement.rowHeight(detail: detail ? "Requires API key" : nil)
+        let content = CGFloat(rows) * height + 2 * DotSelectPlacement.inset
+        let limit = max(0, content - viewport)
+        let top = CGFloat(selected) * height + DotSelectPlacement.inset
+        return min(max(top + height / 2 - viewport / 2, 0), limit)
+    }
+
     private func makeFixture(
         rows: Int = 24,
         options: Int = 4,
@@ -960,6 +1546,7 @@ final class DotSelectBehaviourTests: XCTestCase {
         height: CGFloat = 600,
         narrowOptions: Bool = false,
         longOptions: Bool = false,
+        detail: Bool = false,
         atScreenBottom: Bool = false,
         trailing: Bool = false,
         windowWidth: CGFloat = 820
@@ -978,7 +1565,8 @@ final class DotSelectBehaviourTests: XCTestCase {
                         ? [Self.longTitle, "AssemblyAI"]
                         : titles,
                     selected: selected,
-                    width: narrowOptions ? 120 : nil
+                    width: narrowOptions ? 120 : nil,
+                    detail: detail
                 )
             }
         )
@@ -1183,7 +1771,13 @@ struct SelectPageFixture: View {
                             }
                             DotSelect(
                                 label: row.id,
-                                options: row.options.map { DotSelectOption(value: $0, title: $0) },
+                                options: row.options.map {
+                                    DotSelectOption(
+                                        value: $0,
+                                        title: $0,
+                                        detail: row.detail ? "Requires API key" : nil
+                                    )
+                                },
                                 selection: model.binding(for: row.id),
                                 width: row.width
                             )
@@ -1209,6 +1803,8 @@ final class SelectPageModel: ObservableObject {
         var options: [String]
         var selected: Int
         var width: CGFloat?
+        /// Whether every option carries a second line, as the provider pickers do.
+        var detail = false
     }
 
     @Published var rows: [Row]
@@ -1230,6 +1826,11 @@ final class SelectPageModel: ObservableObject {
             set: { self.selection[id] = $0 }
         )
     }
+}
+
+/// A document view that counts from its top, as the list's does.
+private final class FlippedListDocument: NSView {
+    override var isFlipped: Bool { true }
 }
 
 /// A window holding the fixture, with the lookups a test needs.

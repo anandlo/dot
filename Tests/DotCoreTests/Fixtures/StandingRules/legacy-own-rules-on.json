@@ -1,0 +1,10 @@
+{
+  "assistant": {
+    "rewrite": {
+      "enabled": true,
+      "styles": ["prompt", "concise"],
+      "workingRulesEnabled": true,
+      "workingRules": "## Working rules\n- Mine.\n- Keep it short."
+    }
+  }
+}

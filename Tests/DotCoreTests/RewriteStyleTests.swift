@@ -13,37 +13,28 @@ final class RewriteStyleTests: XCTestCase {
         You turn a developer's spoken request into a precise task prompt for an AI coding agent.
         Rules:
         - Use only what the speaker said. Keep every name, file, path, library, version, command and constraint, and every meaningful number.
-        - Do not add requirements, features, steps, tools, libraries or opinions the speaker did not state.
+        - Add nothing the speaker did not say: no requirements, features, steps, checks, tools, libraries, rules, placeholders, questions or opinions.
         - Where the speaker corrected themselves, keep only the final intent. Drop filler and repetition.
-        - Write in the imperative, plainly, as a senior engineer briefing another engineer.
-        Output these sections, in this order, as Markdown headings. Leave out a section only when the speaker said nothing for it, except Goal, which is always present:
+        - Write plainly, as a senior engineer briefing another engineer. Use the imperative only for what the speaker asked to be done.
+        Output these sections, in this order, as Markdown headings. Goal is always present. Every other section appears only when the speaker said something for it; never write a section to say it is empty.
         ## Goal
-        One or two sentences.
+        One or two sentences stating what the speaker asked for. If they asked for nothing, state what they reported and do not turn it into a request.
         ## Context
         The facts the speaker gave: current behaviour, files, errors, environment.
         ## Requirements
-        A numbered list, one testable requirement per line, only as stated.
+        A numbered list, one requirement per line, only as stated.
         ## Constraints
         What must not change or must be respected, only as stated.
         ## Done when
-        The checks that show the task is complete, taken from what was said. If none were said, write: [missing: how to verify]
-        ## Open questions
-        Each detail the task needs that was not said, written as [missing: what]. Leave the section out if there are none.
-        ## Working rules
-        Include the relevant working rules for the task, drawing from:
-        - Read the relevant code before you change it.
-        - Keep changes within the scope of this request.
-        - Ask before adding a dependency or changing a public interface.
-        - Run the build and the tests, and report the results.
-        - If something is unclear, ask instead of guessing.
+        The checks the speaker named for knowing the task is complete.
         Output only the prompt.
         """)
     }
 
-    func testThePromptTemplateAsksForTheSevenSectionsInOrder() {
+    func testThePromptTemplateAsksForTheFiveSectionsInOrder() {
         let template = RewriteStyleID.prompt.template
         let headings = ["## Goal", "## Context", "## Requirements", "## Constraints",
-                        "## Done when", "## Open questions", "## Working rules"]
+                        "## Done when"]
         var searchStart = template.startIndex
         for heading in headings {
             guard let range = template.range(of: heading, range: searchStart ..< template.endIndex)
@@ -54,8 +45,16 @@ final class RewriteStyleTests: XCTestCase {
             searchStart = range.upperBound
         }
         XCTAssertTrue(template.hasSuffix("Output only the prompt."))
-        XCTAssertTrue(template.contains("[missing: how to verify]"))
-        XCTAssertTrue(template.contains("[missing: what]"))
+        // Goal is the one section that is always written; every other one is
+        // drawn only when the speaker gave something for it.
+        XCTAssertTrue(template.contains("Goal is always present."))
+        XCTAssertTrue(
+            template.contains("never write a section to say it is empty"),
+            "the template still asks for a section that names what is missing"
+        )
+        for retired in ["[missing", "## Open questions", "## Working rules"] {
+            XCTAssertFalse(template.contains(retired), "the template still asks for: \(retired)")
+        }
     }
 
     func testTheTemplatesAreTheSpecifiedSentences() {
@@ -120,7 +119,7 @@ final class RewriteStyleTests: XCTestCase {
         XCTAssertEqual(
             RewriteStyleID.shippedCases.map(\.subtitle),
             [
-                "Turns a spoken request into a structured task for a coding agent.",
+                "Turns a spoken request into a structured task for a coding agent, using only what you said.",
                 "Shorter and plain, with every fact kept.",
                 "Clear, direct, and respectful for work.",
                 "Natural, everyday chat messages and DMs.",

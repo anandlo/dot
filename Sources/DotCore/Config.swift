@@ -7,6 +7,14 @@ public enum HUDMaterial: String, Codable, Sendable, CaseIterable {
     /// The black analytic rounded rectangle. The fallback everywhere else, and
     /// an explicit choice everywhere.
     case black
+
+    /// The human-readable name of the material.
+    public var title: String {
+        switch self {
+        case .glass: "Glass"
+        case .black: "Black"
+        }
+    }
 }
 
 /// The appearance Dot's windows are drawn in.
@@ -21,13 +29,16 @@ public enum AppearanceMode: String, Codable, Sendable, CaseIterable {
 
 /// The visual effect style of incoming audio on the HUD island.
 public enum HUDVisualizer: String, Codable, Sendable, CaseIterable {
-    /// Mirrored bars born at the right edge and scrolling left as they age.
+    /// One mirrored wave drawn from the right edge, each moment of the voice
+    /// kept as it was spoken.
     case stretch
-    /// A coiled tungsten filament that heats with the voice.
+    /// A coiled filament that glows from ember red to white hot with the
+    /// loudness of the voice.
     case filament
-    /// Four ribbons weaving through each other, their width the recent voice.
+    /// Five ribbons twisting through each other, their width the recent voice.
     case silk
-    /// Real-time dot-matrix spectrogram.
+    /// A scrolling grid of separate dots, each lit by one band of the voice's
+    /// spectrum.
     case matrix
     /// Particles on five rings around a lit core, each ring spinning and tilting on its own.
     case haloEdge = "halo-edge"
@@ -35,22 +46,22 @@ public enum HUDVisualizer: String, Codable, Sendable, CaseIterable {
     /// The human-readable name of the visualizer.
     public var title: String {
         switch self {
-        case .stretch: "Stretch"
+        case .stretch: "Wave"
         case .filament: "Filament"
-        case .silk: "Silk"
-        case .matrix: "Matrix"
-        case .haloEdge: "Halo"
+        case .silk: "Ribbons"
+        case .matrix: "Dot matrix"
+        case .haloEdge: "Orbit"
         }
     }
 
     /// The short summary of what the visualizer looks like.
     public var detail: String {
         switch self {
-        case .stretch: "Mirrored bars born at the right edge, scrolling left and fading as the words age."
-        case .filament: "A coiled tungsten filament that glows from ember red to white hot as you speak."
-        case .silk: "Four ribbons weaving through each other, their width and their travel the recent voice."
-        case .matrix: "Scrolling dot-matrix spectrogram with warm amber hotspots."
-        case .haloEdge: "Five rings of particles around a lit core, each spinning and tilting on its own, widening with every syllable."
+        case .stretch: "One mirrored wave drawn from the right edge, each moment of the voice kept as it was spoken."
+        case .filament: "A coiled filament that glows from ember red to white hot with the loudness of the voice."
+        case .silk: "Five ribbons twisting through each other, their width the recent voice."
+        case .matrix: "A scrolling grid of separate dots, each lit by one band of the voice's spectrum."
+        case .haloEdge: "Particles on five rings around a lit core, the rings widening with every syllable."
         }
     }
 }

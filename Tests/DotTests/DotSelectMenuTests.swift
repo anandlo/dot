@@ -571,12 +571,11 @@ final class MenuPage {
         config.appearance = mode.isDark ? .dark : .light
         let providers = MenuBuilder.providerRows(config: config) { _ in false }
         let settings = SettingsView(
-            config: Binding.constant(config),
+            store: ConfigStore(config: config),
             providers: providers,
             tab: 1,
             onChange: {},
             onSetAPIKey: { _, _ in nil },
-            onTest: { _ in true },
             onChangeShortcut: {},
             modelPreview: MenuPage.deepgramModels
         )

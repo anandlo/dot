@@ -1242,8 +1242,17 @@ enum DotMotion {
     /// workspace setting is read as well. Either one is enough to still a
     /// spring.
     static var reducesMotion: Bool {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if let override = reducesMotionOverride { return override }
+        return NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
+
+    /// The answer a test gives instead of the workspace setting, or `nil` to ask
+    /// the workspace. Reduce Motion cannot be turned on for one test on a Mac that
+    /// has not asked for it, and the open behaves differently when it is on.
+    ///
+    /// It is a seam, not state the app keeps: nothing writes it outside a test,
+    /// and the read below is the only reader.
+    nonisolated(unsafe) static var reducesMotionOverride: Bool?
 }
 
 /// The app's mark, drawn in AppKit instead of loaded from the icon.

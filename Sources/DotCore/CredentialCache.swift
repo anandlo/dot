@@ -63,6 +63,14 @@ public final class CredentialCache: @unchecked Sendable {
     private let lock = NSLock()
     /// The providers whose key has been resolved, whether or not one was found.
     private var resolved: Set<String> = []
+    /// The providers whose last read failed, so a caller can tell a refusal
+    /// from a definite answer.
+    ///
+    /// A failure is not remembered as "no key": the read did not happen. It is
+    /// remembered as "the last attempt failed", which is what a page needs to
+    /// stop asking while its window is open rather than putting the same
+    /// Keychain prompt on screen again.
+    private var failures: Set<String> = []
     /// The providers whose key is being read right now.
     ///
     /// One read per provider, not one per caller. A decrypting read can sit
@@ -133,6 +141,7 @@ public final class CredentialCache: @unchecked Sendable {
         if case .failed = outcome {
             lock.lock()
             resolving.remove(providerID)
+            failures.insert(providerID)
             reads += 1
             durations[providerID] = milliseconds
             lock.unlock()
@@ -204,6 +213,21 @@ public final class CredentialCache: @unchecked Sendable {
         return resolved.contains(providerID)
     }
 
+    /// Whether the last read of a provider's key failed.
+    ///
+    /// It answers for a read that returned ``Outcome/failed(_:)``; a key that
+    /// was not asked for, an answer in progress and a definite "no key" all
+    /// answer `false`. A caller uses it to stop asking: the next attempt can
+    /// put the same Keychain prompt on screen again.
+    ///
+    /// - Parameter providerID: the provider id.
+    /// - Returns: whether the last completed read failed.
+    public func readFailed(_ providerID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return failures.contains(providerID)
+    }
+
     /// Puts a key in the cache, after the Keychain accepted it.
     ///
     /// - Parameters:
@@ -225,6 +249,7 @@ public final class CredentialCache: @unchecked Sendable {
     public func invalidate(_ providerID: String) {
         lock.lock()
         resolved.remove(providerID)
+        failures.remove(providerID)
         values.removeValue(forKey: providerID)
         durations.removeValue(forKey: providerID)
         lock.unlock()
@@ -234,6 +259,7 @@ public final class CredentialCache: @unchecked Sendable {
     public func invalidateAll() {
         lock.lock()
         resolved.removeAll()
+        failures.removeAll()
         values.removeAll()
         durations.removeAll()
         lock.unlock()
@@ -285,6 +311,7 @@ public final class CredentialCache: @unchecked Sendable {
     ) {
         lock.lock()
         resolving.remove(providerID)
+        failures.remove(providerID)
         resolved.insert(providerID)
         if let key, !key.isEmpty {
             values[providerID] = key

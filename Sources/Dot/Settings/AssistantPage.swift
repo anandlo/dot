@@ -1047,6 +1047,10 @@ struct AssistantPage: View {
             }
             SettingsDivider()
             promptEditor(for: id)
+            if id == .prompt {
+                SettingsDivider()
+                standingRulesControls
+            }
         case .some(.custom(let id)):
             if config.assistant.rewrite.custom.contains(where: { $0.id == id }) {
                 SettingsRow("Name") {
@@ -1086,11 +1090,24 @@ struct AssistantPage: View {
     /// app's typeface, and a stored height would keep whatever face was
     /// registered when something first asked for it.
     static var promptEditorHeight: CGFloat {
+        promptEditorHeight(lines: 12)
+    }
+
+    /// The height of the standing rules field, which is six whole lines.
+    static var standingRulesEditorHeight: CGFloat {
+        promptEditorHeight(lines: 6)
+    }
+
+    /// The height a field of `lines` whole lines of the editor's type needs.
+    ///
+    /// - Parameter lines: how many lines the field shows before it scrolls.
+    /// - Returns: the height, in points.
+    static func promptEditorHeight(lines: Int) -> CGFloat {
         let font = DotType.nsFont(12.5, .regular)
         // The height one line is drawn at. The layout manager rounds the ascent
         // and the descent to whole points and adds the leading unrounded, so
         // the em sum the font reports is not the line the text view lays out: a
-        // field sized from that shows part of the thirteenth line.
+        // field sized from that shows part of the next line.
         let lineHeight = font.ascender.rounded() - font.descender.rounded() + font.leading
         // Rounded up to a whole point: the face draws a 12.5 point line at
         // 17.313, so twelve lines come to 207.75 and the clip view AppKit builds
@@ -1100,7 +1117,7 @@ struct AssistantPage: View {
         // thirteenth.
         return DotTextEditor.verticalClipInset * 2
             + DotTextEditor.textInset.height
-            + (lineHeight * 12).rounded(.up)
+            + (lineHeight * CGFloat(lines)).rounded(.up)
     }
 
     /// The prompt of a built-in style, with the control that puts the shipped
@@ -1138,6 +1155,44 @@ struct AssistantPage: View {
         deleteButton(help: "Delete this style") {
             deleteStyle(id)
         }
+    }
+
+    /// The title of the standing rules switch.
+    static let standingRulesTitle = "Standing rules"
+
+    /// What the switch explains when the pointer rests on its label.
+    static let standingRulesHelp =
+        "Dot adds this text word for word under every Agent prompt. The model never sees or writes it."
+
+    /// The block Dot puts under every Agent prompt, and the switch that turns
+    /// it on.
+    ///
+    /// The field is drawn only while the switch is on: a block that is off is
+    /// one line in the card, and a person who turned it on has a text to write.
+    /// Nothing explains the block under the row, because the help on the label
+    /// already says the one fact the row cannot show: the model never reads it.
+    private var standingRulesControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(Self.standingRulesTitle)
+                    .font(DotTheme.rowTitleFont)
+                    .foregroundStyle(DotTheme.ink)
+                    .help(Self.standingRulesHelp)
+                Spacer(minLength: 8)
+                Toggle("", isOn: standingRulesEnabledBinding)
+                    .labelsHidden()
+                    .toggleStyle(DotToggleStyle())
+                    .accessibilityLabel(Self.standingRulesTitle)
+            }
+            if config.assistant.rewrite.standingRulesEnabled {
+                DotTextEditor(
+                    text: standingRulesBinding,
+                    height: Self.standingRulesEditorHeight,
+                    accessibilityLabel: Self.standingRulesTitle
+                )
+            }
+        }
+        .padding(.vertical, 10)
     }
 
     /// The control that removes a shipped style from the page.
@@ -1369,6 +1424,35 @@ struct AssistantPage: View {
         guard config.assistant.rewrite.builtInInstructions[id.rawValue] != nil else { return }
         Self.resetInstruction(for: id, in: &config.assistant.rewrite)
         onChange()
+    }
+
+    /// Whether Dot puts the standing rules under an Agent prompt.
+    ///
+    /// The switch reads and writes the stored field rather than a preview, so
+    /// the field beside it is drawn from the same answer the next rewrite
+    /// reads.
+    private var standingRulesEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { config.assistant.rewrite.standingRulesEnabled },
+            set: { isOn in
+                guard config.assistant.rewrite.standingRulesEnabled != isOn else { return }
+                config.assistant.rewrite.standingRulesEnabled = isOn
+                onChange()
+            }
+        )
+    }
+
+    /// The standing rules, held to the length the block keeps.
+    private var standingRulesBinding: Binding<String> {
+        Binding(
+            get: { config.assistant.rewrite.standingRules },
+            set: { value in
+                let capped = String(value.prefix(RewriteConfiguration.maximumStandingRulesLength))
+                guard config.assistant.rewrite.standingRules != capped else { return }
+                config.assistant.rewrite.setStandingRules(capped)
+                onChange()
+            }
+        )
     }
 
     /// A custom style's name, held to the length the catalogue keeps.
