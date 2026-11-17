@@ -239,7 +239,7 @@ struct PaletteView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if let age = row.age {
                     Text(age)
-                        .font(DotType.font(10, .medium))
+                        .font(DotType.tabularFont(10, .medium))
                         .foregroundStyle(DotTheme.ink3)
                         .frame(minWidth: 46, alignment: .trailing)
                 }

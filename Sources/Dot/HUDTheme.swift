@@ -99,13 +99,22 @@ enum HUDTheme {
     static let labelFontSize: CGFloat = 10.5
     /// The small caps label.
     static var labelFont: Font { DotType.font(labelFontSize, .semibold) }
+    /// The clock's size.
+    static let clockFontSize: CGFloat = 12
     /// The clock.
     ///
-    /// The face's own figures, which are tabular, so the number stays still
-    /// while the seconds change. The system face falls back to proportional
-    /// figures, which is why this goes through ``DotType/tabularFont(_:_:)``
-    /// rather than the plain face.
-    static var clockFont: Font { DotType.tabularFont(12, .medium) }
+    /// The face's own figures are proportional, so the clock is set in the
+    /// tabular face and carries the tracking that goes with it: the number stays
+    /// still while the seconds change, and its digits take the width the card
+    /// was laid out for.
+    static var clockFont: Font { DotType.tabularFont(clockFontSize, .medium) }
+    /// The tracking that belongs to ``clockFont``.
+    ///
+    /// Read from the clock's own font, so the value follows the face the card is
+    /// actually drawn in rather than whatever the process resolved last.
+    static var clockTracking: CGFloat {
+        DotType.tabularTracking(size: clockFontSize, in: DotType.tabularNSFont(clockFontSize, .medium))
+    }
     /// The transcript.
     ///
     /// The face is resolved on every read rather than kept: a font registered

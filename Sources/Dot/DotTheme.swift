@@ -235,7 +235,7 @@ enum DotTheme {
 
     /// The face the app's titles are set in.
     ///
-    /// Switzer, semibold, at the size the caller asks for. The title used to be
+    /// Satoshi, semibold, at the size the caller asks for. The title used to be
     /// New York because a serif is the one face that reads as a heading, and
     /// then the owner asked for one typeface on every surface: a page title in
     /// a second family is the one place the app would still look like two
@@ -249,6 +249,14 @@ enum DotTheme {
     static var sectionFont: Font { DotType.font(15, .semibold) }
     static var bodyFont: Font { DotType.font(13, .regular) }
     static var smallFont: Font { DotType.font(11.5, .regular) }
+    /// The size of the line under a window title.
+    static let subtitleSize: CGFloat = 11.5
+    /// The line under a window title, which carries a count as often as a word.
+    ///
+    /// The same size as ``smallFont``, set in the tabular face: the history
+    /// header counts transcripts, and a count that changes has to stay in its
+    /// column rather than shuffle its own digits.
+    static var subtitleFont: Font { DotType.tabularFont(subtitleSize, .regular) }
     static var labelFont: Font { DotType.font(10.5, .semibold) }
     /// The name of a setting.
     static var rowTitleFont: Font { DotType.font(12.5, .medium) }
@@ -349,7 +357,7 @@ struct DotWindowHeader<Trailing: View>: View {
                     .foregroundStyle(DotTheme.ink)
                 if let subtitle {
                     Text(subtitle)
-                        .font(DotTheme.smallFont)
+                        .font(DotTheme.subtitleFont)
                         .foregroundStyle(DotTheme.ink3)
                 }
             }

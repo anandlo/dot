@@ -211,6 +211,31 @@ final class SettingsRewriteRowTests: XCTestCase {
             "the field's text height is a thirteenth line tall, which draws a sliced line at the clip"
         )
 
+        // The standing rules use the same editor at six whole lines: the block
+        // is a few rules, and a field the height of the prompt's would make the
+        // Agent prompt's card twice as tall for a text that is usually shorter.
+        let sixLines = (lineHeight * 6).rounded(.up)
+        print(
+            "SettingsRewriteRow standing rules field: six lines \(lineHeight * 6) pt, "
+                + "rounded up \(sixLines) pt, field \(AssistantPage.standingRulesEditorHeight) pt"
+        )
+        XCTAssertEqual(
+            AssistantPage.standingRulesEditorHeight,
+            chrome + sixLines,
+            accuracy: 0.001,
+            "the standing rules field is not six rounded-up lines plus its chrome"
+        )
+        XCTAssertGreaterThan(
+            AssistantPage.standingRulesEditorHeight - chrome,
+            lineHeight * 6,
+            "the standing rules field is shorter than six lines"
+        )
+        XCTAssertLessThan(
+            AssistantPage.standingRulesEditorHeight - chrome,
+            lineHeight * 7,
+            "the standing rules field is a seventh line tall"
+        )
+
         // The field is drawn at that height, not a height of its own.
         let host = NSHostingView(rootView: DotTextEditor(
             text: .constant(RewriteStyleID.prompt.template),

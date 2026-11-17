@@ -113,9 +113,14 @@ struct SettingsRow<Trailing: View>: View {
     }
 
     /// One line of the fact under the title.
+    ///
+    /// Set in the tabular face because a subtitle often carries a number: how
+    /// many recordings taught the level meter, how many models the service
+    /// answered, how many keys a voice needs. The digits are the same size as
+    /// the words, and they keep their column when the number changes.
     private func subtitleLine(_ text: String) -> some View {
         Text(text)
-            .font(DotType.font(11, .regular))
+            .font(DotType.tabularFont(11, .regular))
             .foregroundStyle(subtitleTone)
             .fixedSize(horizontal: false, vertical: true)
     }

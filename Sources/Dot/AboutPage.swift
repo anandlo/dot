@@ -114,7 +114,7 @@ struct AboutPage: View {
 
             HStack(spacing: 6) {
                 Text(AboutInfo.versionLine(version: version, build: build))
-                    .font(DotType.font(12, .regular))
+                    .font(DotType.tabularFont(12, .regular))
                     .foregroundStyle(DotTheme.ink3)
                     .textSelection(.enabled)
 
@@ -228,7 +228,7 @@ struct AboutPage: View {
         Button(action: performUpdate) {
             SettingsRow("Check for updates", symbol: "arrow.triangle.2.circlepath") {
                 Text(updateStatusText)
-                    .font(DotType.font(11, .regular))
+                    .font(DotType.tabularFont(11, .regular))
                     .foregroundStyle(DotTheme.ink3)
                     .lineLimit(1)
             }

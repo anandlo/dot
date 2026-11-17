@@ -21,6 +21,7 @@ let package = Package(
         .testTarget(
             name: "DotCoreTests",
             dependencies: ["DotCore"],
+            resources: [.copy("Fixtures")],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(

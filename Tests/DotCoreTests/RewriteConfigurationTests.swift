@@ -154,122 +154,426 @@ final class RewriteConfigurationTests: XCTestCase {
 }
 
 extension RewriteConfigurationTests {
-    // MARK: - Files written before the rules moved
+    // MARK: - The retired working-rules block
 
-    /// A file from the build that carried the working rules as its own block
-    /// still opens, and its rules survive where the rules live now.
+    /// A rewrite block read from a fixture file, the way a file on disk is read.
     ///
-    /// The retired block turned the rules off and wrote its own text. Off is a
-    /// choice, so the prompt template that replaces the block has no rules
-    /// section; the other settings beside it keep the values they had, and the
-    /// two retired keys are never written back.
-    func testALegacyRulesBlockTurnedOffRemovesTheSectionAndKeepsEverythingElse() throws {
-        let config = try load(#"""
-        {"assistant": {"rewrite": {
-          "enabled": false,
-          "styles": ["prompt", "concise", "plain", "formal"],
-          "custom": [{"id": "haiku", "title": "Haiku", "instruction": "Rewrite as a haiku."}],
-          "workingRulesEnabled": false,
-          "workingRules": "## Working rules\n- Mine.",
-          "builtInInstructions": {"formal": "Be brief."},
-          "deletedBuiltIns": ["casual"]
-        }}}
-        """#)
-        let rewrite = config.assistant.rewrite
+    /// - Parameter name: the fixture's name, without its extension.
+    /// - Returns: the rewrite block it holds.
+    private func fixture(_ name: String) throws -> RewriteConfiguration {
+        let url = try XCTUnwrap(
+            Bundle.module.url(
+                forResource: name,
+                withExtension: "json",
+                subdirectory: "Fixtures/StandingRules"
+            ),
+            "the fixture \(name).json is missing from the test bundle"
+        )
+        return DotConfig.load(from: url).assistant.rewrite
+    }
+
+    /// The Agent prompt instruction a fixture file holds, read as it is written.
+    ///
+    /// A kept edit is asserted against these bytes rather than against a copy of
+    /// them in the test: the property is that the decoder changed nothing.
+    ///
+    /// - Parameter name: the fixture's name, without its extension.
+    /// - Returns: the instruction the file stores.
+    private func fixtureInstruction(_ name: String) throws -> String {
+        let url = try XCTUnwrap(
+            Bundle.module.url(
+                forResource: name,
+                withExtension: "json",
+                subdirectory: "Fixtures/StandingRules"
+            ),
+            "the fixture \(name).json is missing from the test bundle"
+        )
+        let payload = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+        let assistant = try XCTUnwrap((payload as? [String: Any])?["assistant"] as? [String: Any])
+        let rewrite = try XCTUnwrap(assistant["rewrite"] as? [String: Any])
+        let instructions = try XCTUnwrap(rewrite["builtInInstructions"] as? [String: Any])
+        return try XCTUnwrap(instructions["prompt"] as? String)
+    }
+
+    /// A file whose block carried the person's own rules hands them to the
+    /// block the model never sees.
+    ///
+    /// The text is theirs, so it is not dropped when the editor moves: the
+    /// switch comes on and the stored text is carried as it was written. The
+    /// Agent prompt's instruction is not rewritten to hold the rules, which is
+    /// what the build before this one did.
+    func testAFileWithItsOwnRulesTurnsTheStandingBlockOn() throws {
+        let rewrite = try fixture("legacy-own-rules-on")
+        XCTAssertTrue(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "## Working rules\n- Mine.\n- Keep it short.")
+        XCTAssertEqual(rewrite.standingRulesText, rewrite.standingRules)
+        XCTAssertTrue(rewrite.enabled)
+        XCTAssertEqual(rewrite.styles, [.prompt, .concise])
+        XCTAssertNil(
+            rewrite.builtInInstructions["prompt"],
+            "the migration wrote the rules into the prompt instruction"
+        )
+        XCTAssertEqual(rewrite.instruction(for: .prompt), RewriteStyleID.prompt.template)
+    }
+
+    /// The rules the retired block shipped with were never a choice, so a file
+    /// that kept them starts with the block off.
+    func testAFileWithTheShippedRulesStartsTheBlockOff() throws {
+        let rewrite = try fixture("legacy-default-rules-on")
+        XCTAssertFalse(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "")
+        XCTAssertNil(rewrite.standingRulesText)
+        XCTAssertNil(rewrite.builtInInstructions["prompt"])
+        XCTAssertEqual(
+            rewrite.instruction(for: .prompt),
+            RewriteStyleID.prompt.template,
+            "the shipped prompt was replaced by the retired rules"
+        )
+        XCTAssertEqual(rewrite.styles, [.prompt, .concise, .formal])
+    }
+
+    /// A file that turned the block off keeps everything else it stored.
+    func testAFileWithTheBlockOffStartsTheBlockOffAndKeepsEverySetting() throws {
+        let rewrite = try fixture("legacy-block-off")
+        XCTAssertFalse(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "")
         XCTAssertFalse(rewrite.enabled)
         XCTAssertEqual(rewrite.styles, [.prompt, .concise, .formal])
         XCTAssertEqual(rewrite.custom.map(\.id), ["haiku"])
         XCTAssertEqual(rewrite.builtInInstructions["formal"], "Be brief.")
         XCTAssertEqual(rewrite.deletedBuiltIns, [.casual])
         XCTAssertEqual(rewrite.visibleBuiltIns, [.prompt, .concise, .formal, .genZ])
-        let prompt = rewrite.instruction(for: .prompt)
-        XCTAssertFalse(
-            prompt.contains("## Working rules"),
-            "the person turned the block off, so the section must not come back"
-        )
-        XCTAssertTrue(prompt.contains("Output only the prompt."), "the rest of the prompt survived")
-
-        // The block is written again without the two retired keys, and the
-        // record comes back with everything it kept.
-        let restored = try JSONDecoder().decode(DotConfig.self, from: JSONEncoder().encode(config))
-        XCTAssertEqual(restored.assistant.rewrite, rewrite)
-        let payload = try JSONSerialization.jsonObject(with: JSONEncoder().encode(config))
-            as? [String: Any]
-        let assistant = try XCTUnwrap(payload?["assistant"] as? [String: Any])
-        let block = try XCTUnwrap(assistant["rewrite"] as? [String: Any])
-        XCTAssertNil(block["workingRulesEnabled"], "the retired switch is still written")
-        XCTAssertNil(block["workingRules"], "the retired field is still written")
     }
 
-    /// The person's own rules are carried into the prompt that replaced the
-    /// block.
+    /// A file that says nothing about either block reads as a fresh record.
+    func testAFileWithoutEitherBlockUsesTheDefaults() throws {
+        let config = try load(#"""
+        {"assistant": {"rewrite": {"enabled": true, "styles": ["prompt", "concise"]}}}
+        """#)
+        let rewrite = config.assistant.rewrite
+        XCTAssertFalse(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "")
+        XCTAssertNil(rewrite.standingRulesText)
+        XCTAssertEqual(rewrite, RewriteConfiguration(
+            styles: [.prompt, .concise]
+        ))
+    }
+
+    /// A stored edit of the Agent prompt is the person's own words and stays
+    /// untouched by the migration beside it.
+    func testAStoredAgentPromptEditIsNotRewrittenByTheMigration() throws {
+        let config = try load(#"""
+        {"assistant": {"rewrite": {
+          "styles": ["prompt"],
+          "builtInInstructions": {"prompt": "Write the task as a checklist."},
+          "workingRulesEnabled": true,
+          "workingRules": "- Mine."
+        }}}
+        """#)
+        let rewrite = config.assistant.rewrite
+        XCTAssertEqual(rewrite.builtInInstructions["prompt"], "Write the task as a checklist.")
+        XCTAssertEqual(rewrite.instruction(for: .prompt), "Write the task as a checklist.")
+        XCTAssertTrue(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "- Mine.")
+    }
+
+    /// A file the previous build saved after converting the rules into a prompt
+    /// instruction gets the new template back.
     ///
-    /// This is the migration the retired fields need: a text the person wrote
-    /// is not dropped because the editor moved. It replaces the shipped list
-    /// under the section's sentence, and the rest of the template is untouched.
-    func testALegacyCustomRulesBlockMovesIntoTheAgentPrompt() throws {
-        let config = try load(#"""
-        {"assistant": {"rewrite": {
-          "enabled": true,
-          "styles": ["prompt", "concise"],
-          "workingRulesEnabled": true,
-          "workingRules": "## Working rules\n- Mine.\n- Keep it short."
-        }}}
-        """#)
-        let prompt = config.assistant.rewrite.instruction(for: .prompt)
-        XCTAssertTrue(prompt.contains("## Working rules"))
-        XCTAssertTrue(prompt.contains("- Mine."), "the person's rules were dropped")
-        XCTAssertTrue(prompt.contains("- Keep it short."))
-        XCTAssertFalse(
-            prompt.contains("- Read the relevant code before you change it."),
-            "the shipped list was kept beside the person's own"
-        )
-        XCTAssertTrue(prompt.contains("Include the relevant working rules for the task, drawing from:"))
-        XCTAssertTrue(prompt.contains("Output only the prompt."))
-        XCTAssertEqual(config.assistant.rewrite.styles, [.prompt, .concise])
-
-        let restored = try JSONDecoder().decode(
-            DotConfig.self,
-            from: JSONEncoder().encode(config)
-        )
-        XCTAssertEqual(restored.assistant.rewrite, config.assistant.rewrite)
-    }
-
-    /// A rules block without its heading is carried the same way.
-    func testALegacyRulesBlockWithoutItsHeadingIsStillPreserved() throws {
-        let config = try load(#"""
-        {"assistant": {"rewrite": {
-          "styles": ["prompt"],
-          "workingRules": "- Ask before deleting a file."
-        }}}
-        """#)
-        let prompt = config.assistant.rewrite.instruction(for: .prompt)
-        XCTAssertTrue(prompt.contains("- Ask before deleting a file."))
-        XCTAssertEqual(
-            prompt.components(separatedBy: "## Working rules").count,
-            2,
-            "the heading was written twice"
-        )
-    }
-
-    /// The rules a legacy file never edited are the rules the template already
-    /// carries, so the migration stores no override at all.
-    func testTheShippedLegacyRulesNeedNoMigration() throws {
-        let config = try load(#"""
-        {"assistant": {"rewrite": {
-          "styles": ["prompt"],
-          "workingRulesEnabled": true,
-          "workingRules": "## Working rules\n- Read the relevant code before you change it.\n- Keep changes within the scope of this request.\n- Ask before adding a dependency or changing a public interface.\n- Run the build and the tests, and report the results.\n- If something is unclear, ask instead of guessing."
-        }}}
-        """#)
+    /// That build removed the rules section from a stamped-in template and
+    /// stored the result as the person's instruction, saving nothing else. Read
+    /// as an edit, it would outrank the new template for ever, so the exact
+    /// value that build generated is recognised and dropped.
+    func testAPromptOverrideFromThePreviousBuildWithoutRulesIsRemoved() throws {
+        let rewrite = try fixture("previous-build-without-rules")
         XCTAssertNil(
-            config.assistant.rewrite.builtInInstructions["prompt"],
-            "an unedited block was stored as an edit"
+            rewrite.builtInInstructions["prompt"],
+            "the value the previous build generated was kept as an edit"
         )
+        XCTAssertEqual(rewrite.instruction(for: .prompt), RewriteStyleID.prompt.template)
+        XCTAssertFalse(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "")
+        XCTAssertEqual(rewrite.styles, [.prompt, .concise])
+    }
+
+    /// A file the previous build saved with the person's own rules in the prompt
+    /// hands those rules to the block the model never sees.
+    ///
+    /// The rules were written for exactly that place, and the new template has
+    /// no rules section, so they move to standing rules rather than disappear.
+    func testAPromptOverrideFromThePreviousBuildWithThePersonsRulesTurnsTheBlockOn() throws {
+        let rewrite = try fixture("previous-build-own-rules")
+        XCTAssertNil(
+            rewrite.builtInInstructions["prompt"],
+            "the value the previous build generated was kept as an edit"
+        )
+        XCTAssertTrue(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "- Mine.\n- Keep it short.")
+        XCTAssertEqual(rewrite.instruction(for: .prompt), RewriteStyleID.prompt.template)
+    }
+
+    /// An override that is the whole previous template is migrated, because the
+    /// previous producer wrote exactly those bytes.
+    ///
+    /// Its default-rules comparison used the retired text with the heading in
+    /// it, and its strip never removed a heading, so a rules payload holding
+    /// the shipped bullets without the heading survived that comparison and was
+    /// assembled into the full template. Replaying the producer reproduces the
+    /// stored bytes, which is what makes it recognisable as machine-written
+    /// rather than pasted. The rules the person had become standing rules.
+    func testAPromptOverrideThatIsTheWholePreviousTemplateIsMigrated() throws {
+        let rewrite = try fixture("previous-build-default-rules")
+        XCTAssertNil(
+            rewrite.builtInInstructions["prompt"],
+            "the value the previous producer wrote was kept as an edit"
+        )
+        XCTAssertTrue(rewrite.standingRulesEnabled)
         XCTAssertEqual(
-            config.assistant.rewrite.instruction(for: .prompt),
-            RewriteStyleID.prompt.template
+            rewrite.standingRules,
+            """
+            - Read the relevant code before you change it.
+            - Keep changes within the scope of this request.
+            - Ask before adding a dependency or changing a public interface.
+            - Run the build and the tests, and report the results.
+            - If something is unclear, ask instead of guessing.
+            """
         )
+        XCTAssertEqual(rewrite.instruction(for: .prompt), RewriteStyleID.prompt.template)
+    }
+
+    /// A lone carriage return inside the rules is migrated.
+    ///
+    /// The previous producer replaced CRLF pairs and nothing else, so a return
+    /// that stood on its own survived into the value it wrote. Recognising the
+    /// value is the replay's job, not a scan for a character: a rule here that
+    /// rejected every return would throw away a file that build really saved.
+    func testAnOverrideWithALoneCarriageReturnIsMigrated() throws {
+        let rewrite = try fixture("previous-build-lone-cr-rules")
+        XCTAssertNil(
+            rewrite.builtInInstructions["prompt"],
+            "a value the previous producer wrote was kept as an edit"
+        )
+        XCTAssertTrue(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "- A.\r- B.")
+        XCTAssertEqual(rewrite.instruction(for: .prompt), RewriteStyleID.prompt.template)
+    }
+
+    /// An override holding the retired rules with their heading twice over is a
+    /// person's edit: that is the payload the previous producer refused.
+    ///
+    /// It compared the rules against the retired text with the heading in it,
+    /// so a payload that still carried the heading matched and produced no
+    /// instruction at all. A file holding that value was written by a person.
+    func testAnOverrideHoldingTheDefaultRulesUnderTheirHeadingIsKept() throws {
+        let rewrite = try fixture("previous-build-heading-default-rules")
+        XCTAssertEqual(
+            rewrite.builtInInstructions["prompt"],
+            try fixtureInstruction("previous-build-heading-default-rules"),
+            "a value the previous producer refused was read as its own"
+        )
+        XCTAssertFalse(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "")
+        XCTAssertEqual(rewrite.instruction(for: .prompt), try fixtureInstruction("previous-build-heading-default-rules"))
+    }
+
+    /// A rules payload past the retired 1 200-character cap cannot be what the
+    /// previous build stored: it cut every payload to that length.
+    func testAnOverrideWhoseRulesExceedTheRetiredCapIsKept() throws {
+        let rewrite = try fixture("previous-build-long-rules")
+        XCTAssertEqual(
+            rewrite.builtInInstructions["prompt"],
+            try fixtureInstruction("previous-build-long-rules"),
+            "a payload the previous build would have cut was read as its own"
+        )
+        XCTAssertFalse(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "")
+    }
+
+    /// A payload with Windows line endings cannot be what the previous build
+    /// stored: it rewrote every CRLF pair before writing the rules, so the value
+    /// it stored has no pair left.
+    func testAnOverrideWithWindowsLineEndingsIsKept() throws {
+        let rewrite = try fixture("previous-build-crlf-rules")
+        XCTAssertEqual(
+            rewrite.builtInInstructions["prompt"],
+            try fixtureInstruction("previous-build-crlf-rules"),
+            "a payload the previous build would have rewritten was read as its own"
+        )
+        XCTAssertFalse(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "")
+    }
+
+    /// The previous template with one line of it edited is a person's copy, not
+    /// the value that build generated.
+    func testAnEditedCopyOfThePreviousTemplateIsKept() throws {
+        let rewrite = try fixture("previous-build-edited-goal")
+        XCTAssertEqual(
+            rewrite.builtInInstructions["prompt"],
+            try fixtureInstruction("previous-build-edited-goal"),
+            "an edited copy of the old template was migrated"
+        )
+        XCTAssertFalse(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "")
+    }
+
+    /// An instruction the person wrote is not one of the generated shapes and is
+    /// never touched.
+    func testAHandEditedPromptOverrideIsKeptAndNoRulesAreInvented() throws {
+        let rewrite = try fixture("previous-build-user-edit")
+        XCTAssertEqual(rewrite.builtInInstructions["prompt"], "Write the task as a checklist.")
+        XCTAssertEqual(rewrite.instruction(for: .prompt), "Write the task as a checklist.")
+        XCTAssertFalse(rewrite.standingRulesEnabled)
+        XCTAssertEqual(rewrite.standingRules, "")
+    }
+
+    /// A migrated file is saved without the instruction the previous build wrote.
+    ///
+    /// The migration has to survive its own save: a file that keeps the
+    /// generated instruction would be read as an edit next time, and the new
+    /// template would be lost again.
+    func testAMigratedPreviousFileReEncodesWithoutTheOverride() throws {
+        for name in [
+            "previous-build-without-rules",
+            "previous-build-own-rules",
+            "previous-build-default-rules",
+        ] {
+            let config = DotConfig.load(from: try XCTUnwrap(
+                Bundle.module.url(
+                    forResource: name,
+                    withExtension: "json",
+                    subdirectory: "Fixtures/StandingRules"
+                ),
+                "the fixture \(name).json is missing from the test bundle"
+            ))
+            XCTAssertNil(config.assistant.rewrite.builtInInstructions["prompt"], name)
+
+            let data = try JSONEncoder().encode(config)
+            let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let assistant = try XCTUnwrap(payload?["assistant"] as? [String: Any])
+            let block = try XCTUnwrap(assistant["rewrite"] as? [String: Any], name)
+            XCTAssertNil(block["builtInInstructions"], "the generated instruction was written back: \(name)")
+            XCTAssertNil(block["workingRulesEnabled"], name)
+            XCTAssertNil(block["workingRules"], name)
+
+            let restored = try JSONDecoder().decode(DotConfig.self, from: data)
+            XCTAssertEqual(restored.assistant.rewrite, config.assistant.rewrite, name)
+            XCTAssertEqual(
+                restored.assistant.rewrite.instruction(for: .prompt),
+                RewriteStyleID.prompt.template,
+                name
+            )
+        }
+    }
+
+    /// A kept override survives the save it is written back in.
+    ///
+    /// The negatives are the person's text: the migration must not quietly
+    /// remove them on the next save either.
+    func testAKentOverrideIsWrittenBackUnchanged() throws {
+        for name in [
+            "previous-build-heading-default-rules",
+            "previous-build-long-rules",
+            "previous-build-crlf-rules",
+            "previous-build-edited-goal",
+            "previous-build-user-edit",
+        ] {
+            let config = DotConfig.load(from: try XCTUnwrap(
+                Bundle.module.url(
+                    forResource: name,
+                    withExtension: "json",
+                    subdirectory: "Fixtures/StandingRules"
+                ),
+                "the fixture \(name).json is missing from the test bundle"
+            ))
+            let stored = try XCTUnwrap(config.assistant.rewrite.builtInInstructions["prompt"], name)
+            let restored = try JSONDecoder().decode(
+                DotConfig.self,
+                from: JSONEncoder().encode(config)
+            )
+            XCTAssertEqual(
+                restored.assistant.rewrite.builtInInstructions["prompt"],
+                stored,
+                "\(name) lost its edit on the way back"
+            )
+        }
+    }
+
+    /// The keys this build writes answer for the block even when a generated
+    /// instruction is found beside them.
+    func testTheStandingKeysWinOverAGeneratedPromptOverride() throws {
+        let config = try load(#"""
+        {"assistant": {"rewrite": {
+          "styles": ["prompt"],
+          "standingRulesEnabled": false,
+          "standingRules": "- Mine now.",
+          "builtInInstructions": {"prompt": "Write the task as a checklist."}
+        }}}
+        """#)
+        XCTAssertEqual(config.assistant.rewrite.builtInInstructions["prompt"], "Write the task as a checklist.")
+        XCTAssertFalse(config.assistant.rewrite.standingRulesEnabled)
+        XCTAssertEqual(config.assistant.rewrite.standingRules, "- Mine now.")
+    }
+
+    /// The new keys are written and the retired ones never are.
+    func testEncodingWritesTheStandingRulesAndNeverTheRetiredKeys() throws {
+        for name in ["legacy-own-rules-on", "legacy-default-rules-on", "legacy-block-off"] {
+            let config = DotConfig.load(from: try XCTUnwrap(
+                Bundle.module.url(
+                    forResource: name,
+                    withExtension: "json",
+                    subdirectory: "Fixtures/StandingRules"
+                ),
+                "the fixture \(name).json is missing from the test bundle"
+            ))
+            let data = try JSONEncoder().encode(config)
+            let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let assistant = try XCTUnwrap(payload?["assistant"] as? [String: Any])
+            let block = try XCTUnwrap(assistant["rewrite"] as? [String: Any], name)
+            XCTAssertEqual(
+                block["standingRulesEnabled"] as? Bool,
+                config.assistant.rewrite.standingRulesEnabled,
+                name
+            )
+            XCTAssertEqual(
+                block["standingRules"] as? String,
+                config.assistant.rewrite.standingRules,
+                name
+            )
+            XCTAssertNil(block["workingRulesEnabled"], "the retired switch is written: \(name)")
+            XCTAssertNil(block["workingRules"], "the retired field is written: \(name)")
+
+            let restored = try JSONDecoder().decode(DotConfig.self, from: data)
+            XCTAssertEqual(restored.assistant.rewrite, config.assistant.rewrite, name)
+        }
+    }
+
+    /// The stored text is held to the length the block keeps.
+    func testAStoredStandingTextIsCappedOnDecode() throws {
+        let long = String(repeating: "a", count: 2_500)
+        let config = try load(#"""
+        {"assistant": {"rewrite": {"standingRulesEnabled": true, "standingRules": "\#(long)"}}}
+        """#)
+        XCTAssertEqual(config.assistant.rewrite.standingRules.count, 2_000)
+        XCTAssertEqual(config.assistant.rewrite.standingRulesText?.count, 2_000)
+    }
+
+    /// A value of the new keys this build cannot read falls back to the default
+    /// rather than failing the block.
+    func testABadStandingValueDoesNotFailTheBlock() throws {
+        for bad in [#""standingRulesEnabled": "yes""#, #""standingRules": 42"#,
+                    #""standingRulesEnabled": [true], "standingRules": {"a": 1}"#] {
+            let config = try load(#"""
+            {"assistant": {"rewrite": {
+              "enabled": false,
+              "styles": ["concise"],
+              \#(bad)
+            }}}
+            """#)
+            XCTAssertFalse(config.assistant.rewrite.enabled, "the value: \(bad)")
+            XCTAssertEqual(config.assistant.rewrite.styles, [.concise], "the value: \(bad)")
+            XCTAssertFalse(config.assistant.rewrite.standingRulesEnabled, "the value: \(bad)")
+            XCTAssertEqual(config.assistant.rewrite.standingRules, "", "the value: \(bad)")
+        }
     }
 
     /// A bad value in either retired key cannot take the block with it.
@@ -285,6 +589,15 @@ extension RewriteConfigurationTests {
             """#)
             XCTAssertFalse(config.assistant.rewrite.enabled, "the value: \(bad)")
             XCTAssertEqual(config.assistant.rewrite.styles, [.concise], "the value: \(bad)")
+            XCTAssertFalse(
+                config.assistant.rewrite.standingRulesEnabled,
+                "a value this build cannot read turned the block on: \(bad)"
+            )
+            XCTAssertEqual(
+                config.assistant.rewrite.standingRules,
+                "",
+                "a value this build cannot read became a block: \(bad)"
+            )
             XCTAssertNil(
                 config.assistant.rewrite.builtInInstructions["prompt"],
                 "a value this build cannot read became a prompt edit: \(bad)"

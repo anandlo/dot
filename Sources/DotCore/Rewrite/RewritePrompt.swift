@@ -41,12 +41,12 @@ public enum RewritePrompt {
     /// The smallest output cap for a style that restructures its answer, in
     /// characters.
     ///
-    /// A fifteen-word voice note becomes seven Markdown sections with the Agent
-    /// prompt style, and the headings, the lists and the working rules run past
-    /// two thousand characters before the model has said anything the speaker
-    /// did not. The styles that build their own structure therefore start from a
-    /// floor the whole structure fits inside, so a first attempt is not cut off
-    /// before the sections it was asked for are finished.
+    /// A fifteen-word voice note becomes five Markdown sections with the Agent
+    /// prompt style, and the headings and the lists run past a thousand
+    /// characters before the model has said anything the speaker did not. The
+    /// styles that build their own structure therefore start from a floor the
+    /// whole structure fits inside, so a first attempt is not cut off before the
+    /// sections it was asked for are finished.
     public static let structuredOutputFloor = 3_600
 
     /// How much longer than its input a restructuring style may run.
@@ -99,6 +99,22 @@ public enum RewritePrompt {
             .joined(separator: "\n\n")
     }
 
+    /// The words a version carries, from the model's answer to the person's paste.
+    ///
+    /// The standing rules are Dot's, not the model's: the request never carries
+    /// them, the answer is measured on its own, and the block is copied under
+    /// the finished answer here. One blank line separates the two, and the
+    /// stored text is copied word for word.
+    ///
+    /// - Parameters:
+    ///   - output: the model's answer, trimmed.
+    ///   - standingRules: the rules to append, or `nil` when there are none.
+    /// - Returns: the text the card shows, the history saves and a Paste writes.
+    public static func delivered(_ output: String, standingRules: String?) -> String {
+        guard let standingRules, !standingRules.isEmpty else { return output }
+        return output + "\n\n" + standingRules
+    }
+
     /// The conversation a rewrite sends.
     ///
     /// A rewrite is one turn with no tools: the model has nothing to call and
@@ -113,12 +129,12 @@ public enum RewritePrompt {
     /// The longest rewrite that is kept, in characters, for a style.
     ///
     /// The Agent prompt style and the person's own styles restructure the
-    /// answer, so their cap leaves room for the headings, the lists and the
-    /// missing details they ask the model to name. The styles that rewrite in
-    /// place keep their own length band: their cap is the wider of the band and
-    /// four times the input, so an answer that is legitimately longer than a
-    /// short note is still inside it. An answer that passes this cap is asked
-    /// once more at twice the cap before it is reported as cut off.
+    /// answer, so their cap leaves room for the headings and the lists the
+    /// answer carries before it repeats a word of the request. The styles that
+    /// rewrite in place keep their own length band: their cap is the wider of
+    /// the band and four times the input, so an answer that is legitimately
+    /// longer than a short note is still inside it. An answer that passes this
+    /// cap is asked once more at twice the cap before it is reported as cut off.
     ///
     /// - Parameters:
     ///   - inputCharacters: the length of the transcript.

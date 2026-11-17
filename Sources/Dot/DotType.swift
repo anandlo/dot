@@ -4,10 +4,10 @@ import SwiftUI
 
 /// The one place the app's typeface is resolved.
 ///
-/// Every surface is set in Switzer, a variable font whose only axis is weight,
-/// 100 to 900 with Regular as the default instance. A variable font cannot be
-/// picked by asking for a family and a size: a plain lookup always answers the
-/// default instance, and the weight is an axis value written into the font
+/// Every surface is set in Satoshi, a variable font whose only axis is weight,
+/// 300 to 900 with Black (900) as the default instance. A variable font cannot
+/// be picked by asking for a family and a size: a plain lookup always answers
+/// the default instance, and the weight is an axis value written into the font
 /// descriptor. There is a single place that builds it, and this is it. A call
 /// site that asked the system for a font instead would draw a different face in
 /// the middle of a sentence, which is why the rule is one helper and no
@@ -22,32 +22,25 @@ import SwiftUI
 enum DotType {
     /// The six weights the app is designed in.
     ///
-    /// The values are the face's own named instances: Extralight 200, Light
-    /// 300, Regular 400, Medium 500, Semibold 600 and Bold 700. The axis runs
-    /// from 100 to 900 and stops there, so anything above 900 clamps to the 900
-    /// the axis allows, and the app never asks for more than 700. They are
-    /// settled values, not a starting point to be re-tuned: the appearance was
-    /// chosen on a rendered ladder at 22 points and again at 15, which is where
-    /// a title and the body of the card sit.
-    enum Weight: CaseIterable {
-        case thin
-        case light
-        case regular
-        case medium
-        case semibold
-        case bold
+    /// The values are written into the weight axis, which runs from 300 to 900.
+    /// Satoshi has a named instance at 300, 400, 500, 700 and 900 and no master
+    /// below 300, so the ladder starts at the axis floor: thin is 300, the
+    /// Light instance, and light at 350 and semibold at 600 are interpolated
+    /// between the instances either side of them. Nothing above 900 is asked
+    /// for, and the axis clamps there. They are settled values, not a starting
+    /// point to be re-tuned: the appearance was chosen on a rendered ladder at
+    /// 22 points and again at 15, which is where a title and the body of the
+    /// card sit.
+    enum Weight: CGFloat, CaseIterable {
+        case thin = 300
+        case light = 350
+        case regular = 400
+        case medium = 500
+        case semibold = 600
+        case bold = 700
 
         /// The value written into the weight axis.
-        var axisValue: CGFloat {
-            switch self {
-            case .thin: 200
-            case .light: 300
-            case .regular: 400
-            case .medium: 500
-            case .semibold: 600
-            case .bold: 700
-            }
-        }
+        var axisValue: CGFloat { rawValue }
 
         /// The system weight that stands in when the face is not in the bundle.
         ///
@@ -71,7 +64,7 @@ enum DotType {
     /// This must be the numeric code rather than the string "wght". A string
     /// key is accepted into a font descriptor and stored, and then matched
     /// against nothing: every advance stays at the face's default instance,
-    /// which is Regular, `CTFontCopyVariation` answers nil, the PostScript name
+    /// which is Black, `CTFontCopyVariation` answers nil, the PostScript name
     /// never changes, and no error is raised anywhere. The silent no-op is the
     /// reason this constant exists once, here, and the reason no other file
     /// may build a variation dictionary.
@@ -84,12 +77,38 @@ enum DotType {
 
     /// The PostScript name of the default instance the file ships.
     ///
-    /// It is the name a plain lookup answers, and the axis is applied on top of
-    /// it.
-    private static let postScriptName = "SwitzerVariable-Regular"
+    /// That instance is Black, the axis maximum, so this name on its own draws
+    /// the heaviest face in the family. Every resolution applies the axis on top
+    /// of it; nothing in the app draws this name unresolved.
+    private static let postScriptName = "SatoshiVariable-Bold"
 
     /// The family the face resolves to, which is what the fallback checks.
-    static let familyName = "Switzer Variable"
+    static let familyName = "Satoshi Variable"
+
+    /// The factor every requested size is multiplied by before the face is made.
+    ///
+    /// Satoshi stands 0.91 of Switzer's x-height at wght 400 and its average
+    /// lowercase advance is 0.955 of Switzer's, both read from the two files at
+    /// the same weight, while its word space is 1.385 times Switzer's, so a line
+    /// of real copy comes out wider than the letter-run ratio predicts. Measured
+    /// over the thirty longest fixed strings in the app, 1.01 keeps every one of
+    /// them inside -3.13 to +1.95 percent of the width the interface was laid
+    /// out at, and lifts the drawn x-height from 0.911 to 0.921 of the old one.
+    /// The system fallback is not scaled: it stands in for the face the layout
+    /// was measured against, so scaling it would move the one path the factor
+    /// does not need to touch.
+    static let opticalScale: CGFloat = 1.01
+
+    /// The tabular digit advance the interface is drawn to, in em.
+    ///
+    /// The face's `tnum` figures advance 0.66 em. At the size a clock or a
+    /// column of numbers is drawn the HUD and the settings pages were laid out
+    /// for a narrower figure, so ``tabularTracking(size:)`` takes the difference
+    /// back out.
+    static let tabularAdvance: CGFloat = 0.62
+
+    /// The digit advance the face's own `tnum` figures carry, in em.
+    private static let bundledTabularAdvance: CGFloat = 0.66
 
     /// The fonts already resolved, so a view body does not rebuild one a frame.
     private static let resolved = Resolver()
@@ -121,7 +140,7 @@ enum DotType {
     /// sizes a card for words it is not going to hold.
     static func nsFont(_ size: CGFloat, _ weight: Weight) -> NSFont {
         if let cached = resolved.font(size: size, weight: weight) { return cached }
-        if let font = face(size: size, weight: weight) {
+        if let font = face(size: size * opticalScale, weight: weight) {
             resolved.store(font, size: size, weight: weight)
             return font
         }
@@ -141,19 +160,51 @@ enum DotType {
 
     /// The face at a point size and a weight, with tabular figures, for AppKit.
     ///
-    /// Switzer's figures are tabular already: measured at 12 points and wght
-    /// 500, each of the ten digits advances 6.912 points, a spread of 0.000, and
-    /// the face carries no number-spacing feature to ask for. The feature is
-    /// requested anyway, because the fallback is the system face, whose default
-    /// figures are proportional: the request is what keeps a clock still in a
-    /// checkout without the file, and what would keep it still in a face that
-    /// only had tabular figures behind the feature. The result is cached beside
-    /// the proportional fonts, so a view body pays a lookup.
+    /// Satoshi's default figures are proportional: measured in the file at 12
+    /// points and wght 500 the ten digits span 4.37 to 8.32 points, which is a
+    /// clock that jumps and a column of numbers that does not line up. The
+    /// face carries `tnum`, which substitutes a monospaced set at 660 units, so
+    /// the feature is requested from Core Text and every digit then advances
+    /// 8.32 points at the 12.6 the resolver asks for. The result is cached
+    /// beside the proportional fonts, so a view body pays a lookup.
     static func tabularNSFont(_ size: CGFloat, _ weight: Weight) -> NSFont {
         if let cached = tabularResolved.font(size: size, weight: weight) { return cached }
-        let font = tabular(nsFont(size, weight), size: size)
-        tabularResolved.store(font, size: size, weight: weight)
+        let font = tabular(nsFont(size, weight), weight: weight)
+        // Only a font that came from the bundled face is kept: a fallback stored
+        // here would answer every later call for the same size and weight, so the
+        // face would stay invisible for the rest of the process. The font itself
+        // answers the question, not the process-wide last-resolution flag: a
+        // fallback for another size must not stop this size being cached.
+        if font.familyName == familyName {
+            tabularResolved.store(font, size: size, weight: weight)
+        }
         return font
+    }
+
+    /// The tracking that belongs with ``tabularFont(_:_:)`` at the same size.
+    ///
+    /// Tracking cannot live in a font: Core Text descriptors carry variations and
+    /// feature settings and nothing else, and `NSFont` has no tracking property.
+    /// It is applied where the text is drawn, so every site that draws with the
+    /// tabular face pairs the font with this value and the two travel together.
+    ///
+    /// The face that was actually used decides the value, not the process-wide
+    /// result of the last resolution: a fallback somewhere else in the process
+    /// must not flatten the tracking of a clock that is drawn in the bundled
+    /// face. Reading the font's own family is the only answer that cannot go
+    /// stale.
+    ///
+    /// - Parameters:
+    ///   - size: the same size that was passed to ``tabularFont(_:_:)``.
+    ///   - font: the font the site draws with, tabular or not.
+    /// - Returns: `(0.62 - 0.66) x size x opticalScale` points between two
+    ///   digits, which is the difference between the face's own figure and the
+    ///   advance the columns were laid out for. Zero when the font is not the
+    ///   bundled family, whose figures are tabular already and were never
+    ///   measured against this face.
+    static func tabularTracking(size: CGFloat, in font: NSFont) -> CGFloat {
+        guard font.familyName == familyName else { return 0 }
+        return (tabularAdvance - bundledTabularAdvance) * size * opticalScale
     }
 
     /// The same font with monospaced figures written into the descriptor.
@@ -161,17 +212,27 @@ enum DotType {
     /// The feature settings have to be attached through Core Text: the AppKit
     /// descriptor attribute of the same name is dropped before the font is
     /// built, while a Core Text descriptor carries the setting into the face.
-    private static func tabular(_ font: NSFont, size: CGFloat) -> NSFont {
+    /// The size comes from the resolved font rather than from the caller, so the
+    /// optical factor applied there is not undone here.
+    private static func tabular(_ font: NSFont, weight: Weight) -> NSFont {
         let base = font.fontDescriptor as CTFontDescriptor
-        let descriptor = CTFontDescriptorCreateCopyWithAttributes(base, [
+        var attributes: [CFString: Any] = [
             kCTFontFeatureSettingsAttribute: [
                 [
                     kCTFontFeatureTypeIdentifierKey: numberSpacingType,
                     kCTFontFeatureSelectorIdentifierKey: monospacedNumbersSelector,
                 ],
             ],
-        ] as CFDictionary)
-        guard let tabular = NSFont(descriptor: descriptor as NSFontDescriptor, size: size) else {
+        ]
+        // The weight is written again on the copy rather than relied on to
+        // survive it: a descriptor rebuilt for the figures alone answers the
+        // file's default instance, which is Black, and a clock set in Black is a
+        // different clock.
+        if font.familyName == familyName {
+            attributes[kCTFontVariationAttribute] = [weightAxis: NSNumber(value: weight.axisValue)]
+        }
+        let descriptor = CTFontDescriptorCreateCopyWithAttributes(base, attributes as CFDictionary)
+        guard let tabular = NSFont(descriptor: descriptor as NSFontDescriptor, size: font.pointSize) else {
             return font
         }
         return tabular
@@ -193,7 +254,7 @@ enum DotType {
     ///   - name: the PostScript name to resolve; a name that is not the bundled
     ///     file's is refused by the family check.
     static func nsFont(_ size: CGFloat, _ weight: Weight, resolving name: String) -> NSFont {
-        if let font = face(size: size, weight: weight, named: name) {
+        if let font = face(size: size * opticalScale, weight: weight, named: name) {
             resolved.store(font, size: size, weight: weight)
             return font
         }

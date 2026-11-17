@@ -350,53 +350,41 @@ extension RewritePromptTests {
 }
 
 extension RewritePromptTests {
-    // MARK: - The working rules in the prompt
+    // MARK: - The Agent prompt asks for nothing the speaker did not say
 
-    /// The rules the agent prompt asks for are part of its own instruction.
+    /// The instruction the model receives has no place for an unsaid detail.
     ///
-    /// They used to be a block Dot glued to the model's answer. The model now
-    /// weaves the relevant ones into the task it writes, so the instruction has
-    /// to name them and no second block may appear under the answer.
-    func testTheAgentPromptAsksForTheWorkingRules() {
-        let template = RewriteStyleID.prompt.template
-        for line in [
-            "## Working rules",
-            "Include the relevant working rules for the task, drawing from:",
-            "- Read the relevant code before you change it.",
-            "- Keep changes within the scope of this request.",
-            "- Ask before adding a dependency or changing a public interface.",
-            "- Run the build and the tests, and report the results.",
-            "- If something is unclear, ask instead of guessing.",
-        ] {
-            XCTAssertTrue(template.contains(line), "the agent prompt lost: \(line)")
+    /// The retired template asked for `[missing: ...]` lines, an "Open
+    /// questions" section and a "Working rules" list the model assembled from
+    /// five generic sentences. The system text the model reads has none of
+    /// them, and the rules Dot keeps are its own block rather than a request to
+    /// the model.
+    func testTheAgentPromptSystemTextAsksForNothingTheSpeakerDidNotSay() {
+        let text = RewritePrompt.systemText(for: .prompt)
+        for retired in ["[missing", "## Open questions", "## Working rules", "drawing from"] {
+            XCTAssertFalse(text.contains(retired), "the system text still carries: \(retired)")
         }
-        XCTAssertTrue(template.hasSuffix("Output only the prompt."))
-
-        let messages = RewritePrompt.messages(for: .prompt, text: "Ship the build.")
-        XCTAssertTrue(
-            messages[0].text.contains("## Working rules"),
-            "the model is not asked for the rules"
-        )
-        XCTAssertTrue(messages[0].text.hasSuffix(RewritePrompt.dataSentence))
+        XCTAssertTrue(text.contains("Add nothing the speaker did not say"))
+        XCTAssertTrue(text.hasSuffix(RewritePrompt.dataSentence))
         for style in RewriteStyle.builtIns where style.kind != .builtIn(.prompt) {
             XCTAssertFalse(
-                RewritePrompt.systemText(for: style).contains("## Working rules"),
-                "\(style.id) asks for the agent prompt's rules"
+                RewritePrompt.systemText(for: style).contains("Add nothing the speaker did not say"),
+                "\(style.id) carries the Agent prompt's sentence"
             )
         }
     }
 
-    /// The prompt style has room for the section it now asks for.
+    /// The prompt style asks for five sections and has room for them.
     ///
-    /// The output cap is about the answer, not the instruction, so the rules
-    /// may not have pushed the sections past it: a fifteen-word note still has
+    /// The output cap is about the answer, not the instruction, so the sections
+    /// may not have pushed the answer past it: a fifteen-word note still has
     /// the restructuring floor, and a long note still scales.
-    func testTheWorkingRulesSectionFitsTheStructuredOutputCap() {
+    func testTheAgentPromptFitsTheStructuredOutputCap() {
         let style = RewriteStyle(.prompt)
         XCTAssertEqual(RewritePrompt.outputLimit(inputCharacters: 60, style: style), 3_600)
         XCTAssertEqual(RewritePrompt.outputLimit(inputCharacters: 1_000, style: style), 5_000)
         let sections = RewriteStyleID.prompt.template.components(separatedBy: "## ").count - 1
-        XCTAssertEqual(sections, 7, "the template asks for seven sections")
+        XCTAssertEqual(sections, 5, "the template asks for five sections")
     }
 }
 
