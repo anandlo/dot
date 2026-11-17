@@ -58,11 +58,33 @@ jobs:
             exit 1
           fi
 
+      # Hosted runners can report Reduce Motion on, which replaces the island's
+      # motion with a crossfade. Switch it off and print what the process reads;
+      # tests that measure the full motion skip by name if the write is refused.
+      - name: Use full motion
+        run: |
+          defaults write com.apple.universalaccess reduceMotion -bool false || true
+          swift -e 'import AppKit; print("accessibilityDisplayShouldReduceMotion =", NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)' || true
+
       # Serial: several tests composite offscreen windows through the window
       # server and time the island's springs, and parallel processes disturb
       # each other's measurements.
       - name: Swift Test
+        env:
+          DOT_CI_EVIDENCE_DIR: ${{ runner.temp }}/dot-evidence
         run: swift test
 
       - name: Build Application Bundle
         run: ./scripts/build.sh
+
+      # The pictures a failing render test judged are the only record of what the
+      # runner's display and system drew, and they cannot be reproduced on
+      # another machine. They are uploaded only when something failed.
+      - name: Upload render evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dot-evidence
+          path: ${{ runner.temp }}/dot-evidence
+          retention-days: 7
+          if-no-files-found: ignore

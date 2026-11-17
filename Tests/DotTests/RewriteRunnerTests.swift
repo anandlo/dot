@@ -921,11 +921,16 @@ final class RewriteRunnerTests: XCTestCase {
     func testAnAnswerOverTheCapIsCutAndTheStreamIsLeft() async {
         let input = "Send the report to Priya by 5 pm, and do not forget the appendix."
         let limit = cap(for: .formal, input: input)
-        // Longer than the cap of the retry as well, so the second attempt is
-        // cut in the same place and the note the person sees is the same one.
-        let text = answer(exactly: limit * 2 + 1)
+        // Ten times the first cap, so both attempts are cut with most of the
+        // answer still arriving: the first is cut at 1,600 characters and the
+        // retry at 3,200 of the 16,000 this holds. The count of deltas a stream
+        // delivered is read at the producer's yield rather than at the
+        // consumer's read, so the headroom is what keeps a loaded runner from
+        // making a drained stream look drained: 319 chunks here.
+        let text = answer(exactly: limit * 10)
+        let deltas = chunks(of: text, size: 40)
         let over = RewriteStreamSpy(
-            deltas: chunks(of: text, size: 40),
+            deltas: deltas,
             milliseconds: 1,
             holdsOpen: true
         )
@@ -939,20 +944,36 @@ final class RewriteRunnerTests: XCTestCase {
         )
 
         XCTAssertTrue(begin(runner: local, text: input))
-        let started = Date()
         local.choose(.formal, configuration: configuration)
         await expectTrue { local.card?.note == RewriteCard.truncationNote }
-        let elapsed = Date().timeIntervalSince(started)
-        XCTAssertLessThan(elapsed, 1, "the stream was drained instead of left at the cap")
-        // Leaving the stream is what cancels the service's producer. A loop
-        // that kept reading would still be inside `holdsOpen`'s sleep.
-        await expectTrue { !over.stopped.isEmpty }
-        if let reason = over.stopped.last?.1 {
+        XCTAssertEqual(
+            over.callCount,
+            2,
+            "the capped attempt was not asked again, so the retry's cut was not measured"
+        )
+        XCTAssertEqual(deltas.count, 400, "the premise: the answer is 400 chunks of forty")
+        // Leaving the stream is what cancels the service's producer: a loop
+        // that kept reading would still be inside `holdsOpen`'s sleep, and the
+        // producer would have sent the whole script by then. What is asserted is
+        // therefore the state of the two streams and not how long the answer
+        // took, which measures the machine.
+        await expectTrue { over.stopped.count == 2 }
+        XCTAssertEqual(
+            over.deliveredDeltas.count,
+            2,
+            "the answer was not streamed twice, so the count does not cover the retry"
+        )
+        for (index, delivered) in over.deliveredDeltas.enumerated() {
+            XCTAssertLessThan(
+                delivered,
+                deltas.count,
+                "stream \(index + 1) was drained past the cap instead of left at it: it delivered all \(delivered) deltas"
+            )
+        }
+        for reason in over.stopped.map({ $0.1 }) {
             guard case .cancelled = reason else {
-                return XCTFail("the stream finished instead of being left at the cap")
+                return XCTFail("a stream finished instead of being left at the cap")
             }
-        } else {
-            XCTFail("the stream was never stopped")
         }
         XCTAssertEqual(local.card?.versions.count, 1, "a capped answer became a version")
         XCTAssertEqual(fields.writes, [])

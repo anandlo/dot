@@ -236,6 +236,51 @@ enum WindowCapture {
         }
     }
 
+    /// Skips the test when a raster of a hosted view cannot be measured.
+    ///
+    /// `cacheDisplay` draws a layer-backed hosting view through the backing
+    /// store of the window it is in, and a window on a display that is not
+    /// Retina has one pixel per point: the picture is then upscaled into the
+    /// two-pixels-per-point bitmap the measurements are written for, its glow
+    /// smears across the gap between two dots and the numbers belong to the
+    /// display rather than to the code. `NSScreen.main` answers for a raster
+    /// that is drawn without a window.
+    ///
+    /// - Parameter window: the window the view was rasterised in, or `nil` when
+    ///   it was rasterised with no window and the display's own scale applies.
+    /// - Throws: `XCTSkip` naming the scale the backing store has.
+    @MainActor
+    static func requireRetinaBacking(_ window: NSWindow? = nil) throws {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        if scale != 2 {
+            throw XCTSkip(
+                "the offscreen window's backing store is \(format(scale)) px per point and this "
+                    + "raster is measured at 2; a display that is not Retina cannot provide it"
+            )
+        }
+    }
+
+    /// Skips the test when the session draws a reduced-motion card.
+    ///
+    /// The island's appearance is a spring that pours the card out of the notch,
+    /// and a session that reports Reduce Motion draws a crossfade in place
+    /// instead (`HUD.advanceAppearance`), which has no shape to measure. A test
+    /// that measures the full motion reads the system setting unless it pins an
+    /// override, so it says why it cannot run rather than measuring the fade.
+    ///
+    /// - Throws: `XCTSkip` when the system reports Reduce Motion.
+    @MainActor
+    static func requireFullMotion() throws {
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            throw XCTSkip("the system reduces motion, and this test measures the full motion")
+        }
+    }
+
+    /// A scale as it should read in a message: "1", not "1.0".
+    private static func format(_ scale: CGFloat) -> String {
+        scale == scale.rounded() ? String(Int(scale)) : String(Double(scale))
+    }
+
     /// The one call that returns the composited window, out of the framework.
     private static func windowImage(_ window: CGWindowID) -> CGImage? {
         typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?

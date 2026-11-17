@@ -441,6 +441,7 @@ final class HUDEmergenceTests: XCTestCase {
     /// are the same moment drawn with the content settled and with it gone; they
     /// can only be the same picture if the arrival is holding the words back.
     func testTheCardShowsNoWordsBeforeItHasArrived() throws {
+        try WindowCapture.requireFullMotion()
         XCTAssertEqual(HUDEmergence.contentOpacity(content: 1, progress: 0.5), 0)
         XCTAssertEqual(HUDEmergence.contentOpacity(content: 1, progress: 0.85), 0)
         XCTAssertEqual(HUDEmergence.contentOpacity(content: 1, progress: 1), 1, accuracy: 0.0001)
@@ -453,6 +454,10 @@ final class HUDEmergenceTests: XCTestCase {
         )
         let resting = try Self.render(emergence: 1, content: 1, fixture: .recording, material: .black)
         let bare = try Self.render(emergence: 1, content: 0, fixture: .recording, material: .black)
+        Self.writeCIFrame(arriving, named: "words-half-arrived")
+        Self.writeCIFrame(nothing, named: "words-half-nothing")
+        Self.writeCIFrame(resting, named: "words-resting")
+        Self.writeCIFrame(bare, named: "words-resting-bare")
         XCTAssertFalse(
             Self.identical(resting, bare),
             "the rested card draws the same picture with and without its words, so the check is blind"
@@ -770,7 +775,11 @@ extension HUDEmergenceTests {
     ///   - view: what to draw.
     ///   - size: the size to draw it at.
     /// - Returns: the bitmap.
-    static func rasterise(_ view: some View, size: CGSize) throws -> NSBitmapImageRep {
+    static func rasterise(
+        _ view: some View,
+        size: CGSize,
+        requiresRetinaBacking: Bool = false
+    ) throws -> NSBitmapImageRep {
         _ = NSApplication.shared
         let host = NSHostingView(
             rootView: view
@@ -784,6 +793,7 @@ extension HUDEmergenceTests {
         window.orderFrontRegardless()
         host.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
+        if requiresRetinaBacking { try WindowCapture.requireRetinaBacking(window) }
         let bitmap = try XCTUnwrap(
             NSBitmapImageRep(
                 bitmapDataPlanes: nil,
@@ -1007,7 +1017,18 @@ extension HUDEmergenceTests {
 
     /// Every frame of the arrival moves, and none of them jumps.
     func testEveryFrameOfTheArrivalMoves() throws {
+        try WindowCapture.requireFullMotion()
         let motion = try motionFrames(presenting: true)
+        let restFrame = motion.samples.firstIndex { abs($0.emergence - 1) <= 0.001 }
+            ?? (motion.frames.count - 1)
+        if Self.ciEvidence != nil {
+            for (index, frame) in motion.frames.enumerated() {
+                Self.writeCIFrame(frame, named: String(format: "arrival-%02d", index))
+            }
+            Self.writeCIFrame(motion.frames[restFrame], named: "arrival-rest")
+            Self.describe(motion.frames[min(1, motion.frames.count - 1)], as: "arrival-01")
+            Self.describe(motion.frames[restFrame], as: "arrival-rest")
+        }
         try assertTheMotion(
             frames: motion.frames,
             pieces: motion.pieces,
@@ -1020,6 +1041,7 @@ extension HUDEmergenceTests {
 
     /// Every frame of the departure moves, and none of them jumps.
     func testEveryFrameOfTheDepartureMoves() throws {
+        try WindowCapture.requireFullMotion()
         let motion = try motionFrames(presenting: false)
         try assertTheMotion(
             frames: motion.frames,
@@ -1196,6 +1218,14 @@ extension HUDEmergenceTests {
     func testTheRestedCardsAreThePixelsTheCardAlwaysDrew() throws {
         let recording = Self.hash(try Self.cardPicture(fixture: .recording))
         let transcript = Self.hash(try Self.cardPicture(fixture: .transcript))
+        if Self.ciEvidence != nil {
+            let recordingCard = try Self.rasterise(Self.cardView(fixture: .recording), size: Fixture.recording.size)
+            let transcriptCard = try Self.rasterise(Self.cardView(fixture: .transcript), size: Fixture.transcript.size)
+            Self.writeCIFrame(recordingCard, named: "rested-recording")
+            Self.writeCIFrame(transcriptCard, named: "rested-transcript")
+            Self.describe(recordingCard, as: "rested-recording")
+            Self.describe(transcriptCard, as: "rested-transcript")
+        }
         print("REST recording \(recording)")
         print("REST transcript \(transcript)")
         XCTAssertEqual(
@@ -1216,9 +1246,14 @@ extension HUDEmergenceTests {
     /// - Parameter fixture: what the card shows.
     /// - Returns: the card's PNG bytes.
     static func cardPicture(fixture: Fixture) throws -> Data {
+        png(try rasterise(cardView(fixture: fixture), size: fixture.size, requiresRetinaBacking: true))
+    }
+
+    /// The rested card's own view, at the size it rests at.
+    static func cardView(fixture: Fixture) -> some View {
         let model = model(fixture: fixture, material: .black, emergence: 1, content: 1)
         let size = fixture.size
-        let view = HUDView(
+        return HUDView(
             model: model,
             showsShadow: false,
             animated: false,
@@ -1226,7 +1261,6 @@ extension HUDEmergenceTests {
             emergence: placement(notched).scene
         )
         .frame(width: size.width, height: size.height)
-        return png(try rasterise(view, size: size))
     }
 }
 
@@ -1411,6 +1445,56 @@ extension HUDEmergenceTests {
     /// Writes an image as a PNG.
     static func writeImage(_ image: CGImage, to url: URL) {
         writePNG(NSBitmapImageRep(cgImage: image), to: url)
+    }
+
+    /// Where a CI run puts the pictures it judged, when it asks for them.
+    ///
+    /// The runner's own raster is the only picture of a failure there is: the
+    /// frames cannot be reproduced on another machine, so a failing run writes
+    /// what it measured for the person reading the log.
+    static var ciEvidence: URL? {
+        ProcessInfo.processInfo.environment["DOT_CI_EVIDENCE_DIR"].map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        }
+    }
+
+    /// Writes a frame into the CI evidence directory, when one is asked for.
+    static func writeCIFrame(_ bitmap: NSBitmapImageRep, named name: String) {
+        guard let directory = ciEvidence else { return }
+        writePNG(bitmap, to: directory.appendingPathComponent("\(name).png"))
+    }
+
+    /// One line saying what a frame's picture is: its size, its darkest and
+    /// brightest channel value, and the SHA-256 of its PNG.
+    ///
+    /// The hash is what the pinned pictures are compared by, and the range says
+    /// whether anything was drawn at all, which a byte-identical sequence of
+    /// frames leaves in doubt.
+    static func describe(_ bitmap: NSBitmapImageRep, as name: String) {
+        var low = 255
+        var high = 0
+        if let data = bitmap.bitmapData, bitmap.samplesPerPixel >= 3 {
+            for y in 0 ..< bitmap.pixelsHigh {
+                let row = y * bitmap.bytesPerRow
+                for x in 0 ..< bitmap.pixelsWide {
+                    let index = row + x * bitmap.samplesPerPixel
+                    for channel in 0 ..< 3 {
+                        let value = Int(data[index + channel])
+                        low = min(low, value)
+                        high = max(high, value)
+                    }
+                }
+            }
+        }
+        print(String(
+            format: "EMERGENCE frame %@ %dx%d px, channels %d to %d, sha256 %@",
+            name,
+            bitmap.pixelsWide,
+            bitmap.pixelsHigh,
+            low,
+            high,
+            hash(png(bitmap))
+        ))
     }
 
     /// Writes a bitmap as a PNG.

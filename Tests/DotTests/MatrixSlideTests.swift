@@ -1176,6 +1176,7 @@ extension MatrixSlideTests {
         window.orderFrontRegardless()
         hosting.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
+        try WindowCapture.requireRetinaBacking(window)
         let bitmap = try XCTUnwrap(NSBitmapImageRep(
             bitmapDataPlanes: nil,
             pixelsWide: Int(size.width) * scale,

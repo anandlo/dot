@@ -47,6 +47,9 @@ final class MatrixRenderTests: XCTestCase {
     private static let tileHeight: CGFloat = 22
 
     func testTheMatrixDotsStaySeparateAndShine() throws {
+        // The pane is drawn with no window, so the scale of the display this
+        // process runs on is the scale it renders at.
+        try WindowCapture.requireRetinaBacking()
         let quiet = Self.frames(centre: 0.40, spread: 0.10)
         let loudVoice = Self.frames(centre: 0.77, spread: 0.15)
         let liveView = HUDWaveform(

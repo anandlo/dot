@@ -22,6 +22,7 @@ final class RewriteStreamSpy: ChatProvider, @unchecked Sendable {
     private var toolLists: [[ChatToolSpec]] = []
     private var models: [String] = []
     private var terminations: [(Date, AsyncThrowingStream<ChatEvent, Error>.Continuation.Termination)] = []
+    private var deliveries: [Int] = []
 
     init(
         deltas: [String],
@@ -63,6 +64,19 @@ final class RewriteStreamSpy: ChatProvider, @unchecked Sendable {
         return models.last
     }
 
+    /// How many deltas each stream delivered, in the order the streams were asked
+    /// for.
+    ///
+    /// A stream the consumer left is cancelled before its producer has sent
+    /// everything, so its count is short of the script; a stream that was read
+    /// to the end counts every delta it was given. The test reads it instead of
+    /// timing the answer, which measures the machine rather than the cap.
+    var deliveredDeltas: [Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        return deliveries
+    }
+
     /// Every stream the consumer stopped, with when it happened.
     var stopped: [(Date, AsyncThrowingStream<ChatEvent, Error>.Continuation.Termination)] {
         lock.lock()
@@ -79,6 +93,8 @@ final class RewriteStreamSpy: ChatProvider, @unchecked Sendable {
         conversations.append(messages)
         toolLists.append(tools)
         models.append(model)
+        deliveries.append(0)
+        let index = deliveries.count - 1
         let reply = self.reply
         lock.unlock()
         return AsyncThrowingStream { continuation in
@@ -89,6 +105,7 @@ final class RewriteStreamSpy: ChatProvider, @unchecked Sendable {
                     }
                     if Task.isCancelled { break }
                     continuation.yield(.textDelta(delta))
+                    self.lock.withLock { self.deliveries[index] += 1 }
                 }
                 if reply.holdsOpen {
                     try? await Task.sleep(for: .seconds(30))

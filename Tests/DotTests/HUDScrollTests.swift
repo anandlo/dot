@@ -396,6 +396,7 @@ final class HUDScrollTests: XCTestCase {
     /// while the card is still arriving, and the rail is read once it has
     /// rested.
     func testASmallWheelBeforeTheCardRestsSurvivesTheOpeningCorrection() throws {
+        try WindowCapture.requireFullMotion()
         let card = overflowingCard()
         let hud = HUD(offscreen: true)
         hud.dwell = 60
@@ -465,6 +466,7 @@ final class HUDScrollTests: XCTestCase {
     /// fraction of a point into its content, inside the window the opening
     /// residue occupies — and proves the correction does not pull it back.
     func testAVersionSelectionDuringTheEntranceSurvivesTheOpeningCorrection() throws {
+        try WindowCapture.requireFullMotion()
         var moves = 0
         var card = overflowingCard()
         card.append(id: 1, style: card.choices[4], text: "A shorter version of the words.", warning: nil)
@@ -487,8 +489,22 @@ final class HUDScrollTests: XCTestCase {
             spin(for: 0.4)
         }
 
-        let rail = try XCTUnwrap(waitForRail(hud), "the card's style rail was not found")
-        let clip = rail.contentView
+        // The appearance is moved by hand to the middle of its entrance, and no
+        // run-loop turn is let in between: the moment this test is about is a
+        // state of the card, and a machine that delivers the whole arrival in one
+        // turn steps over it. 0.200 s of the HUD's own clock is the card half way
+        // out of the notch, with both springs still moving.
+        for _ in 0 ..< 200 { hud.debugAdvanceAppearance(by: 0.001) }
+        XCTAssertLessThan(
+            hud.debugPresence,
+            0.99,
+            "the premise: the card is already \(hud.debugPresence) present at 0.200 s"
+        )
+        XCTAssertLessThan(
+            hud.debugContent,
+            0.99,
+            "the premise: the card's content is already \(hud.debugContent) settled at 0.200 s"
+        )
         XCTAssertFalse(
             hud.debugAppearanceAtRest,
             "the card arrived before the version was chosen, so the choice did not meet the appearance"
@@ -496,23 +512,33 @@ final class HUDScrollTests: XCTestCase {
         hud.actions.nextVersion?()
         XCTAssertEqual(moves, 1, "the next-version action did not run")
 
-        // Let the row make room for the selected version and the appearance
-        // come within a hair of its end, so what is left of the transform's
-        // residue is smaller than the correction's window. The rail is then
-        // placed inside that window while the springs are still moving: the
-        // selected version is the only thing that can keep the correction off.
-        XCTAssertTrue(
-            waitUntil(timeout: 3) {
-                hud.debugPresence > 0.99 && hud.debugContent > 0.99
-            },
-            "the card's appearance never came close to its end"
+        // The row the action asked for is laid out on the run-loop turns that
+        // follow, and the card scrolls it to the style the chosen version
+        // carries. That reveal is also the last thing that moves the rail, so
+        // the placement is repeated until it holds: the placement lands inside
+        // the window the opening correction is defined over, which is where the
+        // appearance's residue leaves a rail placed near the start, and it has
+        // held once two turns read inside that window. Bounded: a rail that
+        // never holds its position is reported rather than read.
+        let rail = try XCTUnwrap(waitForRail(hud), "the card's style rail was not found")
+        let clip = rail.contentView
+        var held = 0
+        for _ in 0 ..< 6 where held < 2 {
+            clip.scroll(to: NSPoint(x: 0.5, y: 0))
+            rail.reflectScrolledClipView(clip)
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.02))
+            hud.debugRootView.layoutSubtreeIfNeeded()
+            held = abs(clip.bounds.origin.x) <= 1.5 ? held + 1 : 0
+        }
+        XCTAssertEqual(
+            held,
+            2,
+            "the rail would not hold the position it was placed at: it read \(clip.bounds.origin.x)"
         )
         XCTAssertFalse(
             hud.debugAppearanceAtRest,
             "the card settled before the rail was placed, so the choice did not meet the appearance"
         )
-        clip.scroll(to: NSPoint(x: 0.5, y: 0))
-        rail.reflectScrolledClipView(clip)
 
         XCTAssertTrue(
             waitForRailToRest(hud, rail),
@@ -538,6 +564,7 @@ final class HUDScrollTests: XCTestCase {
     /// the springs are still moving, and proves the style it revealed is still
     /// on the rail once the appearance has stopped.
     func testAnEarlyArrowClickSurvivesTheOpeningCorrection() throws {
+        try WindowCapture.requireFullMotion()
         var moves = 0
         var card = overflowingCard()
         card.append(id: 1, style: card.choices[4], text: "A shorter version of the words.", warning: nil)
