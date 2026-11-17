@@ -668,9 +668,8 @@ enum UIPreview {
             setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
             AssistantPage.setRewriting(false, in: &config.assistant)
         }
-        // The agent prompt's own card: its switch and its prompt editor, whose
-        // template now carries the working rules the model weaves into the
-        // task.
+        // The agent prompt's own card: its switch, its prompt editor, and the
+        // ruling that lets no section hold a detail the speaker did not give.
         try render(
             "assistant-rewrite",
             tab: 5,
@@ -680,6 +679,38 @@ enum UIPreview {
         ) { config in
             setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
             config.assistant.rewrite.custom = customStyles
+        }
+        // The standing rules, off and on. Off with text stored proves the field
+        // is hidden rather than cleared: the setting is kept and the switch is
+        // what decides whether the block is delivered. On draws the six-line
+        // field under the Agent prompt's own editor.
+        try render(
+            "assistant-rewrite-standing-rules-off",
+            tab: 5,
+            keys: [AssistantSettings.defaultProviderID],
+            connection: .connected,
+            models: reasoningModels,
+            style: .builtIn(.prompt)
+        ) { config in
+            setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
+            config.assistant.rewrite.setStandingRules(
+                "## House rules\n- Run the build and the tests before you report.\n- Never touch main."
+            )
+            config.assistant.rewrite.standingRulesEnabled = false
+        }
+        try render(
+            "assistant-rewrite-standing-rules-on",
+            tab: 5,
+            keys: [AssistantSettings.defaultProviderID],
+            connection: .connected,
+            models: reasoningModels,
+            style: .builtIn(.prompt)
+        ) { config in
+            setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
+            config.assistant.rewrite.setStandingRules(
+                "## House rules\n- Run the build and the tests before you report.\n- Never touch main."
+            )
+            config.assistant.rewrite.standingRulesEnabled = true
         }
         // Concise and a custom style, which is what proves the working rules
         // are scoped to the agent prompt and the editor belongs to one style.

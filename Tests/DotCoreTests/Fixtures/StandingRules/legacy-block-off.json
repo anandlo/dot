@@ -1,0 +1,13 @@
+{
+  "assistant": {
+    "rewrite": {
+      "enabled": false,
+      "styles": ["prompt", "concise", "plain", "formal"],
+      "custom": [{"id": "haiku", "title": "Haiku", "instruction": "Rewrite as a haiku."}],
+      "workingRulesEnabled": false,
+      "workingRules": "## Working rules\n- Mine.",
+      "builtInInstructions": {"formal": "Be brief."},
+      "deletedBuiltIns": ["casual"]
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "assistant": {
+    "rewrite": {
+      "enabled": true,
+      "styles": [
+        "prompt",
+        "concise"
+      ],
+      "builtInInstructions": {
+        "prompt": "Write the task as a checklist."
+      }
+    }
+  }
+}

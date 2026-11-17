@@ -769,8 +769,7 @@ final class SettingsPresentationTests: XCTestCase {
         XCTAssertTrue(textViews(in: host).isEmpty, "a style that is not there was drawn")
     }
 
-    /// The field follows the selected style: its switch, its prompt editor and
-    /// its rules.
+    /// The field follows the selected style: its switch and its prompt editor.
     func testTheStylesCardDrawsTheChosenStylesOwnControls() throws {
         var config = readyConfig(providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
         config.assistant.rewrite.custom = [
@@ -784,8 +783,8 @@ final class SettingsPresentationTests: XCTestCase {
         )
         XCTAssertNotNil(textView(label: "Agent prompt prompt", in: prompt))
         XCTAssertNil(
-            textView(label: "Working rules", in: prompt),
-            "the page still draws a working-rules field"
+            textView(label: "Standing rules", in: prompt),
+            "the page drew a standing-rules field with the switch off"
         )
 
         let concise = assistantHost(
@@ -795,6 +794,10 @@ final class SettingsPresentationTests: XCTestCase {
         )
         XCTAssertNotNil(textView(label: "Concise prompt", in: concise))
         XCTAssertNil(textView(label: "Agent prompt prompt", in: concise))
+        XCTAssertNil(
+            textView(label: "Standing rules", in: concise),
+            "a style that is not the Agent prompt drew the standing rules"
+        )
 
         let custom = assistantHost(
             config,
@@ -806,15 +809,15 @@ final class SettingsPresentationTests: XCTestCase {
             textView(label: "Style instruction", in: custom)?.string,
             "Rewrite as a haiku."
         )
-        XCTAssertNil(textView(label: "Working rules", in: custom))
+        XCTAssertNil(textView(label: "Standing rules", in: custom))
     }
 
-    /// The agent prompt is one editor, and no style carries a second block.
+    /// The agent prompt is one editor, and the rules the model reads are in it.
     ///
-    /// The working rules live inside the prompt's template now: the page must
-    /// offer the text the model is given and nothing that appends to its
-    /// answer.
-    func testTheAgentPromptDrawsOneEditorAndNoWorkingRulesControls() throws {
+    /// The template asks for a task built only from what the speaker said, so
+    /// the page offers the text the model is given and nothing that asks the
+    /// model for more.
+    func testTheAgentPromptDrawsOneEditorAndNoRulesRequest() throws {
         let config = readyConfig(
             providerID: AssistantSettings.defaultProviderID,
             model: "gpt-4o"
@@ -825,14 +828,68 @@ final class SettingsPresentationTests: XCTestCase {
             style: .builtIn(.prompt)
         )
         let editors = textViews(in: host)
-        XCTAssertEqual(editors.count, 1, "the agent prompt card drew more than one editor")
+        XCTAssertEqual(
+            editors.count,
+            1,
+            "the agent prompt card drew an editor the switch did not ask for"
+        )
         XCTAssertEqual(editors.first?.accessibilityLabel(), "Agent prompt prompt")
         XCTAssertEqual(editors.first?.string, RewriteStyleID.prompt.template)
         XCTAssertTrue(
-            editors.first?.string.contains("## Working rules") == true,
-            "the prompt the page edits is not the one that asks for the rules"
+            editors.first?.string.contains("Add nothing the speaker did not say") == true,
+            "the prompt the page edits is not the one that forbids additions"
         )
         XCTAssertNil(textView(label: "Working rules", in: host))
+    }
+
+    /// The standing rules are drawn under the Agent prompt's editor, and only
+    /// while the switch is on.
+    ///
+    /// The field is the same editor the prompt uses, six lines tall, and it
+    /// shows the text the file holds. The switch writes the stored field, so
+    /// the block the next rewrite appends is the block the page shows.
+    func testTheStandingRulesFieldFollowsTheSwitch() throws {
+        var config = readyConfig(providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
+        config.assistant.rewrite.setStandingRules("## House rules\n- Run the build.")
+        config.assistant.rewrite.standingRulesEnabled = false
+        XCTAssertNil(
+            textView(
+                label: AssistantPage.standingRulesTitle,
+                in: assistantHost(
+                    config,
+                    keyed: [AssistantSettings.defaultProviderID],
+                    style: .builtIn(.prompt)
+                )
+            ),
+            "the field was drawn with the switch off"
+        )
+
+        config.assistant.rewrite.standingRulesEnabled = true
+        let on = assistantHost(
+            config,
+            keyed: [AssistantSettings.defaultProviderID],
+            style: .builtIn(.prompt)
+        )
+        let field = try XCTUnwrap(
+            textView(label: AssistantPage.standingRulesTitle, in: on),
+            "the field was not drawn with the switch on"
+        )
+        XCTAssertEqual(field.string, "## House rules\n- Run the build.")
+        XCTAssertEqual(
+            AssistantPage.standingRulesEditorHeight,
+            AssistantPage.promptEditorHeight(lines: 6),
+            "the standing rules field is not six lines tall"
+        )
+        XCTAssertLessThan(AssistantPage.standingRulesEditorHeight, AssistantPage.promptEditorHeight)
+        XCTAssertEqual(
+            AssistantPage.standingRulesTitle,
+            "Standing rules",
+            "the switch lost its title"
+        )
+        XCTAssertEqual(
+            AssistantPage.standingRulesHelp,
+            "Dot adds this text word for word under every Agent prompt. The model never sees or writes it."
+        )
     }
 
     /// An edit to a built-in prompt is stored, and the template itself is not.

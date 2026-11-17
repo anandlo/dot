@@ -1,0 +1,1 @@
+Okay so um, the settings page, the assistant one, when I click a style chip the card sort of jumps, right, it doesn't, it doesn't animate, and I want it to, like, settle instead of snapping. So yeah, can you look at the card in RewriteCard.swift and make the chip selection animate, you know, the way the other cards do, um, same spring as the rest of the app.

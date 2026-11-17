@@ -1,0 +1,10 @@
+{
+  "assistant": {
+    "rewrite": {
+      "enabled": true,
+      "styles": ["prompt", "concise", "formal"],
+      "workingRulesEnabled": true,
+      "workingRules": "## Working rules\n- Read the relevant code before you change it.\n- Keep changes within the scope of this request.\n- Ask before adding a dependency or changing a public interface.\n- Run the build and the tests, and report the results.\n- If something is unclear, ask instead of guessing."
+    }
+  }
+}

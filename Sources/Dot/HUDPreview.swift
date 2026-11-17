@@ -109,8 +109,9 @@ enum HUDPreview {
     /// The prompt an applied Agent prompt render shows.
     ///
     /// It is a plausible answer to the transcript render: the sections the
-    /// style asks for, with the one detail the speaker did not give written as
-    /// the style's own [missing: what] line.
+    /// style asks for, holding only what the transcript said. A section the
+    /// speaker gave nothing for is not drawn, and no detail is invented to fill
+    /// one, which is what the style asks of the model.
     static let promptRewrite = """
     ## Goal
     Record, transcribe and paste the words back where the cursor was.
@@ -125,12 +126,6 @@ enum HUDPreview {
 
     ## Constraints
     Do not lose the words when the paste is refused.
-
-    ## Done when
-    [missing: how to verify]
-
-    ## Open questions
-    [missing: which applications were tested]
     """
 
     /// The shortcut the launch render shows.
@@ -502,9 +497,9 @@ enum HUDPreview {
 
     /// The Agent prompt render's words.
     ///
-    /// The working rules are part of the prompt the model writes, so the render
-    /// is the model's output as it stands rather than that output with a second
-    /// block glued under it.
+    /// The render is the model's own answer. Dot's standing rules are a block
+    /// the person writes and the model never sees, and they are off in a fresh
+    /// configuration, so the still shows the answer as the style produced it.
     private static var promptText: String {
         promptRewrite
     }
