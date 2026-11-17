@@ -128,37 +128,39 @@ final class DotSelectEndScrollTests: XCTestCase {
         XCTAssertEqual(card.model.offset, 400, accuracy: 0.5, "the card did not measure the wheel")
     }
 
-    /// A card that is still opening does not place an end, and places it when
-    /// the opening finishes.
-    func testAnEndWaitsForTheOpeningToFinish() {
+    /// An end placed on a card that has just been measured is final: the next
+    /// measurement and the next layout pass find the list where they left it.
+    func testAnEndIsNotMovedByTheNextMeasurement() {
         let card = makeCard(content: 848)
         defer { close(card) }
 
-        card.model.beginOpening()
         card.model.requestEnd(.bottom)
+        XCTAssertEqual(card.scroll.contentView.bounds.origin.y, 538, accuracy: 0.5)
+
+        card.reporter.publish()
+        card.scroll.layoutSubtreeIfNeeded()
+
         XCTAssertEqual(
             card.scroll.contentView.bounds.origin.y,
-            0,
+            538,
             accuracy: 0.5,
-            "the end was placed while the card was opening"
+            "the list moved after the end was placed"
         )
-        XCTAssertEqual(card.model.pendingEnd, .bottom)
-
-        card.model.finishOpening()
-        XCTAssertEqual(card.scroll.contentView.bounds.origin.y, 538, accuracy: 0.5)
-        XCTAssertNil(card.model.pendingEnd)
+        XCTAssertEqual(card.model.offset, 538, accuracy: 0.5)
     }
 
-    /// An end the card was still waiting to place is dropped when a newer target
-    /// arrives, even if the opening finishes afterwards.
-    func testACancelledEndIsNotPlacedWhenTheOpeningFinishes() {
-        let card = makeCard(content: 848)
+    /// An end the card was asked for while it had nothing to measure is not
+    /// placed once it has a document: a cancel is the whole answer.
+    func testACancelledEndIsNeverPlaced() {
+        let card = makeCard(content: 0)
         defer { close(card) }
 
-        card.model.beginOpening()
         card.model.requestEnd(.bottom)
+        XCTAssertEqual(card.model.pendingEnd, .bottom, "the card took an end it could not place")
         card.model.cancelPendingEnd()
-        card.model.finishOpening()
+
+        card.scroll.documentView?.frame.size.height = 848
+        card.reporter.publish()
 
         XCTAssertEqual(card.scroll.contentView.bounds.origin.y, 0, accuracy: 0.5)
         XCTAssertNil(card.model.pendingEnd)
