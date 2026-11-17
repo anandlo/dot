@@ -48,6 +48,8 @@ public struct GroqProvider: Provider {
     public let responseFormat: String
     public let timestampsGranularity: String?
     public let timeout: TimeInterval
+    /// How long the one request that proves the key may take.
+    public let verificationTimeout: TimeInterval
     private let session: URLSession
 
     public var requiresCredential: Bool { true }
@@ -61,7 +63,8 @@ public struct GroqProvider: Provider {
         responseFormat: String = "json",
         timestampsGranularity: String? = nil,
         timeout: TimeInterval = 60,
-        session: URLSession = GroqProvider.makeSession()
+        session: URLSession = GroqProvider.makeSession(),
+        verificationTimeout: TimeInterval = CredentialVerifier.timeout
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
@@ -71,6 +74,7 @@ public struct GroqProvider: Provider {
         self.timestampsGranularity = timestampsGranularity
         self.timeout = timeout
         self.session = session
+        self.verificationTimeout = verificationTimeout
     }
 
     public static func makeSession() -> URLSession {
@@ -226,5 +230,28 @@ public struct GroqProvider: Provider {
             }
         }
         return ProviderErrorText.sanitized(String(data: data, encoding: .utf8)) ?? "Unknown Groq error"
+    }
+}
+
+extension GroqProvider: CredentialVerifying {
+    /// The models request that proves the key.
+    ///
+    /// Groq documents `GET https://api.groq.com/openai/v1/models` with
+    /// `Authorization: Bearer <key>`; the base URL is the configuration's, so an
+    /// endpoint that was pointed elsewhere is checked where it points.
+    func credentialRequest() -> URLRequest? {
+        guard let apiKey = CredentialVerifier.credential(apiKey) else { return nil }
+        return CredentialVerifier.request(
+            url: modelsURL,
+            headers: ["Authorization": "Bearer \(apiKey)"],
+            timeout: verificationTimeout
+        )
+    }
+
+    public func verifyCredentials() async -> CredentialCheck {
+        guard let request = credentialRequest() else {
+            return CredentialVerifier.missingKey(displayName)
+        }
+        return await CredentialVerifier.check(request, session: session, providerID: id)
     }
 }

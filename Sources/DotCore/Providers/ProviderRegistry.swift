@@ -305,6 +305,45 @@ public enum ProviderRegistry {
         return available
     }
 
+    /// Asks a provider's service whether it accepts a key.
+    ///
+    /// The provider is built from the key the caller already resolved, so this
+    /// never touches the Keychain: the caller is the one that knows how to read
+    /// a key off the main thread. A provider that cannot be built from the
+    /// stored settings answers with the reason instead of a request.
+    ///
+    /// - Parameters:
+    ///   - id: the provider id.
+    ///   - config: the configuration the provider's settings come from.
+    ///   - apiKey: the key, when the provider has one.
+    /// - Returns: what the provider's own service said about the key.
+    public static func verifyCredentials(
+        id: String,
+        config: DotConfig,
+        apiKey: String?
+    ) async -> CredentialCheck {
+        let seeded = CredentialCache(
+            reader: { providerID in
+                guard providerID == id, let apiKey, !apiKey.isEmpty else { return .missing }
+                return .key(apiKey)
+            },
+            logsReads: false
+        )
+        let provider: any Provider
+        do {
+            provider = try makeProvider(id: id, config: config, credentials: seeded)
+        } catch {
+            if case ProviderRegistryError.unknownProvider = error {
+                return .unavailable(error.localizedDescription)
+            }
+            return .needsSetup(error.localizedDescription)
+        }
+        guard let verifying = provider as? any CredentialVerifying else {
+            return .unavailable("That service cannot check its key.")
+        }
+        return await verifying.verifyCredentials()
+    }
+
     /// The API key of a provider, from the session cache.
     ///
     /// - Parameters:

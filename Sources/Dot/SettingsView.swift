@@ -11,7 +11,14 @@ import SwiftUI
 /// surface in the app.
 @MainActor
 struct SettingsView: View {
+    /// The configuration this window draws.
+    ///
+    /// It is the store's published value, so a write through any control is
+    /// seen by the view: the page redraws and `.onChange(of: config)` saves and
+    /// applies the change once.
     @Binding private var config: DotConfig
+    /// The store `config` is read from and written to.
+    @ObservedObject private var store: ConfigStore
     /// The providers that can be chosen.
     private let providers: [MenuProvider]
     /// The page the caller asked for. A later `show(tab:)` can move the
@@ -25,8 +32,6 @@ struct SettingsView: View {
     private let onDeleteAPIKey: (String) -> String?
     /// Deletes all API keys for all providers from Keychain.
     private let onDeleteAllAPIKeys: () -> String?
-    /// Asks a provider whether it can transcribe right now.
-    private let onTest: (String) async -> Bool
     /// Opens the shortcut recorder for the record shortcut.
     private let onChangeShortcut: () -> Void
     /// Opens the shortcut recorder for the paste shortcut.
@@ -42,12 +47,22 @@ struct SettingsView: View {
     /// The model list a render draws, so the picker can be looked at without a
     /// network.
     private let modelPreview: [AvailableModel]?
+    /// Whether the page may ask the service while its host is headless.
+    ///
+    /// A headless host has no window and no keyboard: by default the page
+    /// draws the state it was handed and touches neither the Keychain nor the
+    /// network. A caller that supplies its own ``SpeechCredentialChecks``, with
+    /// caches that answer without either, can let the page ask; that is how the
+    /// triggers behind the controls are measured.
+    private let allowsOffscreenChecks: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.settingsHeadless) private var headless
     @Environment(\.settingsVersionOverride) private var versionOverride
     @Environment(\.settingsDefaultInputUID) private var defaultInputUIDOverride
     @Environment(\.settingsHeightOverride) private var heightOverride
+    /// The credential state a render draws, in place of a live check.
+    @Environment(\.settingsCredentialPreview) private var credentialPreview
 
     @State private var selected: Page
     @State private var hoveredPage: Page?
@@ -55,26 +70,17 @@ struct SettingsView: View {
     /// pill moving down the list instead of one pill vanishing and another
     /// appearing.
     @Namespace private var sidebarPillSpace
-    /// Counts the writes this view makes to its own configuration.
-    ///
-    /// `config` is a binding whose value lives on a plain property outside
-    /// SwiftUI, so a write through it changes nothing the view is observing and
-    /// the tree is only rebuilt when something else happens to rebuild it -
-    /// measured at one and three quarter seconds for a press whose application
-    /// took forty milliseconds. Reading this counter in the body makes the view
-    /// a participant in its own change again.
-    @State private var revision = 0
     @State private var microphoneDevices: [MicrophoneDevice] = []
     /// The UID the system default microphone resolves to, read when the window
     /// appears. A calibration is keyed by device, and "system default" names
     /// whichever device is first today.
     @State private var defaultInputUID: String?
-    @State private var primaryKey = ""
-    @State private var keyStatus: KeyStatus?
+    /// The text of the key field, shared with the check a pick starts.
+    @StateObject private var keyField: KeyField
     @State private var savedProviders: Set<String> = []
     @State private var connectingPrimary = false
-    @State private var testing = false
-    @State private var testResult: TestResult?
+    /// The automatic check behind the status label beside the service picker.
+    @StateObject private var credentials: SpeechCredentialChecks
     @State private var launchAtLogin = LaunchAtLogin.isEnabled
     @State private var launchError: String?
     @State private var liveDwellSeconds: Double = HUDDwell.defaultSeconds
@@ -86,7 +92,7 @@ struct SettingsView: View {
     /// Creates the settings.
     ///
     /// - Parameters:
-    ///   - config: The configuration every control reads and writes.
+    ///   - store: The configuration every control reads and writes.
     ///   - providers: The providers the menu currently knows about.
     ///   - tab: The page to open: 0 General, 1 Speech to text, 2 Shortcuts,
     ///     3 Appearance, 4 About, 5 AI rewrite. The retired 6 and 7 open AI
@@ -95,30 +101,39 @@ struct SettingsView: View {
     ///   - onSetAPIKey: Writes a key and returns an error, or `nil`.
     ///   - onDeleteAPIKey: Deletes a key and returns an error, or `nil`.
     ///   - onDeleteAllAPIKeys: Purges all keys and returns an error, or `nil`.
-    ///   - onTest: Checks whether a provider can transcribe right now.
     ///   - onChangeShortcut: Opens the record-shortcut recorder.
     ///   - onChangePasteShortcut: Opens the paste-shortcut recorder.
     ///   - onChangePaletteShortcut: Opens the palette-shortcut recorder.
     ///   - onOpenWelcome: Opens the welcome window.
     ///   - aboutUpdatePreview: A state to draw in the update row, for a render.
+    ///   - credentials: The status label's model. The window makes its own;
+    ///     a caller that already holds one can watch what the label draws.
+    ///   - allowsOffscreenChecks: Whether that model may run in a headless
+    ///     host. The caller that turns this on supplies caches that answer
+    ///     without the Keychain or the network.
+    ///   - keyField: The text of the key field. The window makes its own; a
+    ///     caller that holds one can see what a pick discards.
     init(
-        config: Binding<DotConfig>,
+        store: ConfigStore,
         providers: [MenuProvider],
         tab: Int = 0,
         onChange: @escaping () -> Void,
         onSetAPIKey: @escaping (String, String) -> String?,
         onDeleteAPIKey: @escaping (String) -> String? = { _ in nil },
         onDeleteAllAPIKeys: @escaping () -> String? = { nil },
-        onTest: @escaping (String) async -> Bool,
         onChangeShortcut: @escaping () -> Void,
         onChangePasteShortcut: @escaping () -> Void = {},
         onChangePaletteShortcut: @escaping () -> Void = {},
         onChangeAssistantShortcut: @escaping () -> Void = {},
         onOpenWelcome: @escaping () -> Void = {},
         aboutUpdatePreview: AboutUpdateState? = nil,
-        modelPreview: [AvailableModel]? = nil
+        modelPreview: [AvailableModel]? = nil,
+        credentials: SpeechCredentialChecks = SpeechCredentialChecks(),
+        allowsOffscreenChecks: Bool = false,
+        keyField: KeyField = KeyField()
     ) {
-        _config = config
+        _store = ObservedObject(wrappedValue: store)
+        _config = store.configBinding
         self.providers = providers
         self.requestedTab = tab
         _selected = State(initialValue: (Page(rawValue: tab) ?? .general).resolved)
@@ -126,7 +141,6 @@ struct SettingsView: View {
         self.onSetAPIKey = onSetAPIKey
         self.onDeleteAPIKey = onDeleteAPIKey
         self.onDeleteAllAPIKeys = onDeleteAllAPIKeys
-        self.onTest = onTest
         self.onChangeShortcut = onChangeShortcut
         self.onChangePasteShortcut = onChangePasteShortcut
         self.onChangePaletteShortcut = onChangePaletteShortcut
@@ -134,12 +148,14 @@ struct SettingsView: View {
         self.onOpenWelcome = onOpenWelcome
         self.aboutUpdatePreview = aboutUpdatePreview
         self.modelPreview = modelPreview
+        self.allowsOffscreenChecks = allowsOffscreenChecks
+        _credentials = StateObject(wrappedValue: credentials)
         _availableModels = State(initialValue: modelPreview ?? [])
-        _liveDwellSeconds = State(initialValue: config.wrappedValue.hudDwellSeconds)
+        _liveDwellSeconds = State(initialValue: store.config.hudDwellSeconds)
+        _keyField = StateObject(wrappedValue: keyField)
     }
 
     var body: some View {
-        let _ = revision
         HStack(spacing: 0) {
             sidebar
             Rectangle()
@@ -181,14 +197,30 @@ struct SettingsView: View {
         .onChange(of: config.provider) { _, _ in
             availableModels = []
             isCustomModelSelected = false
+            keyField.text = ""
             refreshModels()
             updateLanguageForModel(currentConfiguredModel)
+            startCredentialCheck(immediate: true)
+        }
+        .onChange(of: keyField.text) { _, _ in
+            startCredentialCheck(immediate: false)
+        }
+        .onChange(of: credentialSignature) { _, _ in
+            startCredentialCheck(immediate: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             guard !headless else { return }
             let latest = LaunchAtLogin.isEnabled
             if launchAtLogin != latest {
                 launchAtLogin = latest
+            }
+            // A window that comes back to the front is when inputs Dot cannot
+            // observe are read again: a language model that finished
+            // installing, a key replaced outside this window. The check's name
+            // carries both, so an answer that did not move costs a cache
+            // lookup and an answer that did is asked once.
+            if selected == .provider {
+                startCredentialCheck(immediate: true)
             }
         }
     }
@@ -363,17 +395,10 @@ struct SettingsView: View {
     private var assistantPage: some View {
         AssistantPage(
             config: $config,
-            onChange: settingsChanged,
+            onChange: {},
             onSetKey: onSetAPIKey,
             onDeleteKey: onDeleteAPIKey
         )
-    }
-
-    /// Writes a change back to the caller and makes this view a participant in
-    /// it, so the page it is drawing is rebuilt from the value it just stored.
-    private func settingsChanged() {
-        revision &+= 1
-        onChange()
     }
 
     private var pageTransition: AnyTransition {
@@ -577,8 +602,6 @@ struct SettingsView: View {
         let next = MicrophoneCalibrationBook.resetting(config.microphoneCalibration, device: device)
         guard next != config.microphoneCalibration else { return }
         config.microphoneCalibration = next
-        revision &+= 1
-        onChange()
     }
 
     /// The inputs the microphone list offers: the system default, the device a
@@ -658,8 +681,6 @@ struct SettingsView: View {
             set: { value in
                 guard config.outputGrammarEnabled != value else { return }
                 config.outputGrammarEnabled = value
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -673,8 +694,6 @@ struct SettingsView: View {
             set: { value in
                 guard config.outputGrammarTargets[bundleID] != value else { return }
                 config.outputGrammarTargets[bundleID] = value
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -688,15 +707,11 @@ struct SettingsView: View {
         guard id != Bundle.main.bundleIdentifier else { return }
         guard config.outputGrammarTargets[id] == nil else { return }
         config.outputGrammarTargets[id] = config.dictationTarget(for: id)
-        revision &+= 1
-        onChange()
     }
 
     private func removeOverride(_ bundleID: String) {
         guard config.outputGrammarTargets[bundleID] != nil else { return }
         config.outputGrammarTargets.removeValue(forKey: bundleID)
-        revision &+= 1
-        onChange()
     }
 
     /// The retention choices. The list is short on purpose: a picker with twenty
@@ -711,8 +726,6 @@ struct SettingsView: View {
             },
             set: { value in
                 config.historyLimit = value
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -727,8 +740,6 @@ struct SettingsView: View {
                     onCommit: {
                         guard config.hudDwellSeconds != liveDwellSeconds else { return }
                         config.hudDwellSeconds = liveDwellSeconds
-                        revision &+= 1
-                        onChange()
                     }
                 )
                 .frame(width: 155)
@@ -778,7 +789,13 @@ struct SettingsView: View {
                 longRecordingsSection
             }
             languageSection
-            connectionSection
+        }
+        .onAppear {
+            credentials.pageAppeared()
+            startCredentialCheck(immediate: true)
+        }
+        .onDisappear {
+            credentials.cancel()
         }
     }
 
@@ -789,19 +806,22 @@ struct SettingsView: View {
     private var speechEngineSection: some View {
         SettingsSection("Speech engine") {
             SettingsRow("Service") {
-                serviceSelect
+                HStack(spacing: 12) {
+                    serviceSelect
+                    SpeechCredentialLabel(status: credentialStatus)
+                }
             }
             SettingsDivider()
             SettingsRow("API key") {
                 HStack(spacing: 8) {
-                    SecureField(keyPlaceholder, text: $primaryKey)
+                    SecureField(keyPlaceholder, text: $keyField.text)
                         .modifier(DotFieldStyle(focused: focusedField == .apiKey))
                         .focused($focusedField, equals: .apiKey)
                         .disabled(selectedPreset.key == ProviderPreset.KeyRequirement.none)
                         .onSubmit {
                             connect()
                         }
-                        .onChange(of: primaryKey) { _, newKey in
+                        .onChange(of: keyField.text) { _, newKey in
                             let trimmed = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
                             if trimmed.count >= 8 {
                                 refreshModels()
@@ -834,33 +854,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            SettingsDivider()
-            SettingsRow(
-                "Status",
-                subtitle: keyStatus?.detail,
-                subtitleTone: keyStatus?.tone.color ?? DotTheme.ink3
-            ) {
-                statusChip
-            }
         }
-    }
-
-    /// The service the configuration presents, and the state of its key.
-    private var statusChip: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(isServiceConnected ? DotTheme.switchOn : DotTheme.ink3)
-                .frame(width: 6, height: 6)
-            Text(isServiceConnected ? "Connected" : "Not connected")
-                .font(DotType.font(11.5, .regular))
-                .foregroundStyle(isServiceConnected ? DotTheme.ink2 : DotTheme.ink3)
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private var isServiceConnected: Bool {
-        if selectedPreset.key == .none { return true }
-        return hasStoredKey(selectedPreset)
     }
 
     /// The picker of the speech engine: one row per service Dot can reach.
@@ -887,12 +881,15 @@ struct SettingsView: View {
     /// Writes the chosen row into the configuration.
     ///
     /// The rows are read again here rather than captured: a row that presents a
-    /// stored provider only exists for the configuration that owns it.
-    private var serviceBinding: Binding<String> {
+    /// stored provider only exists for the configuration that owns it. A click
+    /// on a list the configuration has moved out from under names a row that is
+    /// no longer there, and it is recorded rather than dropped in silence.
+    var serviceBinding: Binding<String> {
         Binding(
             get: { selectedPreset.id },
             set: { id in
                 guard let preset = ProviderPreset.rows(for: config).first(where: { $0.id == id }) else {
+                    Log.shared.info("settings.pick.dropped", ["id": .string(id)])
                     return
                 }
                 choose(preset)
@@ -918,15 +915,15 @@ struct SettingsView: View {
         }
     }
 
-    private var trimmedPrimaryKey: String {
-        primaryKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var trimmedKey: String {
+        keyField.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Whether the Connect button can do something.
     private var canConnect: Bool {
         guard !connectingPrimary else { return false }
         if selectedPreset.key == .required {
-            return !trimmedPrimaryKey.isEmpty
+            return !trimmedKey.isEmpty
         }
         return true
     }
@@ -938,49 +935,49 @@ struct SettingsView: View {
     }
 
     /// Stores the key of the chosen service and selects it.
-    ///
-    /// The Keychain callback runs first, so a refused key leaves the
-    /// configuration exactly as it was.
     private func connect() {
         guard canConnect else { return }
+        save(secret: trimmedKey)
+    }
+
+    /// Stores a key, then selects the row with it.
+    ///
+    /// The Keychain callback runs first, so a refused key leaves the
+    /// configuration exactly as it was and the status label says the Keychain
+    /// refused it. Split from ``connect()`` so the refusal path is reachable
+    /// without a keyboard: the key the page would have sent is the only
+    /// difference between the two calls.
+    ///
+    /// - Parameter secret: the key to store, as it was typed.
+    func save(secret: String) {
         let preset = selectedPreset
-        let secret = trimmedPrimaryKey
+        let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
         connectingPrimary = true
-        keyStatus = nil
-        testResult = nil
         focusedField = nil
         defer { connectingPrimary = false }
 
-        if preset.key != .none, !secret.isEmpty {
-            if let message = onSetAPIKey(secret, preset.providerID) {
-                keyStatus = KeyStatus(text: "Not connected", detail: message, tone: .bad)
+        if preset.key != .none, !trimmed.isEmpty {
+            if let message = onSetAPIKey(trimmed, preset.providerID) {
+                credentials.markNotSaved(message)
                 focusedField = .apiKey
                 return
             }
             savedProviders.insert(preset.providerID)
         }
 
-        preset.apply(to: &config)
-        primaryKey = ""
-        keyStatus = KeyStatus(
-            text: preset.key == .none ? "Selected" : "Connected",
-            detail: nil,
-            tone: .good
-        )
+        credentials.clearNotSaved()
+        apply(preset)
+        keyField.text = ""
         refreshModels()
         updateLanguageForModel(currentConfiguredModel)
+        startCredentialCheck(immediate: true)
     }
 
     private func deleteKey(for preset: ProviderPreset) {
-        if let error = onDeleteAPIKey(preset.providerID) {
-            keyStatus = KeyStatus(text: "Not connected", detail: error, tone: .bad)
-        } else {
-            savedProviders.remove(preset.providerID)
-            primaryKey = ""
-            keyStatus = KeyStatus(text: "Key deleted", detail: nil, tone: .neutral)
-            revision += 1
-            onChange()
-        }
+        guard onDeleteAPIKey(preset.providerID) == nil else { return }
+        savedProviders.remove(preset.providerID)
+        keyField.text = ""
+        startCredentialCheck(immediate: true)
     }
 
     // MARK: Endpoint
@@ -1096,7 +1093,7 @@ struct SettingsView: View {
     }
 
     private var hasModelsKey: Bool {
-        if !trimmedPrimaryKey.isEmpty { return true }
+        if !trimmedKey.isEmpty { return true }
         if hasStoredKey(selectedPreset) { return true }
         return CredentialCache.shared.key(for: config.provider).map { !$0.isEmpty } ?? false
     }
@@ -1108,11 +1105,31 @@ struct SettingsView: View {
     }
 
     private var modelOptions: [DotSelectOption<String>] {
-        var options = availableModels.map { m in
-            DotSelectOption(value: m.id, title: m.name)
+        Self.modelOptions(
+            catalog: availableModels,
+            storedModel: config.settings(for: config.provider).model
+        )
+    }
+
+    /// The rows the model picker offers for one catalogue.
+    ///
+    /// The catalogue is what the service published; the configured id is kept
+    /// even when the service stopped listing it, and the custom choice is the
+    /// last row when there is anything to choose. A page and a test ask the
+    /// same function, so the two cannot disagree about what "enabled" means.
+    ///
+    /// - Parameters:
+    ///   - catalog: the models the service published.
+    ///   - storedModel: the id the configuration already names.
+    /// - Returns: the rows, in the order the picker draws them.
+    static func modelOptions(
+        catalog: [AvailableModel],
+        storedModel: String?
+    ) -> [DotSelectOption<String>] {
+        var options = catalog.map { model in
+            DotSelectOption(value: model.id, title: model.name)
         }
-        let current = config.settings(for: config.provider).model?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let current = storedModel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !current.isEmpty, !options.contains(where: { $0.value == current }) {
             options.insert(
                 DotSelectOption(value: current, title: ProviderModelCatalog.formattedName(for: current)),
@@ -1143,8 +1160,6 @@ struct SettingsView: View {
                     var settings = config.settings(for: config.provider)
                     settings.model = value
                     config.providers[config.provider] = settings
-                    revision &+= 1
-                    onChange()
                     updateLanguageForModel(value)
                 }
             }
@@ -1159,16 +1174,17 @@ struct SettingsView: View {
             var settings = config.settings(for: config.provider)
             settings.language = newStored
             config.providers[config.provider] = settings
-            revision &+= 1
-            onChange()
         }
     }
 
     private func refreshModels() {
         let providerID = config.provider
+        // A render and a headless host have no key to read and no service to
+        // ask; they draw the list they were handed.
+        guard !headless else { return }
         guard providerID != ProviderIdentifier.apple else { return }
         isLoadingModels = true
-        let key = trimmedPrimaryKey.isEmpty ? CredentialCache.shared.key(for: providerID) : trimmedPrimaryKey
+        let key = trimmedKey.isEmpty ? CredentialCache.shared.key(for: providerID) : trimmedKey
         let baseURLStr = config.settings(for: providerID).baseURL
         let baseURL = (baseURLStr != nil && !baseURLStr!.isEmpty) ? URL(string: baseURLStr!) : nil
         let authStyle = config.settings(for: providerID).authStyle
@@ -1188,8 +1204,6 @@ struct SettingsView: View {
                     var settings = self.config.settings(for: providerID)
                     settings.model = first.id
                     self.config.providers[providerID] = settings
-                    self.revision &+= 1
-                    self.onChange()
                 }
                 self.updateLanguageForModel(self.currentConfiguredModel)
             }
@@ -1281,8 +1295,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: config.provider)
                 settings.temperature = value
                 config.providers[config.provider] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1302,8 +1314,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: config.provider)
                 settings.responseFormat = value
                 config.providers[config.provider] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1323,8 +1333,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: config.provider)
                 settings.timestampsGranularity = value
                 config.providers[config.provider] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1336,8 +1344,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: config.provider)
                 settings.prompt = value.isEmpty ? nil : value
                 config.providers[config.provider] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1569,8 +1575,6 @@ struct SettingsView: View {
             },
             set: { value in
                 config.maxSegmentSeconds = value
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1608,38 +1612,6 @@ struct SettingsView: View {
         }
     }
 
-    private var connectionSection: some View {
-        SettingsSection("Connection") {
-            SettingsRow(
-                "Test connection",
-                subtitle: testResult?.text,
-                subtitleTone: testResult.map { $0.ok ? DotTheme.ink3 : DotTheme.coral } ?? DotTheme.ink3
-            ) {
-                Button(testing ? "Testing…" : "Test") {
-                    runTest()
-                }
-                .buttonStyle(DotSecondaryButtonStyle())
-                .disabled(testing)
-                .accessibilityHint("Asks the chosen service whether it can transcribe right now.")
-            }
-        }
-    }
-
-    private func runTest() {
-        guard !testing else { return }
-        let preset = selectedPreset
-        testing = true
-        testResult = nil
-        Task { @MainActor in
-            let ok = await onTest(preset.providerID)
-            testResult = TestResult(
-                text: ok ? "Connected." : "No answer. Check the service and the key.",
-                ok: ok
-            )
-            testing = false
-        }
-    }
-
     /// The one line under a service name in the picker.
     private func presetDetail(_ preset: ProviderPreset) -> String? {
         if !preset.hasEndpoint { return "On this Mac" }
@@ -1665,8 +1637,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: config.provider)
                 settings.authStyle = value
                 config.providers[config.provider] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1681,8 +1651,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: ProviderIdentifier.deepgram)
                 settings[keyPath: keyPath] = value
                 config.providers[ProviderIdentifier.deepgram] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1695,8 +1663,6 @@ struct SettingsView: View {
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
                 settings.keyterms = trimmed.isEmpty ? nil : value
                 config.providers[ProviderIdentifier.deepgram] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1711,8 +1677,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: ProviderIdentifier.elevenLabs)
                 settings[keyPath: keyPath] = value
                 config.providers[ProviderIdentifier.elevenLabs] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1725,8 +1689,6 @@ struct SettingsView: View {
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
                 settings.keyterms = trimmed.isEmpty ? nil : value
                 config.providers[ProviderIdentifier.elevenLabs] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1739,8 +1701,6 @@ struct SettingsView: View {
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
                 settings.transcriptEdit = trimmed.isEmpty ? nil : value
                 config.providers[ProviderIdentifier.elevenLabs] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1762,8 +1722,6 @@ struct SettingsView: View {
                     settings.numSpeakers = nil
                 }
                 config.providers[ProviderIdentifier.elevenLabs] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1775,8 +1733,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: ProviderIdentifier.elevenLabs)
                 settings.timestampsGranularity = value
                 config.providers[ProviderIdentifier.elevenLabs] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1788,8 +1744,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: ProviderIdentifier.elevenLabs)
                 settings.entityDetection = value.isEmpty ? nil : value
                 config.providers[ProviderIdentifier.elevenLabs] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1803,8 +1757,6 @@ struct SettingsView: View {
                 let mode = settings.azureRecognitionMode ?? AzureSpeechProvider.defaultRecognitionMode
                 settings.baseURL = "https://\(newRegion).stt.speech.microsoft.com/speech/recognition/\(mode)/cognitiveservices/v1"
                 config.providers[ProviderIdentifier.azure] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1818,8 +1770,6 @@ struct SettingsView: View {
                 let region = settings.azureRegion ?? AzureSpeechProvider.defaultRegion
                 settings.baseURL = "https://\(region).stt.speech.microsoft.com/speech/recognition/\(newMode)/cognitiveservices/v1"
                 config.providers[ProviderIdentifier.azure] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1831,8 +1781,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: ProviderIdentifier.azure)
                 settings.azureProfanityFilter = value
                 config.providers[ProviderIdentifier.azure] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1844,8 +1792,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: ProviderIdentifier.azure)
                 settings.azureOutputFormat = value
                 config.providers[ProviderIdentifier.azure] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1857,8 +1803,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: ProviderIdentifier.azure)
                 settings.azureStoreAudio = value
                 config.providers[ProviderIdentifier.azure] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1870,8 +1814,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: config.provider)
                 settings.zeroDataRetention = value
                 config.providers[config.provider] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1887,8 +1829,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: config.provider)
                 settings.model = value.isEmpty ? nil : value
                 config.providers[config.provider] = settings
-                revision &+= 1
-                onChange()
                 updateLanguageForModel(settings.model)
             }
         )
@@ -1907,8 +1847,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: config.provider)
                 settings[keyPath: keyPath] = value.isEmpty ? nil : value
                 config.providers[config.provider] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -1916,9 +1854,16 @@ struct SettingsView: View {
     /// Applies a row and moves the keyboard to the field the user has to fill
     /// in next.
     private func choose(_ preset: ProviderPreset) {
-        keyStatus = nil
-        testResult = nil
-        let wasCustom = selectedPreset.id == ProviderPreset.custom.id
+        let showing = selectedPreset
+        let wasCustom = showing.id == ProviderPreset.custom.id
+        // A key typed for the row that was showing is not a key for the row
+        // that replaces it. The row can move without the provider id moving:
+        // the custom row and the shipped row it stands in for write the same
+        // id, so the row is what decides, and the unsaved text is discarded
+        // before anything is applied or asked.
+        if preset.id != showing.id {
+            keyField.text = ""
+        }
         if preset.id == ProviderPreset.custom.id, !wasCustom {
             var settings = config.settings(for: preset.providerID)
             settings.baseURL = nil
@@ -1926,13 +1871,14 @@ struct SettingsView: View {
         }
         if reduceMotion {
             withAnimation(.easeOut(duration: 0.18)) {
-                preset.apply(to: &config)
+                apply(preset)
             }
         } else {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                preset.apply(to: &config)
+                apply(preset)
             }
         }
+        startCredentialCheck(immediate: true)
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(120))
             if !preset.hasEndpoint {
@@ -1943,6 +1889,72 @@ struct SettingsView: View {
                 focusedField = .apiKey
             }
         }
+    }
+
+    /// Writes a row into the configuration and records the service it selected.
+    ///
+    /// Every pick on this page reaches the configuration here, so the line that
+    /// names the change is emitted exactly when the provider really moved: a
+    /// second pick of the row already in use is not a change, and nothing is
+    /// logged for it.
+    private func apply(_ preset: ProviderPreset) {
+        let from = config.provider
+        preset.apply(to: &config)
+        guard config.provider != from else { return }
+        // A key typed for the service that was showing is not a key for the one
+        // that replaced it: the unsaved text is discarded before any check can
+        // carry it across.
+        keyField.text = ""
+        Log.shared.info("provider.changed", [
+            "from": .string(from),
+            "to": .string(config.provider),
+            "source": .string("settings"),
+        ])
+    }
+
+    /// Starts the check behind the status label beside the service picker.
+    ///
+    /// A render draws the state it was handed, and a headless host asks no
+    /// service unless its caller supplied caches that answer without one: the
+    /// live value belongs to a window someone is looking at. A check replaces
+    /// the one in flight, so a quick sequence of edits ends in one request.
+    ///
+    /// - Parameter immediate: whether an action, rather than the end of an
+    ///   edit, is the reason for the check.
+    private func startCredentialCheck(immediate: Bool) {
+        guard credentialPreview == nil else { return }
+        guard !headless || allowsOffscreenChecks else { return }
+        credentials.check(
+            providerID: config.provider,
+            config: config,
+            typedKey: keyField.text,
+            serviceName: selectedPreset.name,
+            requiresKey: selectedPreset.key == .required,
+            immediate: immediate
+        )
+    }
+
+    /// Every input, apart from the key, that changes the request a check makes.
+    ///
+    /// The address, the header the key travels in and the on-device language
+    /// all change what should be asked, so a change to any of them is a new
+    /// question and is asked at once. The key is covered by the writes that can
+    /// change it (typing, saving, deleting), and every question is named after
+    /// a digest of it, so a replaced key is a different question even when the
+    /// page did not see the replacement.
+    private var credentialSignature: String {
+        let settings = config.settings(for: config.provider)
+        return [
+            config.provider,
+            settings.baseURL ?? "",
+            settings.authStyle?.rawValue ?? "",
+            settings.language ?? "",
+        ].joined(separator: " ")
+    }
+
+    /// The credential state the label draws.
+    private var credentialStatus: SpeechCredentialStatus {
+        credentialPreview ?? credentials.status
     }
 
     /// The row the configuration presents.
@@ -2092,8 +2104,6 @@ struct SettingsView: View {
         guard config.appearance != mode else { return }
         AppearanceTrace.pickAt = CACurrentMediaTime()
         config.appearance = mode
-        revision &+= 1
-        onChange()
     }
 
     private func materialCard(_ material: HUDMaterial, name: String) -> some View {
@@ -2107,8 +2117,6 @@ struct SettingsView: View {
                     config.hudMaterial = material
                 }
             }
-            revision &+= 1
-            onChange()
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 HUDSwatch(material: material)
@@ -2159,8 +2167,6 @@ struct SettingsView: View {
                     config.hudVisualizer = visualizer
                 }
             }
-            revision &+= 1
-            onChange()
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 VisualizerSwatch(
@@ -2300,8 +2306,6 @@ struct SettingsView: View {
                 if value, !headless, !Paste.accessibilityGranted {
                     Paste.requestAccessibility()
                 }
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -2312,8 +2316,6 @@ struct SettingsView: View {
             set: { value in
                 guard config.fastRecord != value else { return }
                 config.fastRecord = value
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -2324,8 +2326,6 @@ struct SettingsView: View {
             set: { value in
                 guard config.logTranscripts != value else { return }
                 config.logTranscripts = value
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -2336,8 +2336,6 @@ struct SettingsView: View {
             set: { value in
                 guard config.recordingMode != value else { return }
                 config.recordingMode = value
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -2349,8 +2347,6 @@ struct SettingsView: View {
                 var settings = config.settings(for: config.provider)
                 settings.language = value == "auto" ? nil : value
                 config.providers[config.provider] = settings
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -2361,8 +2357,6 @@ struct SettingsView: View {
             set: { value in
                 guard config.microphoneDeviceUID != value else { return }
                 config.microphoneDeviceUID = value
-                revision &+= 1
-                onChange()
             }
         )
     }
@@ -2376,12 +2370,12 @@ struct SettingsView: View {
                     try LaunchAtLogin.set(newValue)
                     launchAtLogin = newValue
                     launchError = nil
-                    revision &+= 1
+                    // The login item is a system setting, not a configuration
+                    // value: nothing else here would tell the app it moved.
                     onChange()
                 } catch {
                     launchError = error.localizedDescription
                     launchAtLogin = LaunchAtLogin.isEnabled
-                    revision &+= 1
                 }
             }
         )
@@ -2478,33 +2472,6 @@ struct SettingsView: View {
 
     }
 
-    private struct KeyStatus {
-        let text: String
-        let detail: String?
-        let tone: PrimaryTone
-    }
-
-    /// The small palette the primary card uses for its line of status.
-    private enum PrimaryTone {
-        case good
-        case waiting
-        case bad
-        case neutral
-
-        var color: Color {
-            switch self {
-            case .good: DotTheme.mint
-            case .waiting: DotTheme.amber
-            case .bad: DotTheme.coral
-            case .neutral: DotTheme.ink3
-            }
-        }
-    }
-
-    private struct TestResult {
-        let text: String
-        let ok: Bool
-    }
 }
 
 /// A slider in the app's own control family: the warm grey track and green fill
