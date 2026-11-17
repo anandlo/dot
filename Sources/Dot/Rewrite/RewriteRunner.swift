@@ -101,6 +101,14 @@ final class RewriteRunner {
     /// It is kept for the log line a deadline writes, so a request that ended
     /// before the answer started can be told from one that was cut mid-answer.
     private var streamedCharacters = 0
+    /// The standing rules the current request's version carries, when it is an
+    /// Agent prompt.
+    ///
+    /// The block is captured when the request starts rather than read when the
+    /// version is appended: the answer, the check and the block are one act,
+    /// and a settings change in between must not rewrite a version that was
+    /// generated under other rules.
+    private var pendingStandingRules: String?
 
     init(
         factory: any RewriteProviderFactory,
@@ -421,7 +429,7 @@ final class RewriteRunner {
             return
         }
         cancelWork()
-        appendVersion(style: style, text: text, warning: warning)
+        appendVersion(style: style, text: deliveredWords(text, style: style), warning: warning)
     }
 
     /// Returns to the original without writing anything.
@@ -623,6 +631,12 @@ final class RewriteRunner {
         sawFirstToken = false
         sawActivity = false
         streamedCharacters = 0
+        // The Agent prompt is the one style whose answer carries a block Dot
+        // writes: the rules are held for the whole request, so the version and
+        // the words a Paste writes are the same text.
+        pendingStandingRules = style.kind == .builtIn(.prompt)
+            ? configuration.standingRulesText
+            : nil
         // One assignment, one change: the card goes from idle to running in a
         // single step, so the HUD is told once rather than once per field.
         var running = current
@@ -919,9 +933,11 @@ final class RewriteRunner {
 
     /// Checks the finished rewrite and keeps it, or asks first.
     ///
-    /// The text Dot keeps is what the model wrote, trimmed: nothing is appended
-    /// to it, so the faithfulness check and the version the person reads are the
-    /// same text.
+    /// The check reads the model's answer as the model wrote it, trimmed: the
+    /// standing rules an Agent prompt carries are Dot's own block and are added
+    /// after the check, so neither the numbers, the negations, the names nor
+    /// the length band are measured against words the person never asked the
+    /// model for.
     private func finish(
         style: RewriteStyle,
         text: String,
@@ -944,13 +960,32 @@ final class RewriteRunner {
         )
         guard let error = report.firstError else {
             cancelWork()
-            appendVersion(style: style, text: output, warning: report.firstWarning)
+            appendVersion(
+                style: style,
+                text: deliveredWords(output, style: style),
+                warning: report.firstWarning
+            )
             return
         }
         card?.phase = .blocked(styleID: style.id, error: error)
         card?.draft = output
         card?.draftWarning = report.firstWarning
         card?.note = nil
+    }
+
+    /// The words a version carries: the model's answer, then Dot's block.
+    ///
+    /// Only the Agent prompt style has standing rules. Every other style
+    /// delivers the model's own text, because nothing in Dot's settings attaches
+    /// to it.
+    ///
+    /// - Parameters:
+    ///   - output: the model's answer.
+    ///   - style: the style that produced it.
+    /// - Returns: the text the card shows, the history saves and a Paste writes.
+    private func deliveredWords(_ output: String, style: RewriteStyle) -> String {
+        guard style.kind == .builtIn(.prompt) else { return output }
+        return RewritePrompt.delivered(output, standingRules: pendingStandingRules)
     }
 
     private func appendVersion(style: RewriteStyle, text: String, warning: String?) {

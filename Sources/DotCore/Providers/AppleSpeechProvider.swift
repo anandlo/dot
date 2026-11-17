@@ -150,3 +150,62 @@ actor TranscriptCollector {
     var text: String { TranscriptLedger.join(fragments) }
     var failure: Error? { error }
 }
+
+extension AppleSpeechProvider: CredentialVerifying {
+    /// Whether the on-device transcriber can run with the stored language.
+    ///
+    /// There is nothing to send anywhere, so the answer is the state of this
+    /// Mac: the system, the transcriber and the language's asset. The one
+    /// distinction that matters to a person is an asset that can be installed
+    /// and is not, which is a setup step rather than a fault.
+    public func verifyCredentials() async -> CredentialCheck {
+        guard #available(macOS 26.0, *) else {
+            return .unavailable("Needs macOS 26 or newer.")
+        }
+        guard SpeechTranscriber.isAvailable else {
+            return .unavailable("The on-device transcriber is not available on this Mac.")
+        }
+        guard let locale = await Self.resolvedLocale(identifier: localeIdentifier) else {
+            return .unavailable("The on-device transcriber does not speak \(localeIdentifier).")
+        }
+        let transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
+        let status = await AssetInventory.status(forModules: [transcriber])
+        switch status {
+        case .installed:
+            return .verified
+        case .supported, .downloading:
+            let language = locale.language.languageCode?.identifier ?? localeIdentifier
+            return .needsSetup("The on-device model for \(language) is not installed.")
+        default:
+            return .unavailable("The on-device model cannot be installed on this Mac.")
+        }
+    }
+}
+
+extension AppleSpeechProvider {
+    /// The state of this Mac's on-device model, as a short string a cache name
+    /// can carry.
+    ///
+    /// The locale and the asset are the two things that decide whether the
+    /// on-device provider can run, and both can change while the app is running
+    /// (a model finishes downloading, a language is chosen). A check that was
+    /// cached before either changed is a different question, so the answer is
+    /// part of the name it is cached under.
+    ///
+    /// - Returns: `macos`, `transcriber`, `locale:<id>` or `asset:<status>`.
+    public func assetFingerprint() async -> String {
+        guard #available(macOS 26.0, *) else { return "macos" }
+        guard SpeechTranscriber.isAvailable else { return "transcriber" }
+        guard let locale = await Self.resolvedLocale(identifier: localeIdentifier) else {
+            return "locale:\(localeIdentifier)"
+        }
+        let transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
+        let status = await AssetInventory.status(forModules: [transcriber])
+        switch status {
+        case .installed: return "asset:installed"
+        case .supported: return "asset:supported"
+        case .downloading: return "asset:downloading"
+        default: return "asset:unsupported"
+        }
+    }
+}

@@ -1290,13 +1290,17 @@ final class RewriteRunnerTests: XCTestCase {
 }
 
 extension RewriteRunnerTests {
-    // MARK: - The working rules
+    // MARK: - The standing rules Dot appends
 
-    /// A runner whose stream answers with `text` and whose field holds the
-    /// original. Each call builds its own, so the rules tests do not share the
-    /// outer harness's stream.
+    /// A runner whose stream answers with `text`, holding the take's record of
+    /// standing rules.
+    ///
+    /// Each call builds its own, so the rules tests do not share the outer
+    /// harness's stream, and the record is the one the request reads: the block
+    /// is captured when a request starts, not when a version is appended.
     private func makeLocalRunner(
-        answering text: String
+        answering text: String,
+        configuration: RewriteConfiguration? = nil
     ) -> (runner: RewriteRunner, fields: FakeTextFieldAccess) {
         let stream = RewriteStreamSpy(deltas: chunks(of: text))
         let factory = RewriteFactorySpy(provider: stream)
@@ -1307,7 +1311,7 @@ extension RewriteRunnerTests {
             text: original,
             delivery: .pasted,
             destination: "Mail",
-            configuration: configuration,
+            configuration: configuration ?? self.configuration,
             anchor: anchor
         )
         return (runner, fields)
@@ -1317,41 +1321,159 @@ extension RewriteRunnerTests {
         runner.card?.versions.contains { !$0.isOriginal } == true
     }
 
-    /// The version is the model's output, with nothing appended to it.
+    /// A record with the block on, holding `rules`.
+    private func standing(_ rules: String) -> RewriteConfiguration {
+        var configuration = self.configuration
+        configuration.standingRulesEnabled = true
+        configuration.setStandingRules(rules)
+        return configuration
+    }
+
+    /// The version is the model's output, with nothing appended when the block
+    /// is off.
     ///
-    /// The agent prompt asks the model for the working rules itself, so a block
-    /// Dot glued under the answer would be a second set of rules in a text the
-    /// person is about to paste.
+    /// The Agent prompt asks the model for the task, and the block is a setting
+    /// the person may not have written: a text nobody typed has no place under
+    /// an answer.
     func testThePromptStyleKeepsTheModelOutputAsItIs() async {
-        let local = makeLocalRunner(answering: original)
+        let local = makeLocalRunner(answering: aPrompt())
         local.runner.choose(.prompt, configuration: configuration)
-        await expectTrue { local.runner.card?.versions.contains { !$0.isOriginal } == true }
-        XCTAssertEqual(local.runner.card?.selectedVersion.text, original)
+        await expectTrue { self.hasGenerated(local.runner) }
+        XCTAssertEqual(local.runner.card?.selectedVersion.text, aPrompt())
         XCTAssertFalse(
-            local.runner.card?.selectedVersion.text.contains("## Working rules") == true,
-            "a block was appended to the model's answer"
+            local.runner.card?.selectedVersion.text.contains("## House rules") == true,
+            "a block nobody wrote was appended to the model's answer"
         )
         XCTAssertEqual(local.fields.writes, [], "the version was written before an explicit Paste")
     }
 
-    /// No style gets a block appended: every version is the model's own text.
+    /// No style gets a block while the setting is off.
     func testNoStyleGetsABlockAppended() async {
         let local = makeLocalRunner(answering: rewritten)
         local.runner.choose(.concise, configuration: configuration)
-        await expectTrue { local.runner.card?.versions.contains { !$0.isOriginal } == true }
+        await expectTrue { self.hasGenerated(local.runner) }
         XCTAssertEqual(local.runner.card?.selectedVersion.text, rewritten)
-        XCTAssertFalse(local.runner.card?.selectedVersion.text.contains("## Working rules") == true)
+        XCTAssertFalse(local.runner.card?.selectedVersion.text.contains("## House rules") == true)
     }
 
-    /// The check reads the model's output, which is the version Dot keeps.
+    /// The block Dot appends sits one blank line under the Agent prompt's answer.
+    func testTheStandingRulesAreAppendedToAnAgentPromptVersion() async {
+        let rules = "## House rules\n- Run the build and the tests.\n- Never touch main."
+        let local = makeLocalRunner(answering: aPrompt(), configuration: standing(rules))
+        local.runner.choose(.prompt, configuration: standing(rules))
+        await expectTrue { self.hasGenerated(local.runner) }
+        XCTAssertEqual(
+            local.runner.card?.selectedVersion.text,
+            aPrompt() + "\n\n" + rules
+        )
+    }
+
+    /// Copy and Paste deliver the version with the block in it.
+    ///
+    /// The block is part of the saved version, so what a Paste writes and what
+    /// Copy puts on the clipboard are the same text the card shows.
+    func testCopyAndPasteCarryTheBlock() async {
+        let rules = "- Run the build and the tests."
+        let local = makeLocalRunner(answering: aPrompt(), configuration: standing(rules))
+        local.runner.choose(.prompt, configuration: standing(rules))
+        await expectTrue { self.hasGenerated(local.runner) }
+        let text = local.runner.card?.selectedVersion.text ?? ""
+        XCTAssertEqual(text, aPrompt() + "\n\n" + rules)
+
+        XCTAssertTrue(local.runner.copySelected(text))
+        XCTAssertEqual(copied.last, text)
+
+        local.fields.selection = NSRange(location: 0, length: 0)
+        XCTAssertTrue(local.runner.pasteSelected(text))
+        XCTAssertEqual(local.fields.writes, [text], "the paste wrote the answer without the block")
+    }
+
+    /// The block belongs to the Agent prompt and to nothing else.
+    func testNoOtherStyleCarriesTheBlock() async {
+        let rules = "- Run the build and the tests."
+        let local = makeLocalRunner(answering: rewritten, configuration: standing(rules))
+        local.runner.choose(.concise, configuration: standing(rules))
+        await expectTrue { self.hasGenerated(local.runner) }
+        XCTAssertEqual(local.runner.card?.selectedVersion.text, rewritten)
+    }
+
+    /// The check reads the model's output, which is the answer Dot keeps.
     func testTheLengthCheckReadsTheModelOutput() async {
         let local = makeLocalRunner(answering: original)
         local.runner.choose(.prompt, configuration: configuration)
-        await expectTrue { local.runner.card?.versions.contains { !$0.isOriginal } == true }
+        await expectTrue { self.hasGenerated(local.runner) }
         XCTAssertNil(
             local.runner.card?.selectedVersion.warning,
             "a faithful answer was reported as a length change"
         )
+    }
+
+    /// A block long enough to break the Agent prompt's band still leaves the
+    /// version unreported, because the band measured the answer alone.
+    ///
+    /// The premise is measured first: the transcript and the answer are the
+    /// same text, so the answer alone is inside the band, and the same answer
+    /// with the block under it is outside it.
+    func testABlockThatBreaksTheBandIsNotCountedAsALengthChange() async {
+        let answer = original
+        let rules = String(repeating: "Standing rule line. ", count: 20)
+        let record = standing(rules)
+        let style = RewriteStyle(.prompt)
+        XCTAssertTrue(
+            FaithfulnessCheck.check(original: original, rewrite: answer, style: style).isFaithful,
+            "the premise: the answer alone is faithful"
+        )
+        XCTAssertEqual(
+            FaithfulnessCheck.check(
+                original: original,
+                rewrite: answer + "\n\n" + rules,
+                style: style
+            ).warnings,
+            [FaithfulnessCheck.lengthChanged],
+            "the premise: counting the block breaks the band"
+        )
+
+        let local = makeLocalRunner(answering: answer, configuration: record)
+        local.runner.choose(.prompt, configuration: record)
+        await expectTrue { self.hasGenerated(local.runner) }
+        XCTAssertEqual(local.runner.card?.selectedVersion.text, answer + "\n\n" + rules)
+        XCTAssertNil(
+            local.runner.card?.selectedVersion.warning,
+            "the block was measured as part of the model's answer"
+        )
+    }
+
+    /// A draft the check refused is delivered with the block when it is taken.
+    func testUsingABlockedDraftAnywayCarriesTheBlock() async {
+        // A number the answer dropped: an error, so the card asks first.
+        let answer = "Send the report to Priya, and don't forget the appendix."
+        let rules = "- Run the build and the tests."
+        let local = makeLocalRunner(answering: answer, configuration: standing(rules))
+        local.runner.choose(.prompt, configuration: standing(rules))
+        await expectTrue { self.isBlocked(local.runner) }
+        XCTAssertEqual(
+            local.runner.card?.draft,
+            answer,
+            "the draft holds words the model never wrote"
+        )
+        local.runner.useAnyway()
+        await expectTrue { self.hasGenerated(local.runner) }
+        XCTAssertEqual(local.runner.card?.selectedVersion.text, answer + "\n\n" + rules)
+    }
+
+    /// A structured Agent prompt, as the style asks for it.
+    private func aPrompt() -> String {
+        """
+        ## Goal
+        Send the report to Priya by 5 pm.
+
+        ## Context
+        The appendix is not attached yet.
+
+        ## Requirements
+        1. Send the report to Priya by 5 pm.
+        2. Do not forget the appendix.
+        """
     }
 }
 

@@ -22,7 +22,30 @@ enum CapturePurpose: Equatable, Sendable {
 /// watcher and the provider, and it makes sure the app never takes focus.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var config = DotConfig.default
+    /// The one configuration this app reads and writes.
+    ///
+    /// It is a store rather than a plain property so the settings window can
+    /// observe it: a write from any surface redraws the page that made it and
+    /// schedules the save, instead of waiting for something else to redraw.
+    private let configStore = ConfigStore()
+
+    override init() {
+        super.init()
+        // Every write schedules the debounced save, whoever made it.
+        configStore.onWrite = { [weak self] in
+            self?.configurationWritten()
+        }
+    }
+
+    /// The configuration, read and written through the store.
+    ///
+    /// The proxy keeps the rest of this type unchanged: every write here goes
+    /// through the store, so it takes the same path a write from the settings
+    /// window does.
+    private var config: DotConfig {
+        get { configStore.config }
+        set { configStore.config = newValue }
+    }
     /// The appearance that is already in force.
     ///
     /// Setting `NSApp.appearance` invalidates every view in the app, so it is
@@ -2612,18 +2635,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Settings
 
     private func openSettings(tab: Int = 0) {
-        let binding = Binding<DotConfig>(
-            get: { [weak self] in self?.config ?? DotConfig.load() },
-            set: { [weak self] value in
-                guard let self, value != self.config else { return }
-                self.changeArrivedAt = CACurrentMediaTime()
-                self.config = value
-                self.scheduleConfigurationSave()
-            }
-        )
         let currentProviders = providers
         settingsController.show(
-            config: binding,
+            store: configStore,
             providers: currentProviders,
             tab: tab,
             onChange: { [weak self] in
@@ -2728,16 +2742,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } catch {
                     return error.localizedDescription
                 }
-            },
-            onTest: { [weak self] providerID in
-                guard let self,
-                      let provider = try? ProviderRegistry.makeProvider(
-                          id: providerID,
-                          config: self.config,
-                          credentials: self.credentials
-                      )
-                else { return false }
-                return await provider.isAvailable()
             },
             onChangeShortcut: { [weak self] in
                 self?.chooseShortcut()
@@ -3051,6 +3055,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         Log.shared.info("test.trigger.enabled", ["path": .string(path)])
+    }
+
+    /// Records a write and schedules the save that follows it.
+    ///
+    /// It hangs off the store, not off one binding, so no write can skip it:
+    /// the settings window and this type write the same value through the same
+    /// setter.
+    private func configurationWritten() {
+        changeArrivedAt = CACurrentMediaTime()
+        scheduleConfigurationSave()
     }
 
     private func saveConfiguration() {

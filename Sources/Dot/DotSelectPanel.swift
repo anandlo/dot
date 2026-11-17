@@ -1,4 +1,5 @@
 import AppKit
+import DotCore
 import SwiftUI
 
 // MARK: - Geometry
@@ -116,6 +117,31 @@ enum DotSelectPlacement {
     /// Whether the card hangs below the trigger.
     static func opensBelow(anchor: CGRect, size: CGSize, visibleFrame: CGRect) -> Bool {
         anchor.minY - gap - max(0, size.height) >= visibleFrame.minY
+    }
+
+    /// The scroll offset, in list content coordinates, that shows a row when the
+    /// card opens.
+    ///
+    /// The offset is arithmetic rather than a request to a scroll view, so the
+    /// list can be placed before its first frame is drawn and nothing moves once
+    /// the card appears. A middle row sits in the middle of the card; the first
+    /// row opens flush with the top and the last row flush with the foot, because
+    /// the list cannot travel past either end.
+    ///
+    /// - Parameters:
+    ///   - rowHeights: the height of every row, in order.
+    ///   - selected: the row the list opens on.
+    ///   - viewport: the height the card draws the rows through.
+    /// - Returns: the clip view's origin for the open, in points from the top of
+    ///   the rows.
+    static func openOffset(rowHeights: [CGFloat], selected: Int?, viewport: CGFloat) -> CGFloat {
+        guard let selected, rowHeights.indices.contains(selected), viewport > 0 else { return 0 }
+        let heights = rowHeights.map { max(0, $0) }
+        let content = heights.reduce(0, +) + 2 * inset
+        let limit = max(0, content - viewport)
+        let top = heights.prefix(selected).reduce(0, +) + inset
+        let centred = top + heights[selected] / 2 - viewport / 2
+        return min(max(centred, 0), limit)
     }
 }
 
@@ -355,8 +381,15 @@ final class DotSelectSession {
         started = false
     }
 
+    /// Whether a hover is taken, which the card's growth turns off.
+    var hoverAllowed: () -> Bool = { true }
+
     /// The row the pointer named, highlighted.
+    ///
+    /// A hover that arrives while the card grows is dropped before it moves
+    /// anything: the row under the pointer is read once, when the growth ends.
     func hover(_ index: Int?) {
+        guard hoverAllowed() else { return }
         keyboard.highlightRow(index)
         onEvent(.highlightChanged(keyboard.highlight, scrolls: false))
     }
@@ -613,8 +646,8 @@ final class DotSelectListController {
         let opensBelow = DotSelectPlacement.opensBelow(anchor: trigger, size: size, visibleFrame: visible)
 
         generation &+= 1
+        let openGeneration = generation
         let model = DotSelectListModel(highlight: selectedIndex)
-        model.scroll.beginOpening()
         let host = DotSelectListHost(
             generation: generation,
             rows: rows,
@@ -628,11 +661,21 @@ final class DotSelectListController {
             onChoose: { [weak self] index in self?.commit(index) }
         )
         let panel = reusedPanel
-        panel.present(host, cardFrame: card, appearance: parent.effectiveAppearance)
+        panel.present(
+            host,
+            cardFrame: card,
+            appearance: parent.effectiveAppearance,
+            grew: { [weak self, weak panel] in
+                guard let self, let panel else { return }
+                self.hoverUnderThePointer(in: panel, rowHeights: heights)
+            }
+        )
         self.anchorFrame = trigger
         self.anchor = anchor
         self.model = model
         self.panel = panel
+        // The session owns the hover the grown card reports. Under Reduce Motion
+        // the growth finishes inside showOpening, so the session must exist first.
         beginSession(
             titles: rows.map(\.title),
             selected: selectedIndex,
@@ -640,27 +683,22 @@ final class DotSelectListController {
             onSelect: onSelect,
             onClose: onClose
         )
+        panel.showOpening(
+            rowHeights: heights,
+            selected: selectedIndex,
+            scroll: model.scroll,
+            growsFrom: host.scaleAnchor,
+            isCurrent: { [weak self] in self?.generation == openGeneration }
+        )
 
         watch(around: parent, anchor: anchor)
         parent.addChildWindow(panel, ordered: .above)
         panel.alphaValue = 0
         panel.orderFront(nil)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.14
+            context.duration = DotSelectPanel.openingDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
-        }
-        // The card scales open, and the animation moves the list's scroll
-        // offset with it: the end it was asked for is placed once it has opened.
-        if DotMotion.reducesMotion {
-            model.isPresented = true
-            model.scroll.finishOpening()
-        } else {
-            withAnimation(.easeOut(duration: 0.14)) {
-                model.isPresented = true
-            } completion: {
-                model.scroll.finishOpening()
-            }
         }
         return true
     }
@@ -680,6 +718,7 @@ final class DotSelectListController {
         session?.stop()
         let session = makeSession(titles, selected, panelNumber)
         session.onListScroll = { [weak self] in self?.model?.scroll.cancelPendingEnd() }
+        session.hoverAllowed = { [weak self] in self?.model?.isGrowing != true }
         self.onSelect = onSelect
         self.onClose = onClose
         self.session = session
@@ -689,17 +728,31 @@ final class DotSelectListController {
         return session
     }
 
+    /// Highlights the row the pointer rests on, once the card has grown.
+    ///
+    /// Hover reports that arrive while the card grows are dropped, so the row under
+    /// a pointer that has not moved since the open is read here, once.
+    private func hoverUnderThePointer(in panel: DotSelectPanel, rowHeights: [CGFloat]) {
+        let row = panel.row(
+            underPointerAt: DotSelectPanel.pointerLocation(),
+            rowHeights: rowHeights
+        )
+        session?.hover(row)
+    }
+
     /// Closes the list, if one is open.
     ///
     /// Every close is synchronous: the child window is unhooked and closed here
     /// rather than a tenth of a second later, because a window that lingers in
     /// the app's window list outlives the list it belonged to.
     func close() {
+        // A close is a newer generation: a retry left by the open it ends must
+        // not run against a list that is no longer there.
+        generation &+= 1
         commitTask?.cancel()
         commitTask = nil
         session?.stop()
         session = nil
-        model?.isPresented = false
         model?.scroll.stop()
         model = nil
         onSelect = nil
@@ -868,8 +921,13 @@ final class DotSelectListModel: ObservableObject {
     /// What the card knows about its own scrolling. It is a separate object so
     /// a wheel tick redraws the two fades and the scroller, not sixty rows.
     let scroll = DotSelectScrollModel()
-    /// Whether the open animation has started.
-    @Published var isPresented = false
+    /// Whether the card is still growing open.
+    ///
+    /// A pointer over a row while the card grows is not hovering it: the rows are
+    /// sliding under a pointer that has not moved, and the row it happens to cross
+    /// would flash. Hover is dropped until the growth ends, and the row under the
+    /// pointer is read once then.
+    var isGrowing = false
 
     init(highlight: Int?) {
         self.highlight = highlight
@@ -910,12 +968,6 @@ final class DotSelectScrollModel: ObservableObject {
     /// The request is one shot: the reporter that measures the list takes it,
     /// and a wheel that follows moves the list without being pulled back.
     private(set) var pendingEnd: End?
-
-    /// Whether the card is still scaling open.
-    ///
-    /// The opening animation moves the list's scroll offset with it, so an end
-    /// placed while it runs is dragged off the edge.
-    private(set) var isOpening = false
 
     /// The view that measures the card.
     ///
@@ -1004,23 +1056,10 @@ final class DotSelectScrollModel: ObservableObject {
     /// Asks the card to show an end of the list.
     ///
     /// The request waits until the reporter has a document and a viewport to
-    /// measure, and until the opening animation has finished.
+    /// measure.
     func requestEnd(_ end: End) {
         guard !isStopped else { return }
         pendingEnd = end
-        reporter?.publish()
-    }
-
-    /// Marks the card as opening, so ends wait for the animation to finish.
-    func beginOpening() {
-        guard !isStopped else { return }
-        isOpening = true
-    }
-
-    /// Marks the opening finished, and places the end the card was asked for.
-    func finishOpening() {
-        guard !isStopped else { return }
-        isOpening = false
         reporter?.publish()
     }
 
@@ -1109,6 +1148,9 @@ final class DotSelectScrollReportingView: NSView {
     weak var model: DotSelectScrollModel?
     private var tokens: [NSObjectProtocol] = []
     private let mask = CAGradientLayer()
+
+    /// The scroll view the list is drawn in, once the card has been laid out.
+    var listScrollView: NSScrollView? { enclosingScrollView }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -1218,7 +1260,7 @@ final class DotSelectScrollReportingView: NSView {
     /// bounds change, which measures the list again, and a request still waiting
     /// would be applied a second time on the way back.
     private func applyPendingEnd(in scroll: NSScrollView, model: DotSelectScrollModel) {
-        guard model.pendingEnd != nil, !model.isOpening else { return }
+        guard model.pendingEnd != nil else { return }
         let clip = scroll.contentView
         let contentHeight = scroll.documentView?.frame.height ?? 0
         let viewportHeight = clip.bounds.height
@@ -1264,15 +1306,12 @@ struct DotSelectListHost: View {
     let selectedIndex: Int?
     @ObservedObject var model: DotSelectListModel
     let cardSize: CGSize
+    /// The edge the card grows from when it opens: the top when it hangs below
+    /// its trigger, the bottom when it opens above it.
     let scaleAnchor: UnitPoint
     let scheme: ColorScheme
     let onHighlight: (Int?) -> Void
     let onChoose: (Int) -> Void
-
-    private var scale: CGFloat {
-        if model.isPresented || DotMotion.reducesMotion { return 1 }
-        return 0.97
-    }
 
     private var windowSize: CGSize {
         CGSize(
@@ -1291,12 +1330,7 @@ struct DotSelectListHost: View {
             onChoose: onChoose
         )
         .id(generation)
-        .scaleEffect(scale, anchor: scaleAnchor)
         .frame(width: windowSize.width, height: windowSize.height)
-        .animation(
-            DotMotion.reducesMotion ? nil : .easeOut(duration: 0.14),
-            value: model.isPresented
-        )
         .environment(\.colorScheme, scheme)
         .accessibilityLabel(title)
     }
@@ -1395,17 +1429,20 @@ struct DotSelectListCard: View {
                 .padding(DotSelectPlacement.inset)
             }
             .scrollIndicators(.never)
-            .onAppear { scroll(proxy) }
             .onChange(of: model.scrollTarget) { _, _ in scroll(proxy) }
         }
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     }
 
-    /// Shows the row a key asked for, and the selected row when the list opens.
+    /// Shows the row a key asked for.
     ///
-    /// The ends belong to the card's scroll model, which places them against the
-    /// card's own edge from a measured document and viewport; a row in the middle
-    /// is centred by SwiftUI, which knows where the rows are.
+    /// The row a list opens on is not asked for here: the panel places the list
+    /// at that offset before the card is drawn, so the first frame is the final
+    /// one. A key pressed while the list is open moves the rows under a reader
+    /// who is already looking at them: the ends belong to the card's scroll
+    /// model, which places them against the card's own edge from a measured
+    /// document and viewport, and a row in the middle is centred by SwiftUI,
+    /// which knows where the rows are.
     private func scroll(_ proxy: ScrollViewProxy) {
         guard let target = model.scrollTarget else { return }
         if target <= 0 {
@@ -1611,6 +1648,29 @@ struct DotSelectHoverGate {
     }
 }
 
+// MARK: - Diagnosis
+
+/// What the open list says when it cannot do its job.
+///
+/// A card that is asked for a row it has no scroll view for is a defect in the
+/// open rather than a thing that happens per click, so it is reported once: one
+/// line names the event, and a line per open would bury it.
+@MainActor
+enum DotSelectLog {
+    /// The event written when the card has no scroll view to place the list in.
+    static let missingList = "select.open.noscroll"
+    /// Whether the event has been written. A test clears it to read the line.
+    static var reportedMissingList = false
+    /// Where a line goes. A test replaces this to read what the list said.
+    static var write: (String) -> Void = { Log.shared.warn($0) }
+
+    static func reportMissingList() {
+        guard !reportedMissingList else { return }
+        reportedMissingList = true
+        write(missingList)
+    }
+}
+
 // MARK: - The window
 
 /// The list's own window.
@@ -1625,6 +1685,30 @@ struct DotSelectHoverGate {
 /// leave five windows in the app's window list.
 @MainActor
 final class DotSelectPanel: NSPanel {
+    /// The scale the card grows from when it opens.
+    static let openingScale: CGFloat = 0.97
+    /// How long the card takes to grow and to fade in.
+    static let openingDuration: TimeInterval = 0.14
+    /// The key the growth is animated under.
+    private static let growthKey = "openingScale"
+    /// Where the pointer is on screen. A test places it without moving the Mac's
+    /// own cursor.
+    static var pointerLocation: () -> CGPoint = { NSEvent.mouseLocation }
+    /// Whether the next open is treated as one whose card has not been built.
+    /// A test sets it to drive the retry through the controller; the app never
+    /// writes it.
+    static var skipsFirstPlacement = false
+    /// How many retries have got past the open's identity check. A test reads it
+    /// to show that a closed open's retry was dropped before it touched a list.
+    static var retriesPastTheCheck = 0
+
+    /// The list the panel is drawing, which names its scroll view.
+    private weak var presentedModel: DotSelectListModel?
+    /// The work that follows the growth, kept until it has run.
+    private var growthFinished: (() -> Void)?
+    /// The countdown that ends the growth, if one is running.
+    private var growthTask: Task<Void, Never>?
+
     /// The room the card's shadow needs inside the window.
     let shadowInset: CGFloat
     /// The content, replaced on every open.
@@ -1650,22 +1734,336 @@ final class DotSelectPanel: NSPanel {
         animationBehavior = .none
         collectionBehavior = [.transient, .ignoresCycle, .fullScreenAuxiliary]
         hosting.autoresizingMask = [.width, .height]
+        hosting.wantsLayer = true
         contentView = hosting
     }
 
-    /// Puts a list in the window and moves it under its trigger.
-    func present(_ host: DotSelectListHost, cardFrame: NSRect, appearance: NSAppearance?) {
+    /// Puts a list in the window and records what follows its growth.
+    ///
+    /// - Parameters:
+    ///   - host: the content of the list.
+    ///   - cardFrame: where the card goes, in screen coordinates.
+    ///   - appearance: the appearance the window is drawn in.
+    ///   - grew: called once the card has reached its own size, or at once when
+    ///     there is no growth to watch.
+    func present(
+        _ host: DotSelectListHost,
+        cardFrame: NSRect,
+        appearance: NSAppearance?,
+        grew: @escaping () -> Void = {}
+    ) {
+        stopGrowth()
+        growthFinished = nil
         let windowFrame = cardFrame.insetBy(dx: -shadowInset, dy: -shadowInset)
         hosting.rootView = host
         hosting.frame = NSRect(origin: .zero, size: windowFrame.size)
         self.appearance = appearance
         alphaValue = 1
         setFrame(windowFrame, display: false)
+        presentedModel = host.model
+        growthFinished = grew
+    }
+
+    /// Grows the card from the edge it hangs from, as a compositing transform.
+    ///
+    /// The scale is a transform on the content's backing layer rather than a
+    /// geometry in SwiftUI: a scale there reaches AppKit as a frame transform, and
+    /// AppKit answers by re-deriving the clip view under the list, leaving its
+    /// scroll offset 0, 0.5 or 1 point away from the one the list opened on. A
+    /// sublayer transform scales the drawing only, so no frame, no bounds and no
+    /// clip origin changes as the card grows.
+    ///
+    /// - Parameter anchor: the unit point of the card's own edges that stays
+    ///   still: `.top` when the card hangs below its trigger, `.bottom` when it
+    ///   opens above it.
+    private func scaleOpen(from anchor: UnitPoint) {
+        stopGrowth()
+        guard !DotMotion.reducesMotion, let layer = hosting.layer else {
+            finishGrowth()
+            return
+        }
+        let width = layer.bounds.width
+        let height = layer.bounds.height
+        guard width > 0, height > 0 else {
+            finishGrowth()
+            return
+        }
+        // The anchor names a point on the drawn card, which counts from its top;
+        // the transform's own space does not. Measured on this panel, a point at
+        // `drawn.y - height` is the card's top edge, which is the edge the card
+        // hangs from and therefore the one that stays still.
+        let drawn = CGPoint(x: anchor.x * width, y: anchor.y * height)
+        hosting.growthOrigin = drawn
+        presentedModel?.isGrowing = true
+        let origin = CGPoint(x: drawn.x, y: drawn.y - height)
+        let grow = CATransform3DConcat(
+            CATransform3DConcat(
+                CATransform3DMakeTranslation(origin.x, origin.y, 0),
+                CATransform3DMakeScale(Self.openingScale, Self.openingScale, 1)
+            ),
+            CATransform3DMakeTranslation(-origin.x, -origin.y, 0)
+        )
+        let animation = CABasicAnimation(keyPath: "sublayerTransform")
+        animation.fromValue = NSValue(caTransform3D: grow)
+        animation.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+        animation.duration = Self.openingDuration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.sublayerTransform = CATransform3DIdentity
+        layer.add(animation, forKey: Self.growthKey)
+        growthTask?.cancel()
+        growthTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.openingDuration))
+            guard let self, !Task.isCancelled else { return }
+            self.finishGrowth()
+        }
+    }
+
+    /// Stops the growth, wherever it is, and returns the content to its own
+    /// geometry.
+    ///
+    /// A card that is closed, reopened, or opened under Reduce Motion must not
+    /// inherit the transform of a growth that is still running: an animation left
+    /// on the layer draws the card small for good, and with no recorded origin it
+    /// would leave presses unmapped as well.
+    private func stopGrowth() {
+        growthTask?.cancel()
+        growthTask = nil
+        hosting.layer?.removeAnimation(forKey: Self.growthKey)
+        hosting.layer?.sublayerTransform = CATransform3DIdentity
+        hosting.growthOrigin = nil
+        presentedModel?.isGrowing = false
+    }
+
+    /// Ends the growth, once, and hands over to the work it was waiting for.
+    private func finishGrowth() {
+        let finished = growthFinished
+        growthFinished = nil
+        stopGrowth()
+        finished?()
+    }
+
+    /// Draws the list already showing the row it opens on, and then grows the card
+    /// open.
+    ///
+    /// The offset is arithmetic on the rows and the clip's height
+    /// (``DotSelectPlacement/openOffset(rowHeights:selected:viewport:)``), so the
+    /// panel is laid out here and the list's clip view is scrolled to it, rather
+    /// than asking SwiftUI to scroll once the card is on screen and letting the
+    /// first frame show the top. The layout pass is forced because a panel reused
+    /// at the same size still holds the list it drew last until it is laid out
+    /// again, and a card that is not built yet is given one more turn. The scroll
+    /// model is told where the list is in the same breath, so the two fades and the
+    /// bar describe the frame the rows are drawn in. A panel reused from the last
+    /// list also loses the offset that list was left at.
+    ///
+    /// - Parameters:
+    ///   - rowHeights: the height of every row, in order.
+    ///   - selected: the row the list opens on.
+    ///   - scroll: the scroll model the card draws its edges from.
+    ///   - anchor: the edge the card grows from.
+    ///   - isCurrent: whether the open that asked for the place is still the
+    ///     panel's. A retry from an open the controller has replaced is dropped.
+    func showOpening(
+        rowHeights: [CGFloat],
+        selected: Int?,
+        scroll: DotSelectScrollModel,
+        growsFrom anchor: UnitPoint,
+        isCurrent: @escaping () -> Bool = { true }
+    ) {
+        hosting.needsLayout = true
+        hosting.layoutSubtreeIfNeeded()
+        Self.placeOpeningWhenBuilt(
+            in: hosting,
+            scroll: scroll,
+            rowHeights: rowHeights,
+            selected: selected,
+            relayout: { [weak self] in
+                self?.hosting.needsLayout = true
+                self?.hosting.layoutSubtreeIfNeeded()
+            },
+            isCurrent: isCurrent
+        )
+        scaleOpen(from: anchor)
+    }
+
+    /// Places the list, and gives a card that has not been built one more turn.
+    ///
+    /// The panel installs its content and lays it out in the same turn, but a card
+    /// can arrive a turn later; the offset is applied then. Only a list that is
+    /// still missing after that turn is reported.
+    ///
+    /// - Parameters:
+    ///   - hosting: the view the card is drawn in.
+    ///   - scroll: the scroll model the card draws its edges from.
+    ///   - rowHeights: the height of every row, in order.
+    ///   - selected: the row the list opens on.
+    ///   - relayout: lays the card out again before the second look.
+    ///   - isCurrent: whether the open that asked for the place is still the
+    ///     panel's. The retry is dropped when it is not, so an offset from the
+    ///     old list is never placed on the new one.
+    static func placeOpeningWhenBuilt(
+        in hosting: NSView,
+        scroll: DotSelectScrollModel,
+        rowHeights: [CGFloat],
+        selected: Int?,
+        relayout: @escaping () -> Void = {},
+        isCurrent: @escaping () -> Bool = { true }
+    ) {
+        if skipsFirstPlacement {
+            skipsFirstPlacement = false
+        } else if placeOpening(in: hosting, scroll: scroll, rowHeights: rowHeights, selected: selected) {
+            return
+        }
+        Task { @MainActor in
+            guard isCurrent() else { return }
+            retriesPastTheCheck += 1
+            relayout()
+            guard isCurrent() else { return }
+            if !placeOpening(in: hosting, scroll: scroll, rowHeights: rowHeights, selected: selected) {
+                DotSelectLog.reportMissingList()
+            }
+        }
+    }
+
+    /// Places the list inside a laid-out card at the row it opens on.
+    ///
+    /// A card that has not been built has no scroll view to place against: the
+    /// open leaves the list at the top and says so once, rather than giving an
+    /// offset to a list that does not exist.
+    ///
+    /// - Parameters:
+    ///   - hosting: the view the card is drawn in.
+    ///   - scroll: the scroll model the card draws its edges from.
+    ///   - rowHeights: the height of every row, in order.
+    ///   - selected: the row the list opens on.
+    /// - Returns: whether a list was found to place.
+    @discardableResult
+    static func placeOpening(
+        in hosting: NSView,
+        scroll: DotSelectScrollModel,
+        rowHeights: [CGFloat],
+        selected: Int?
+    ) -> Bool {
+        guard let spinner = scroll.reporter?.listScrollView ?? scrollView(in: hosting) else {
+            return false
+        }
+        let clip = spinner.contentView
+        let offset = DotSelectPlacement.openOffset(
+            rowHeights: rowHeights,
+            selected: selected,
+            viewport: clip.bounds.height
+        )
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: offset))
+        spinner.reflectScrolledClipView(clip)
+        let measured = spinner.documentView?.frame.height ?? 0
+        scroll.moved(
+            offset: clip.bounds.origin.y,
+            contentHeight: measured > 0
+                ? measured
+                : rowHeights.reduce(0, +) + 2 * DotSelectPlacement.inset,
+            viewportHeight: clip.bounds.height
+        )
+        return true
+    }
+
+    /// Routes a press to the row drawn under the pointer.
+    ///
+    /// While the card grows open the events carry the point a person aimed at,
+    /// and the frames SwiftUI hit-tests are the card at its own size: a press two
+    /// points inside the edge of a drawn row is up to nine points away from that
+    /// row's frame at the first frame, which is enough to choose the row next to
+    /// it. The location is mapped back through the growth before the window routes
+    /// the event, so the hit test and the row SwiftUI picks are the ones drawn
+    /// under the pointer. At rest the scale is one and the event is untouched.
+    override func sendEvent(_ event: NSEvent) {
+        super.sendEvent(restingEvent(event))
+    }
+
+    /// The event with the point the card's own geometry has under the pointer.
+    ///
+    /// Only a left press, drag or release is relocated, and only while the card
+    /// grows: those are the events that choose a row. The rebuilt event carries the
+    /// button, the modifiers, the click count and the pressure, but not the scroll
+    /// deltas or the tablet payload: a drag cannot start a meaningful gesture inside
+    /// the 0.14 s growth, and a wheel does not choose a row.
+    private func restingEvent(_ event: NSEvent) -> NSEvent {
+        switch event.type {
+        case .leftMouseDown, .leftMouseUp, .leftMouseDragged:
+            break
+        default:
+            return event
+        }
+        let location = hosting.restingPoint(fromWindow: event.locationInWindow)
+        guard location != event.locationInWindow else { return event }
+        return NSEvent.mouseEvent(
+            with: event.type,
+            location: location,
+            modifierFlags: event.modifierFlags,
+            timestamp: event.timestamp,
+            windowNumber: event.windowNumber,
+            context: nil,
+            eventNumber: event.eventNumber,
+            clickCount: event.clickCount,
+            pressure: event.pressure
+        ) ?? event
+    }
+
+    /// The point the card's growth leaves still, in the content's coordinates,
+    /// when an open is growing the card.
+    var growthOrigin: CGPoint? { hosting.growthOrigin }
+
+    /// The row a screen point falls on, as the list is drawn.
+    ///
+    /// The rows are drawings rather than views, so the row is found from the same
+    /// arithmetic the open places them with: the point is taken into the list's
+    /// content, where row `i` starts at the card's inset plus the heights of the
+    /// rows above it.
+    ///
+    /// - Parameters:
+    ///   - screenPoint: the point, in screen coordinates.
+    ///   - rowHeights: the height of every row, in order.
+    /// - Returns: the row, or `nil` when the point is outside the list.
+    func row(underPointerAt screenPoint: CGPoint, rowHeights: [CGFloat]) -> Int? {
+        guard let spinner = presentedModel?.scroll.reporter?.listScrollView
+                ?? Self.scrollView(in: hosting)
+        else { return nil }
+        let clip = spinner.contentView
+        let inContent = hosting.convert(convertPoint(fromScreen: screenPoint), from: nil)
+        let inClip = clip.convert(inContent, from: hosting)
+        guard clip.bounds.contains(inClip) else { return nil }
+        // The clip counts down from its top when the document is flipped, which is
+        // the orientation every offset in this file is measured in.
+        let fromTop = clip.isFlipped ? inClip.y : clip.bounds.height - inClip.y
+        var top = DotSelectPlacement.inset
+        let document = clip.bounds.origin.y + fromTop
+        for (index, height) in rowHeights.enumerated() {
+            if document < top + height { return index }
+            top += height
+        }
+        return nil
+    }
+
+    /// The first scroll view in a view's subtree, which is the list's own.
+    private static func scrollView(in view: NSView) -> NSScrollView? {
+        if let scroll = view as? NSScrollView { return scroll }
+        for sub in view.subviews {
+            if let found = scrollView(in: sub) { return found }
+        }
+        return nil
     }
 
     /// Lets go of the list's rows and its closures while the window is hidden.
     func releaseContents() {
+        growthFinished = nil
+        stopGrowth()
+        presentedModel = nil
         hosting.rootView = .empty
+    }
+
+    override func close() {
+        growthFinished = nil
+        stopGrowth()
+        super.close()
     }
 
     override var canBecomeKey: Bool { false }
@@ -1678,8 +2076,33 @@ final class DotSelectPanel: NSPanel {
 /// would only bring the list forward and be swallowed: one click must both pick
 /// a row and close the list.
 final class DotSelectHostingView<Content: View>: NSHostingView<Content> {
+    /// The point the card's growth leaves still, in this view's own coordinates.
+    ///
+    /// The panel sets it when the card starts to grow, and it is the point the
+    /// layer's transform is taken about.
+    var growthOrigin: CGPoint?
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
+    }
+
+    /// Where a point on the drawn card is in the card's own geometry.
+    ///
+    /// While the card grows open it is drawn through a transform on its layer,
+    /// and the frames under it are the card at its own size, so a point on the
+    /// drawing is mapped back through the growth. At rest the scale is one and
+    /// nothing moves.
+    func restingPoint(fromWindow point: NSPoint) -> CGPoint {
+        guard let growthOrigin,
+              let scale = layer?.presentation()?.sublayerTransform.m11,
+              scale > 0, scale != 1
+        else { return point }
+        let drawn = convert(point, from: nil)
+        let resting = CGPoint(
+            x: growthOrigin.x + (drawn.x - growthOrigin.x) / scale,
+            y: growthOrigin.y + (drawn.y - growthOrigin.y) / scale
+        )
+        return convert(resting, to: nil)
     }
 
     required init(rootView: Content) {

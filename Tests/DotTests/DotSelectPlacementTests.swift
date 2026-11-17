@@ -157,6 +157,106 @@ final class DotSelectPlacementTests: XCTestCase {
         XCTAssertEqual(DotSelectPlacement.rowHeight(detail: "Requires API key"), 40)
     }
 
+    // MARK: Where the list opens
+
+    /// The offset a list opens on for each kind of row a selection can name: the
+    /// first row flush with the top, the last flush with the foot, and a middle
+    /// row centred in the card.
+    func testARowOpensWhereItsPlaceInTheListAllows() {
+        let fifteen = Array(repeating: DotSelectPlacement.rowHeight, count: 15)
+        let viewport: CGFloat = 310
+
+        XCTAssertEqual(
+            DotSelectPlacement.openOffset(rowHeights: fifteen, selected: 0, viewport: viewport),
+            0,
+            "the first row did not open flush with the top"
+        )
+        XCTAssertEqual(
+            DotSelectPlacement.openOffset(rowHeights: fifteen, selected: 7, viewport: viewport),
+            59,
+            accuracy: 0.001,
+            "a middle row is not centred in the card"
+        )
+        XCTAssertEqual(
+            DotSelectPlacement.openOffset(rowHeights: fifteen, selected: 14, viewport: viewport),
+            118,
+            accuracy: 0.001,
+            "the last row did not open flush with the foot"
+        )
+    }
+
+    /// The speech provider list: eight rows that all carry a detail, so the card
+    /// holds seven of them and the list travels eighteen points. A row far enough
+    /// down to be centred would need more travel than the list has, so it opens
+    /// at the foot.
+    func testAnEightRowListWithDetailsOpensItsLastRowsAtTheFoot() {
+        let heights = Array(repeating: DotSelectPlacement.rowDetailHeight, count: 8)
+        let viewport: CGFloat = 310
+
+        XCTAssertEqual(
+            DotSelectPlacement.openOffset(rowHeights: heights, selected: 0, viewport: viewport),
+            0
+        )
+        XCTAssertEqual(
+            DotSelectPlacement.openOffset(rowHeights: heights, selected: 4, viewport: viewport),
+            18,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            DotSelectPlacement.openOffset(rowHeights: heights, selected: 7, viewport: viewport),
+            18,
+            accuracy: 0.001,
+            "the last row did not open flush with the foot"
+        )
+    }
+
+    /// A selection that names no row, an empty list and a card that has not been
+    /// measured all open at the top: there is no row to show.
+    func testAnOffsetNeedsARowAndAViewport() {
+        let three = Array(repeating: DotSelectPlacement.rowHeight, count: 3)
+        XCTAssertEqual(DotSelectPlacement.openOffset(rowHeights: three, selected: nil, viewport: 310), 0)
+        XCTAssertEqual(DotSelectPlacement.openOffset(rowHeights: three, selected: 9, viewport: 310), 0)
+        XCTAssertEqual(DotSelectPlacement.openOffset(rowHeights: [], selected: 0, viewport: 310), 0)
+        XCTAssertEqual(DotSelectPlacement.openOffset(rowHeights: three, selected: 2, viewport: 0), 0)
+    }
+
+    /// A list shorter than its card has no travel: every row opens at zero.
+    func testAListThatFitsOpensAtTheTopWhicheverRowIsChosen() {
+        let three = Array(repeating: DotSelectPlacement.rowHeight, count: 3)
+        let viewport = 3 * DotSelectPlacement.rowHeight + 2 * DotSelectPlacement.inset
+        for row in 0..<3 {
+            XCTAssertEqual(
+                DotSelectPlacement.openOffset(rowHeights: three, selected: row, viewport: viewport),
+                0,
+                "a list that fits was asked to scroll for row \(row)"
+            )
+        }
+    }
+
+    /// Whatever the selection, the offset is inside the document: the list is
+    /// never asked to travel further than it can.
+    func testTheOffsetStaysInsideTheList() {
+        for count in [1, 2, 8, 15, 60] {
+            for detail in [false, true] {
+                let heights = Array(
+                    repeating: DotSelectPlacement.rowHeight(detail: detail ? "detail" : nil),
+                    count: count
+                )
+                let content = heights.reduce(0, +) + 2 * DotSelectPlacement.inset
+                let limit = max(0, content - 310)
+                for row in 0..<count {
+                    let offset = DotSelectPlacement.openOffset(
+                        rowHeights: heights,
+                        selected: row,
+                        viewport: 310
+                    )
+                    XCTAssertGreaterThanOrEqual(offset, 0, "\(count) rows, row \(row) is above the top")
+                    XCTAssertLessThanOrEqual(offset, limit, "\(count) rows, row \(row) is past the foot")
+                }
+            }
+        }
+    }
+
     // MARK: The drawn width
 
     /// One width for every picker a row does not size itself.
