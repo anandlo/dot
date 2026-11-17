@@ -77,12 +77,14 @@ public final class VoiceMeter {
     /// difference between a bright amber tip on the loudest syllable and a shape
     /// that is bright all the time.
     public private(set) var peak: Double = 0
-    /// The peak the visualiser draws against, from `0` to `1`.
+    /// The peak the visualiser colours against, from `0` to `1`.
     ///
     /// A ceiling that fell to zero would make every bar a peak, so it never
     /// drops below ``minimumCeiling``. It follows the voice rather than
-    /// normalising it: heights stay absolute, and only the colour knows what
-    /// the loudest moment of this take was.
+    /// normalising it: the height a style draws is the level itself, which
+    /// already means the same thing on every take, and only the colour of a bar
+    /// reads this number, to know when a bar is the loudest moment of *this*
+    /// take rather than a bar of any take.
     public var ceiling: Double { max(peak, Self.minimumCeiling) }
 
     /// The lowest the adaptive ceiling may fall, from `0` to `1`.
@@ -113,6 +115,14 @@ public final class VoiceMeter {
     /// seeds it from the silence that arrives before the first buffer.
     public private(set) var floorDBFS: Double?
 
+    /// How many samples this take has written into the history.
+    ///
+    /// It is the take's own sample number, counted from zero at ``reset()``: the
+    /// history's newest sample is this number less one. Everything that has to know
+    /// which sample a measurement belongs to reads this rather than integrating the
+    /// frame times again, because two integrators of the same clock drift apart on a
+    /// stalled frame and a sample with no measurement is a hole in the grid.
+    public private(set) var writtenSamples = 0
     /// The history of the envelope, oldest first.
     private var history: [Double]
     /// Where the next sample goes in the history.
@@ -253,6 +263,7 @@ public final class VoiceMeter {
             clock -= 1
             history[historyIndex] = shape
             historyIndex = (historyIndex + 1) % Self.historyLength
+            writtenSamples += 1
         }
         scrollPhase = clock
         phase = min(max(clock - clock.rounded(.down), 0), 1)
@@ -319,6 +330,7 @@ public final class VoiceMeter {
 
     /// Puts the meter back to zero.
     public func reset() {
+        writtenSamples = 0
         level = 0
         envelope = 0
         shape = 0

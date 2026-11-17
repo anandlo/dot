@@ -10,16 +10,22 @@ enum VisualizerMath {
     /// How many samples of the envelope history one second holds.
     static let sampleRate: Double = Waveform.sampleRate
 
-    /// The display value of one measurement, on this voice's own range.
+    /// The display value of one measurement: the level, on the fixed scale.
     ///
-    /// A quiet speaker's loudest moment is drawn at the top of the shape: the
-    /// value is divided by the ceiling the take has reached, with a floor under
-    /// the divisor so a take that has not been loud yet is not multiplied into
-    /// a wall of amber. The `0.85` keeps a little room above the loudest
-    /// syllable for the peak mark, which is drawn above the shape and never
-    /// inside it.
-    static func displayEnergy(_ value: Double, ceiling: Double) -> Double {
-        min(1, max(0, value) * 0.85 / max(0.30, ceiling))
+    /// ``VoiceMeter`` hands out a level that already means the same thing on
+    /// every take. ``LevelScale`` maps decibels onto a calibrated window with a
+    /// perceptual knee, so `-30 dBFS` reads a half and `0 dBFS` reads nine
+    /// tenths however loud the take has been: the height is absolute, and a
+    /// quiet speaker is drawn short.
+    ///
+    /// Nothing here divides by the take's own peak. A height divided by the
+    /// loudest moment of the take is not a height: every rising syllable reaches
+    /// the top of the range within four frames whatever its loudness, because the
+    /// divisor and the numerator are the same number, and a bar already on the
+    /// row is rescaled as the peak moves past it. The take's peak is still read,
+    /// by colour alone, in ``MeterRamp/tint(level:ceiling:)``.
+    static func displayEnergy(_ value: Double) -> Double {
+        min(1, max(0, value))
     }
 
     /// The colour of one stop of the meter's ramp, at an opacity of its own.
@@ -524,18 +530,17 @@ struct HUDWaveform: View {
         /// - Parameters:
         ///   - offset: how many ticks back the window's newest sample is.
         ///   - history: the envelope, oldest first.
-        ///   - ceiling: the loudest moment of the take.
         ///   - reveal: how much of the shape has arrived, from `0` to `1`.
-        /// - Returns: the window's peak on the take's own range, or zero for a
-        ///   window the history no longer holds, which is the answer
+        /// - Returns: the window's peak on the scale every take is drawn on, or
+        ///   zero for a window the history no longer holds, which is the answer
         ///   ``VisualizerBars/sample(history:offsetFromNewest:)`` gives.
-        static func windowLevel(offset: Int, history: [Double], ceiling: Double, reveal: Double) -> Double {
+        static func windowLevel(offset: Int, history: [Double], reveal: Double) -> Double {
             let start = max(0, offset)
             var peak = 0.0
             for tap in 0..<windowTicks {
                 peak = max(peak, VisualizerBars.sample(history: history, offsetFromNewest: start + tap))
             }
-            return normalised(peak, ceiling: ceiling, reveal: reveal)
+            return normalised(peak, reveal: reveal)
         }
 
         /// The level of the window that is still filling, from the samples that
@@ -546,21 +551,21 @@ struct HUDWaveform: View {
         /// every three frames. It therefore holds the newest sample of the take,
         /// which is the last thing the voice said, until a sample of its own
         /// arrives.
-        static func liveLevel(history: [Double], ceiling: Double, reveal: Double, arrived: Int) -> Double {
+        static func liveLevel(history: [Double], reveal: Double, arrived: Int) -> Double {
             var peak = 0.0
             for offset in 0..<max(1, arrived) {
                 peak = max(peak, VisualizerBars.sample(history: history, offsetFromNewest: offset))
             }
-            return normalised(peak, ceiling: ceiling, reveal: reveal)
+            return normalised(peak, reveal: reveal)
         }
 
         /// How far up the row a peak of the envelope stands.
         ///
-        /// The measure is the take's own, and the reveal scales the answer so a
+        /// The measure is the meter's own, and the reveal scales the answer so a
         /// shape that is arriving grows out of the axis rather than appearing at
         /// the height the last frame left behind.
-        private static func normalised(_ peak: Double, ceiling: Double, reveal: Double) -> Double {
-            let shown = VisualizerMath.displayEnergy(peak, ceiling: ceiling) * min(max(reveal, 0), 1)
+        private static func normalised(_ peak: Double, reveal: Double) -> Double {
+            let shown = VisualizerMath.displayEnergy(peak) * min(max(reveal, 0), 1)
             return min(1, max(0, shown))
         }
 
@@ -604,7 +609,6 @@ struct HUDWaveform: View {
         ///
         /// - Parameters:
         ///   - history: the 60 Hz envelope, oldest first.
-        ///   - ceiling: the loudest moment of the take.
         ///   - phase: where inside the newest sample the frame sits, from `0` to
         ///     less than `1`.
         ///   - time: unwrapped elapsed seconds.
@@ -615,7 +619,6 @@ struct HUDWaveform: View {
         ///   left the canvas.
         static func bars(
             history: [Double],
-            ceiling: Double,
             phase: Double,
             time: Double,
             reveal: Double,
@@ -624,7 +627,7 @@ struct HUDWaveform: View {
         ) -> [Bar] {
             guard canvas > 0, !history.isEmpty else { return [] }
             if reduceMotion {
-                return stillBars(history: history, ceiling: ceiling, reveal: reveal, canvas: canvas)
+                return stillBars(history: history, reveal: reveal, canvas: canvas)
             }
             let tick = newestSample(at: time, phase: phase)
             let filled = arrived(tick)
@@ -640,7 +643,6 @@ struct HUDWaveform: View {
                 windowLevel(
                     offset: edgeOffset(back: back, arrived: filled),
                     history: history,
-                    ceiling: ceiling,
                     reveal: reveal
                 )
             }
@@ -648,7 +650,6 @@ struct HUDWaveform: View {
             var liveTrail = trail
             liveTrail[liveTrail.count - 1] = liveLevel(
                 history: history,
-                ceiling: ceiling,
                 reveal: reveal,
                 arrived: filled
             )
@@ -670,7 +671,6 @@ struct HUDWaveform: View {
                     : windowLevel(
                         offset: filled + rank * windowTicks,
                         history: history,
-                        ceiling: ceiling,
                         reveal: reveal
                     )
                 row.append(bar(closed - rank, at: x, level: held, canvas: canvas, isLive: false))
@@ -686,13 +686,12 @@ struct HUDWaveform: View {
         /// where a window stands when it has just closed, and each bar is the
         /// loudest it has been over the windows to its left, so a still of a
         /// dictation keeps the peaks of the phrase rather than one frame of them.
-        static func stillBars(history: [Double], ceiling: Double, reveal: Double, canvas: CGFloat) -> [Bar] {
+        static func stillBars(history: [Double], reveal: Double, canvas: CGFloat) -> [Bar] {
             var levels: [Double] = []
             while isVisible(centre: centre(rank: levels.count, progress: 0, canvas: canvas)) {
                 levels.append(windowLevel(
                     offset: levels.count * windowTicks,
                     history: history,
-                    ceiling: ceiling,
                     reveal: reveal
                 ))
             }
@@ -737,7 +736,6 @@ struct HUDWaveform: View {
     private func drawStretch(context: GraphicsContext, size: CGSize) {
         let row = Stretch.bars(
             history: history,
-            ceiling: ceiling,
             phase: phase,
             time: effectiveTime,
             reveal: shownReveal,
@@ -944,10 +942,13 @@ struct HUDWaveform: View {
         static let emberGain: Double = 0.86
         /// The reading at which the wire is as hot as it gets.
         ///
-        /// It is the ceiling ``VisualizerMath/displayEnergy(_:ceiling:)`` puts on
-        /// the loudest moment of a take, and therefore what a mix of the envelope
-        /// and the bands reaches at a peak.
-        static let fullReading: Double = 0.85
+        /// It is a little under the top of the level scale, so a mix of the
+        /// envelope and the bands reaches the top of the wire's range on a
+        /// syllable that is loud on the fixed scale rather than on a syllable that
+        /// happens to be the loudest of this take. It is the rung of the measured
+        /// ladder at which a voice at -20 dBFS is still below four fifths of the
+        /// range and only a voice at 0 dBFS reaches the white of the top.
+        static let fullReading: Double = 0.95
         /// The exponent the mixed reading is raised to.
         static let temperatureExponent: Double = 0.75
         /// The share of its temperature the wire keeps at the very ends of the
@@ -1285,7 +1286,7 @@ struct HUDWaveform: View {
         /// Each band is integrated forward over the last ``lagSamples`` frames from
         /// a cold wire. The rows are read in the order the recorder measures them,
         /// row `0` the sibilants and row `4` the fundamental, and the wire maps a
-        /// position onto them in ``heatProfile(history:spectrum:ceiling:reveal:reduceMotion:)``.
+        /// position onto them in ``heatProfile(history:spectrum:reveal:reduceMotion:)``.
         static func bandHeat(_ spectrum: [AudioSpectrumFrame], reduceMotion: Bool) -> [Double] {
             guard !spectrum.isEmpty else { return [0, 0, 0, 0, 0] }
             let first = max(0, spectrum.count - lagSamples)
@@ -1297,9 +1298,9 @@ struct HUDWaveform: View {
         }
 
         /// The temperature of the wire as a whole at the newest sample.
-        static func envelopeHeat(_ history: [Double], ceiling: Double, reduceMotion: Bool) -> Double {
+        static func envelopeHeat(_ history: [Double], reduceMotion: Bool) -> Double {
             guard !history.isEmpty else { return 0 }
-            let raw = history.suffix(lagSamples).map { VisualizerMath.displayEnergy($0, ceiling: ceiling) }
+            let raw = history.suffix(lagSamples).map { VisualizerMath.displayEnergy($0) }
             return reduceMotion ? held(Array(raw)) : thermalLag(Array(raw))
         }
 
@@ -1354,11 +1355,10 @@ struct HUDWaveform: View {
         static func heatProfile(
             history: [Double],
             spectrum: [AudioSpectrumFrame],
-            ceiling: Double,
             reveal: Double,
             reduceMotion: Bool
         ) -> [Double] {
-            let envelope = envelopeHeat(history, ceiling: ceiling, reduceMotion: reduceMotion)
+            let envelope = envelopeHeat(history, reduceMotion: reduceMotion)
             let bands = bandHeat(spectrum, reduceMotion: reduceMotion)
             let shown = min(1, max(0, reveal))
             var profile = (0..<heatSamples).map { sample -> Double in
@@ -1669,7 +1669,6 @@ struct HUDWaveform: View {
         let profile = Filament.heatProfile(
             history: history,
             spectrum: spectrumHistory,
-            ceiling: ceiling,
             reveal: shown,
             reduceMotion: reduceMotion
         )
@@ -2061,10 +2060,9 @@ struct HUDWaveform: View {
         /// - Parameters:
         ///   - controls: the window's controls, oldest first.
         ///   - u: the position across the ribbons, from `0` to `1`.
-        ///   - ceiling: the loudest moment of the take.
         /// - Returns: the display value, never below ``silentFloor``.
-        static func energy(_ controls: [Double], at u: Double, ceiling: Double) -> Double {
-            max(silentFloor, VisualizerMath.displayEnergy(spline(controls, at: u), ceiling: ceiling))
+        static func energy(_ controls: [Double], at u: Double) -> Double {
+            max(silentFloor, VisualizerMath.displayEnergy(spline(controls, at: u)))
         }
 
         /// The half thickness of a ribbon at a position and a moment.
@@ -2112,7 +2110,7 @@ struct HUDWaveform: View {
         var energies: [Double] = []
         energies.reserveCapacity(count)
         for index in 0..<count {
-            energies.append(Silk.energy(controls, at: Double(index) / last, ceiling: ceiling))
+            energies.append(Silk.energy(controls, at: Double(index) / last))
         }
 
         let gradientStart = CGPoint(x: 0, y: mid - reach)
@@ -2274,26 +2272,28 @@ struct HUDWaveform: View {
         static let ticksPerPitch = 2
         /// The display value at which a dot starts to take light.
         ///
-        /// A cell below it is a dot of the floor's own amber, which is what a
-        /// silent card is: a grid that is drawn, and clearly not speaking.
-        static let litOnset: Double = 0.07
+        /// It is the bottom of the range, so the meter covers the speaker's whole
+        /// range: there is no level at which a cell switches on, because a cell
+        /// that switches on at a threshold is a cell that flickers across it. A
+        /// silent card is a grid of the floor's own amber, and every step above
+        /// that adds light in proportion to the voice.
+        static let litOnset: Double = 0.00
         /// How far past ``litOnset`` a dot takes to reach its full lamp.
         ///
         /// The lamp is faded in across this span rather than switched on at the
         /// onset. A dot that goes from the floor to an opaque white centre
-        /// between two frames is a flicker at the threshold: at `0.07` one frame
-        /// is a dim dot and the next is a lamp, so a syllable edge draws as a
-        /// step in brightness rather than as the voice arriving. Across these
-        /// `0.10` of the display value, from `0.07` to `0.17`, the dot grows
-        /// its light by the amount its own level says, and two neighbouring
-        /// frames differ by as much as the voice between them did.
+        /// between two frames is a flicker at the threshold, so the light a dot
+        /// carries is a continuous function of its level across the whole range:
+        /// two neighbouring frames differ by as much as the voice between them
+        /// did, and no level is the level at which a lamp arrives.
         ///
-        /// It is `0.10` rather than a wider band because the fade has to be short
-        /// enough that a cell at ordinary speech is at its full lamp: past
-        /// `0.17` the dot is lit by its level alone, so the grid the owner asked
-        /// for is not dimmed to smooth a step that only exists below a fifth of
-        /// the range.
-        static let litRamp: Double = 0.10
+        /// It is a third of the range rather than a fifth because the steep part
+        /// of the warp below sits at the bottom: the display value is
+        /// `pow(energy, 1.6)`, so a band between a fifth and a half of its range
+        /// is where a syllable's edge lands, and the fade has to cover that whole
+        /// stretch to keep an ordinary syllable from crossing a threshold in one
+        /// frame.
+        static let litRamp: Double = 0.35
         /// The display value above which a dot counts as shining.
         static let shineOnset: Double = 0.55
         /// The reach of a dot's halo, as a share of the pitch.
@@ -2384,11 +2384,12 @@ struct HUDWaveform: View {
 
         /// How much of its lamp a dot of this display value carries, `0...1`.
         ///
-        /// It is the smoothstep across ``litOnset`` and ``litRamp``, so the light
-        /// of a dot is a continuous function of its level: no level turns a lamp
-        /// on, and no frame is the first frame of a lamp. Every alpha of the lamp
-        /// is multiplied by it, and the highlight and the halo with them, so the
-        /// dot fades in whole rather than growing a bright core over a dim disc.
+        /// It is the smoothstep from ``litOnset`` across ``litRamp``, so the light
+        /// of a dot is a continuous function of its level on the whole range: no
+        /// level turns a lamp on, and no frame is the first frame of a lamp. Every
+        /// alpha of the lamp is multiplied by it, and the highlight and the halo
+        /// with them, so the dot fades in whole rather than growing a bright core
+        /// over a dim disc.
         static func reveal(forDisplay display: Double) -> Double {
             MeterRamp.smoothstep(litOnset, litOnset + litRamp, display)
         }
@@ -2427,6 +2428,49 @@ struct HUDWaveform: View {
             let room = (size.width - pitch / 2 - inset) / pitch
             guard room >= 0 else { return 0 }
             return Int(room.rounded(.down)) + 1
+        }
+
+        /// How many columns a frame walks before it stops looking.
+        ///
+        /// It is every column the canvas can show whole, plus the two a dot
+        /// entering or leaving may stand in. The loop is a count rather than a
+        /// stop at the first column it cannot draw, because one column off the
+        /// canvas or out of the ring must not remove the columns behind it.
+        static func columnLimit(for size: CGSize) -> Int {
+            columnCount(for: size) + 2
+        }
+
+        /// How many ticks back the ring entry stamped `sample` is, or `nil` when
+        /// the ring does not hold that measurement.
+        ///
+        /// The ring is stamped in order, so the entry is found by bisection. A
+        /// column reads the measurement by its stamp rather than by how far back
+        /// it happens to be, which is what keeps a dot's specimen its own for the
+        /// whole of its travel: the ring moves a slot every tick, so a specimen
+        /// found by position is a different measurement on the next frame.
+        ///
+        /// - Parameters:
+        ///   - sample: the tick the measurement was written on.
+        ///   - ring: the spectrum ring, oldest first.
+        /// - Returns: how many ticks back the entry stands, or `nil`.
+        static func offset(ofStamp sample: Int, in ring: [AudioSpectrumFrame]) -> Int? {
+            var low = 0
+            var high = ring.count - 1
+            var found: Int?
+            while low <= high {
+                let middle = (low + high) / 2
+                guard let stamp = ring[middle].sample else { return nil }
+                if stamp == sample {
+                    found = middle
+                    low = middle + 1
+                } else if stamp < sample {
+                    low = middle + 1
+                } else {
+                    high = middle - 1
+                }
+            }
+            guard let index = found else { return nil }
+            return ring.count - 1 - index
         }
 
         /// Whether a dot of this radius is wholly inside the canvas.
@@ -2561,7 +2605,6 @@ struct HUDWaveform: View {
                 (0..<MatrixLattice.rows).map { row in
                     dot(
                         sampleTick: -column * MatrixLattice.ticksPerPitch,
-                        offset: column * MatrixLattice.ticksPerPitch,
                         column: column,
                         row: row,
                         centre: MatrixLattice.centre(
@@ -2571,6 +2614,7 @@ struct HUDWaveform: View {
                             width: size.width
                         ),
                         pitch: pitch,
+                        energy: band(offset: column * MatrixLattice.ticksPerPitch, row: row),
                         edgeFade: 1,
                         age: 0,
                         glint: false
@@ -2579,23 +2623,24 @@ struct HUDWaveform: View {
             }
         }
 
-        // The tick the frame belongs to, on the meter's clock, and the continuous
-        // position inside the samples that follows from it.
-        let tick = HUDWaveform.Stretch.newestSample(at: time, phase: phase)
+        // The tick the frame belongs to. A ring that carries stamps carries the
+        // meter's own sample numbers, so the grid's clock is read from them and not
+        // from the frame time: the two agree while the display keeps up and diverge
+        // on a stalled frame, and the stamps are the authority. A ring built by hand
+        // without them falls back to the frame's own clock.
+        let tick = spectrumHistory.last?.sample ?? HUDWaveform.Stretch.newestSample(at: time, phase: phase)
         let clock = Double(tick) + min(max(phase, 0), 1)
         let newest = MatrixLattice.newestPairTick(clock: clock, tick: tick)
         let reach = MatrixLattice.glowRadius(forPitch: pitch)
         // A ring bounds how far back the grid can read: a pair it no longer holds
         // has left the canvas. The envelope fallback clamps instead of running
         // out, which is what a card with no spectrum draws at every column.
+        let stamped = spectrumHistory.last?.sample != nil
         let held = spectrumHistory.isEmpty ? Int.max : spectrumHistory.count
 
         var dots: [MatrixLattice.Dot] = []
-        var column = 0
-        while true {
+        for column in 0..<MatrixLattice.columnLimit(for: size) {
             let sample = newest - column * MatrixLattice.ticksPerPitch
-            let offset = tick - sample
-            guard offset >= 0, offset < held else { break }
             let x = MatrixLattice.centreX(
                 sampleTick: sample,
                 clock: clock,
@@ -2604,8 +2649,22 @@ struct HUDWaveform: View {
             )
             // A dot leaves by its halo rather than by its centre, and the fade has
             // taken its ink to nothing before the halo can reach the edge, so the
-            // grid neither cuts a dot nor paints on the card's border.
-            guard x - reach > 0 else { break }
+            // grid neither cuts a dot nor paints on the card's border. A column
+            // that is off the canvas is skipped rather than ending the walk: one
+            // column that cannot be drawn must not take the columns behind it with
+            // it.
+            guard x - reach > 0 else { continue }
+            let offset: Int
+            if stamped {
+                // The pair the column stands for is found by the tick it was
+                // measured on, so the specimen a dot holds is its own for the whole
+                // of its travel instead of changing as the ring moves past it.
+                guard let found = MatrixLattice.offset(ofStamp: sample, in: spectrumHistory) else { continue }
+                offset = found
+            } else {
+                offset = tick - sample
+                guard offset >= 0, offset < held else { continue }
+            }
             let fade = MatrixLattice.edgeFade(centreX: x, pitch: pitch, width: size.width)
             for row in 0..<MatrixLattice.rows {
                 let centre = CGPoint(x: x, y: MatrixLattice.centreY(row: row, forHeight: size.height))
@@ -2614,17 +2673,16 @@ struct HUDWaveform: View {
                 guard MatrixLattice.isWhole(centre: centre, radius: radius, in: size) else { continue }
                 dots.append(dot(
                     sampleTick: sample,
-                    offset: offset,
                     column: column,
                     row: row,
                     centre: centre,
                     pitch: pitch,
+                    energy: energy,
                     edgeFade: fade,
                     age: MatrixLattice.age(sampleTick: sample, clock: clock),
                     glint: true
                 ))
             }
-            column += 1
         }
         return dots
     }
@@ -2634,26 +2692,27 @@ struct HUDWaveform: View {
     /// - Parameters:
     ///   - sampleTick: the tick of the sample pair the dot holds. A still grid
     ///     has no clock, so its ticks are counted back from the newest pair.
-    ///   - offset: how many ticks back from the newest sample the dot's pair is.
+    ///   - column: the column the dot stands in, counted from the newest.
     ///   - row: the band the dot draws.
     ///   - centre: where the dot's centre stands, in points.
     ///   - pitch: the pitch of the lattice, in points.
+    ///   - energy: the band the dot holds, from `0` to `1`.
     ///   - edgeFade: how much of its ink the dot keeps at the canvas's sides.
     ///   - age: how long the dot has been travelling, in seconds.
     ///   - glint: whether the dot may carry a glint.
     /// - Returns: the dot, with its band, its lamp and its spark.
     private func dot(
         sampleTick: Int,
-        offset: Int,
         column: Int,
         row: Int,
         centre: CGPoint,
         pitch: CGFloat,
+        energy: Double,
         edgeFade: Double,
         age: Double,
         glint: Bool
     ) -> MatrixLattice.Dot {
-        let energy = min(1, max(0, band(offset: offset, row: row)))
+        let energy = min(1, max(0, energy))
         let display = pow(energy, 1.6)
         let reveal = MatrixLattice.reveal(forDisplay: display)
         return MatrixLattice.Dot(
@@ -3204,24 +3263,24 @@ struct HUDWaveform: View {
         }()
 
         /// The display energy of `count` samples starting `offset` ticks ago.
-        static func energy(offset: Int, count: Int, history: [Double], ceiling: Double) -> Double {
+        static func energy(offset: Int, count: Int, history: [Double]) -> Double {
             guard !history.isEmpty, count > 0 else { return 0 }
             var sum = 0.0
             for tick in 0..<count {
                 sum += VisualizerBars.sample(history: history, offsetFromNewest: offset + tick)
             }
-            return VisualizerMath.displayEnergy(sum / Double(count), ceiling: ceiling)
+            return VisualizerMath.displayEnergy(sum / Double(count))
         }
 
         /// The display energy of the core: the newest six samples of the voice.
-        static func coreEnergy(history: [Double], ceiling: Double) -> Double {
-            energy(offset: 0, count: coreSamples, history: history, ceiling: ceiling)
+        static func coreEnergy(history: [Double]) -> Double {
+            energy(offset: 0, count: coreSamples, history: history)
         }
 
         /// The display energy of one ring: six samples four ticks apart from its
         /// neighbour's.
-        static func ringEnergy(_ ring: Int, history: [Double], ceiling: Double) -> Double {
-            energy(offset: ring * ringStep, count: ringSampleCount, history: history, ceiling: ceiling)
+        static func ringEnergy(_ ring: Int, history: [Double]) -> Double {
+            energy(offset: ring * ringStep, count: ringSampleCount, history: history)
         }
 
         /// The radius of one ring, in points.
@@ -3578,7 +3637,7 @@ struct HUDWaveform: View {
         ///
         /// It is the target the elastic radius chases rather than the radius the
         /// picture is drawn at: a sun whose radius steps from one measurement to
-        /// the next reads as a dot being resized, so ``elasticCoreRadius(history:ceiling:time:)``
+        /// the next reads as a dot being resized, so ``elasticCoreRadius(history:time:)``
         /// is what the core is drawn from.
         static func coreRadius(energy: Double, time: Double) -> CGFloat {
             let breath = sin(2 * Double.pi * time / breathSeconds)
@@ -3591,10 +3650,10 @@ struct HUDWaveform: View {
         /// The display energy of the core, read on the history cut to `length`
         /// samples.
         ///
-        /// It is the value ``energy(offset:count:history:ceiling:)`` returns for the
+        /// It is the value ``energy(offset:count:history:)`` returns for the
         /// oldest `length` samples, which is the history one tick of the core's
         /// spring sees, without copying the window for every tick it is read on.
-        static func coreEnergy(history: [Double], ceiling: Double, length: Int) -> Double {
+        static func coreEnergy(history: [Double], length: Int) -> Double {
             guard length > 0, !history.isEmpty else { return 0 }
             var sum = 0.0
             for offset in 0..<coreSamples {
@@ -3602,7 +3661,7 @@ struct HUDWaveform: View {
                 guard index >= 0, index < history.count else { continue }
                 sum += min(1, max(0, history[index]))
             }
-            return VisualizerMath.displayEnergy(sum / Double(coreSamples), ceiling: ceiling)
+            return VisualizerMath.displayEnergy(sum / Double(coreSamples))
         }
 
         /// The radius the core is drawn at, in points: the radius the voice asks
@@ -3620,15 +3679,13 @@ struct HUDWaveform: View {
         ///
         /// - Parameters:
         ///   - history: the envelope, oldest first.
-        ///   - ceiling: the adaptive ceiling of the take.
         ///   - time: the clock, in seconds, the breath is read at.
         /// - Returns: the radius, clamped to the range the core may occupy: no
         ///   smaller than six tenths of its resting radius and no larger than its
         ///   resting radius plus a third again of its gain and one breath.
-        static func elasticCoreRadius(history: [Double], ceiling: Double, time: Double) -> CGFloat {
+        static func elasticCoreRadius(history: [Double], time: Double) -> CGFloat {
             elasticCoreRadius(
                 history: history,
-                ceiling: ceiling,
                 time: time,
                 hertz: coreSpringHertz,
                 damping: coreSpringDamping
@@ -3638,21 +3695,19 @@ struct HUDWaveform: View {
         /// The radius the core is drawn at for a spring of the given frequency and
         /// damping, in points.
         ///
-        /// It is ``elasticCoreRadius(history:ceiling:time:)`` with the two
+        /// It is ``elasticCoreRadius(history:time:)`` with the two
         /// constants the card ships opened, so one spring can be measured against
         /// another. The drawing takes the same two numbers, and the card passes its
         /// own, so a cell of the ladder is a picture rather than a table row.
         ///
         /// - Parameters:
         ///   - history: the envelope, oldest first.
-        ///   - ceiling: the adaptive ceiling of the take.
         ///   - time: the clock, in seconds, the breath is read at.
         ///   - hertz: the spring's frequency, in hertz.
         ///   - damping: the spring's damping, as a share of critical damping.
         /// - Returns: the radius, clamped to the range the core may occupy.
         static func elasticCoreRadius(
             history: [Double],
-            ceiling: Double,
             time: Double,
             hertz: Double,
             damping: Double
@@ -3662,7 +3717,7 @@ struct HUDWaveform: View {
             let step = 1 / (VisualizerMath.sampleRate * Double(coreSpringSubsteps))
             func target(ticksRemaining: Int) -> Double {
                 let length = history.count - ticksRemaining
-                let energy = coreEnergy(history: history, ceiling: ceiling, length: length)
+                let energy = coreEnergy(history: history, length: length)
                 let moment = time - Double(ticksRemaining) / VisualizerMath.sampleRate
                 return Double(coreRadius(energy: energy, time: moment))
             }
@@ -3727,7 +3782,7 @@ struct HUDWaveform: View {
             : history
         let clock = reduceMotion ? 0 : time
         let frames = (0..<Halo.ringCount).map { ring -> HaloRingFrame in
-            let energy = Halo.ringEnergy(ring, history: source, ceiling: ceiling)
+            let energy = Halo.ringEnergy(ring, history: source)
             return HaloRingFrame(
                 energy: energy,
                 orientation: Halo.orientation(
@@ -3783,7 +3838,7 @@ struct HUDWaveform: View {
     /// nothing at the edge, which is the soft edge that keeps it a light rather
     /// than a painted circle.
     ///
-    /// The radius is elastic. ``HUDWaveform/Halo/elasticCoreRadius(history:ceiling:time:)``
+    /// The radius is elastic. ``HUDWaveform/Halo/elasticCoreRadius(history:time:)``
     /// is a spring's answer to the radius the voice asks for, and the glow, the
     /// rays and the shine are all read from that one number, so the whole sun
     /// swells together and settles together. The rays stretch with the same
@@ -3825,12 +3880,11 @@ struct HUDWaveform: View {
         let source = reduceMotion
             ? VisualizerMath.peakHold(history, ticks: Halo.holdSamples)
             : history
-        let energy = Halo.coreEnergy(history: source, ceiling: ceiling)
+        let energy = Halo.coreEnergy(history: source)
         let target = reduceMotion
             ? Halo.coreRadius(energy: energy, time: 0)
             : Halo.elasticCoreRadius(
                 history: source,
-                ceiling: ceiling,
                 time: time,
                 hertz: hertz,
                 damping: damping

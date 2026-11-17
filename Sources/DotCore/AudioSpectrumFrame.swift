@@ -12,10 +12,26 @@ public struct AudioSpectrumFrame: Sendable, Equatable {
     /// at the bottom (the fundamental and chest resonance).
     public var bands: (Double, Double, Double, Double, Double)
 
+    /// The tick of the meter's clock this frame was measured on, when it is held
+    /// in a ring.
+    ///
+    /// A ring moves one slot every tick, so a frame found by its position in the
+    /// ring is a different measurement on the next frame. This stamp is what
+    /// makes a measurement findable by its own identity instead: the styles that
+    /// draw a history of frames read the frame stamped with the tick they want,
+    /// and that frame is the same measurement however far the ring has moved past
+    /// it. It is `nil` for a frame that was never written into a ring, so a caller
+    /// that builds a ring by hand keeps the positional rules.
+    ///
+    /// It is not part of the frame's equality: two frames of the same measurement
+    /// are the same measurement wherever they sit in the ring.
+    public var sample: Int?
+
     public static let zero = AudioSpectrumFrame(bands: (0, 0, 0, 0, 0))
 
-    public init(bands: (Double, Double, Double, Double, Double)) {
+    public init(bands: (Double, Double, Double, Double, Double), sample: Int? = nil) {
         self.bands = bands
+        self.sample = sample
     }
 
     public static func == (lhs: AudioSpectrumFrame, rhs: AudioSpectrumFrame) -> Bool {

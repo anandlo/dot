@@ -855,7 +855,7 @@ extension VisualizerRedesignTests {
             let measured = extent(bitmap, canvas: size, margin: margin)
             var ringExtent = 0.0
             for ring in 0..<HUDWaveform.Halo.ringCount {
-                let energy = HUDWaveform.Halo.ringEnergy(ring, history: snapshot.history, ceiling: snapshot.ceiling)
+                let energy = HUDWaveform.Halo.ringEnergy(ring, history: snapshot.history)
                 let orientation = HUDWaveform.Halo.orientation(
                     ring: ring,
                     time: 1.75,
@@ -871,7 +871,6 @@ extension VisualizerRedesignTests {
             let reach = Double(HUDWaveform.Halo.maximumParticleRadius)
             let coreRadius = Double(HUDWaveform.Halo.elasticCoreRadius(
                 history: snapshot.history,
-                ceiling: snapshot.ceiling,
                 time: 1.75
             ))
             let glow = Double(HUDWaveform.Halo.glowReach) * coreRadius
@@ -970,7 +969,6 @@ extension VisualizerRedesignTests {
         let moment = VisualizerTile.stillTime
         let row = HUDWaveform.Stretch.bars(
             history: VisualizerTile.history(at: moment),
-            ceiling: 1,
             phase: DictationScript.phase(at: moment),
             time: moment,
             reveal: 1,
