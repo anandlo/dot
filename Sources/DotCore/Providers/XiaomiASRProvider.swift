@@ -36,6 +36,8 @@ public struct XiaomiASRProvider: Provider {
 
     private let session: URLSession
     private let timeout: TimeInterval
+    /// How long the one request that proves the key may take.
+    private let verificationTimeout: TimeInterval
     /// The Mac's own language, used when the person did not choose one.
     private let systemLanguage: String?
 
@@ -51,18 +53,25 @@ public struct XiaomiASRProvider: Provider {
         apiKey: String? = nil,
         timeout: TimeInterval = 120,
         session: URLSession = OpenAICompatibleProvider.makeSession(),
-        systemLanguage: String? = Locale.preferredLanguages.first
+        systemLanguage: String? = Locale.preferredLanguages.first,
+        verificationTimeout: TimeInterval = CredentialVerifier.timeout
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.timeout = timeout
         self.session = session
         self.systemLanguage = systemLanguage
+        self.verificationTimeout = verificationTimeout
     }
 
     /// The URL a transcription is posted to.
     public var transcriptionURL: URL {
         baseURL.appendingPathComponent("chat/completions")
+    }
+
+    /// The URL the model list is read from, and the one a check calls.
+    public var modelsURL: URL {
+        baseURL.appendingPathComponent("models")
     }
 
     /// Whether a key is configured.
@@ -381,5 +390,30 @@ public struct XiaomiASRProvider: Provider {
             return ProviderErrorText.sanitized(message)
         }
         return ProviderErrorText.sanitized(String(data: data, encoding: .utf8))
+    }
+}
+
+extension XiaomiASRProvider: CredentialVerifying {
+    /// The models request that proves the key.
+    ///
+    /// The service documents `GET {baseURL}/models` with either
+    /// `Authorization: Bearer <key>` or `api-key: <key>`; the Bearer spelling is
+    /// the one sent here. The base URL is the configuration's, so both the
+    /// default `api.xiaomimimo.com` address and a token-plan address are checked
+    /// where the audio would go.
+    func credentialRequest() -> URLRequest? {
+        guard let apiKey = CredentialVerifier.credential(apiKey) else { return nil }
+        return CredentialVerifier.request(
+            url: modelsURL,
+            headers: ["Authorization": "Bearer \(apiKey)"],
+            timeout: verificationTimeout
+        )
+    }
+
+    public func verifyCredentials() async -> CredentialCheck {
+        guard let request = credentialRequest() else {
+            return CredentialVerifier.missingKey(displayName)
+        }
+        return await CredentialVerifier.check(request, session: session, providerID: id)
     }
 }

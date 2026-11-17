@@ -108,6 +108,28 @@ final class CredentialCacheTests: XCTestCase {
         XCTAssertEqual(attempts.count, 2)
     }
 
+    /// A caller can tell a refused read from a definite "no key".
+    ///
+    /// `key(for:)` answers nil for both, and the page needs the difference: a
+    /// refused read must not be compared as if the Keychain had said the
+    /// provider has no key.
+    func testAReadFailureIsVisibleUntilAReadAnswers() {
+        let answers = Answers([.failed("the Keychain is locked"), .key("secret"), .missing])
+        let cache = CredentialCache(reader: { _ in answers.next() }, logsReads: false)
+
+        XCTAssertNil(cache.key(for: "xiaomi"))
+        XCTAssertTrue(cache.readFailed("xiaomi"), "a failed read was not reported as one")
+        XCTAssertFalse(cache.isResolved("xiaomi"), "a failed read was remembered as an answer")
+
+        XCTAssertEqual(cache.key(for: "xiaomi"), "secret")
+        XCTAssertFalse(cache.readFailed("xiaomi"), "a successful read kept the old failure")
+        XCTAssertTrue(cache.isResolved("xiaomi"))
+
+        XCTAssertNil(cache.key(for: "openai"))
+        XCTAssertFalse(cache.readFailed("openai"), "a definite absence was reported as a failure")
+        XCTAssertTrue(cache.isResolved("openai"))
+    }
+
     func testAWriteReplacesWhatTheCacheKnows() {
         let counter = Counter()
         let cache = CredentialCache(reader: counter.read)

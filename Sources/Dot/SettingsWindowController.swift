@@ -16,14 +16,13 @@ final class SettingsWindowController {
 
     /// Shows the settings.
     func show(
-        config: Binding<DotConfig>,
+        store: ConfigStore,
         providers: [MenuProvider],
         tab: Int = 0,
         onChange: @escaping () -> Void,
         onSetAPIKey: @escaping (String, String) -> String?,
         onDeleteAPIKey: @escaping (String) -> String? = { _ in nil },
         onDeleteAllAPIKeys: @escaping () -> String? = { nil },
-        onTest: @escaping (String) async -> Bool,
         onChangeShortcut: @escaping () -> Void,
         onChangePasteShortcut: @escaping () -> Void = {},
         onChangePaletteShortcut: @escaping () -> Void = {},
@@ -33,14 +32,13 @@ final class SettingsWindowController {
         let host = existingHost()
         host.present {
             SettingsView(
-                config: config,
+                store: store,
                 providers: providers,
                 tab: tab,
                 onChange: onChange,
                 onSetAPIKey: onSetAPIKey,
                 onDeleteAPIKey: onDeleteAPIKey,
                 onDeleteAllAPIKeys: onDeleteAllAPIKeys,
-                onTest: onTest,
                 onChangeShortcut: onChangeShortcut,
                 onChangePasteShortcut: onChangePasteShortcut,
                 onChangePaletteShortcut: onChangePaletteShortcut,

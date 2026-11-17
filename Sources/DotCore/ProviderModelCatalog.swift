@@ -125,9 +125,11 @@ public enum ProviderModelCatalog {
     ///
     /// The list is what the service reports, filtered to the models that can
     /// transcribe. Without a key there is nothing to ask with, so the answer is
-    /// empty and the caller falls back to its own defaults. The one exception is
-    /// Xiaomi, which ships a single ASR model: it is always inserted, so the
-    /// picker is never empty for a service that has exactly one thing to offer.
+    /// empty and the caller falls back to its own defaults. Two services ship a
+    /// list of their own: Xiaomi's single ASR model and ElevenLabs' Scribe
+    /// models are returned when the service's list cannot be read, so the
+    /// picker is never empty for a service whose models this build already
+    /// knows.
     ///
     /// - Parameters:
     ///   - providerID: the provider whose endpoint to read.
@@ -210,13 +212,21 @@ public enum ProviderModelCatalog {
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.timeoutInterval = 8
 
-            guard let (data, response) = try? await session.data(for: request),
-                  let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode)
-            else {
-                return []
+            var models: [AvailableModel] = []
+            if let (data, response) = try? await session.data(for: request),
+               let http = response as? HTTPURLResponse,
+               (200..<300).contains(http.statusCode) {
+                models = parseElevenLabsModels(data: data)
             }
-            return parseElevenLabsModels(data: data)
+            // The Scribe models ship with the app. A dictation-only key may
+            // transcribe but not read the model list, and that refusal must not
+            // leave the picker disabled for the models the key can use.
+            if models.isEmpty {
+                models = ElevenLabsProvider.supportedModels.map {
+                    AvailableModel(id: $0.id, name: $0.title, detail: $0.detail)
+                }
+            }
+            return models
 
         case ProviderIdentifier.xiaomi:
             let base = baseURL ?? XiaomiASRProvider.defaultBaseURL

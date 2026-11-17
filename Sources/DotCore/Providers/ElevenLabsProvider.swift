@@ -75,6 +75,8 @@ public struct ElevenLabsProvider: Provider {
 
     private let session: URLSession
     private let timeout: TimeInterval
+    /// How long the one request that proves the key may take.
+    private let verificationTimeout: TimeInterval
 
     /// Creates an ElevenLabs provider.
     public init(
@@ -92,7 +94,8 @@ public struct ElevenLabsProvider: Provider {
         transcriptEdit: String? = nil,
         zeroDataRetention: Bool = true,
         timeout: TimeInterval = 120,
-        session: URLSession = OpenAICompatibleProvider.makeSession()
+        session: URLSession = OpenAICompatibleProvider.makeSession(),
+        verificationTimeout: TimeInterval = CredentialVerifier.timeout
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
@@ -109,6 +112,7 @@ public struct ElevenLabsProvider: Provider {
         self.zeroDataRetention = zeroDataRetention
         self.timeout = timeout
         self.session = session
+        self.verificationTimeout = verificationTimeout
     }
 
     /// The `/speech-to-text` endpoint URL.
@@ -120,6 +124,11 @@ public struct ElevenLabsProvider: Provider {
 
     public func isAvailable() async -> Bool {
         apiKey?.isEmpty == false
+    }
+
+    /// The URL the model list is read from, and the one a check calls.
+    public var modelsURL: URL {
+        baseURL.appendingPathComponent("models")
     }
 
     /// Builds the `URLRequest` for `/v1/speech-to-text` so unit tests can inspect headers and multipart fields.
@@ -317,5 +326,30 @@ public struct ElevenLabsProvider: Provider {
             return ProviderErrorText.sanitized(message)
         }
         return nil
+    }
+}
+
+extension ElevenLabsProvider: CredentialVerifying {
+    /// The models request that proves the key.
+    ///
+    /// The documentation's own first request is `GET https://api.elevenlabs.io/v1/models`
+    /// with `xi-api-key`. It is used instead of `GET /v1/user`, which needs the
+    /// `user_read` permission and answers 401 for a key restricted to speech to
+    /// text; the models list needs only the read scope the model picker already
+    /// uses.
+    func credentialRequest() -> URLRequest? {
+        guard let apiKey = CredentialVerifier.credential(apiKey) else { return nil }
+        return CredentialVerifier.request(
+            url: modelsURL,
+            headers: ["xi-api-key": apiKey],
+            timeout: verificationTimeout
+        )
+    }
+
+    public func verifyCredentials() async -> CredentialCheck {
+        guard let request = credentialRequest() else {
+            return CredentialVerifier.missingKey(displayName)
+        }
+        return await CredentialVerifier.check(request, session: session, providerID: id)
     }
 }
