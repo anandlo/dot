@@ -157,7 +157,7 @@ final class HaloMotionTests: XCTestCase {
     }
 
     static func state(ring: Int, frame: Frame, time: Double, size: CGSize = canvas) -> RingState {
-        let energy = HUDWaveform.Halo.ringEnergy(ring, history: frame.history, ceiling: frame.ceiling)
+        let energy = HUDWaveform.Halo.ringEnergy(ring, history: frame.history)
         let orientation = HUDWaveform.Halo.orientation(
             ring: ring,
             time: time,
@@ -835,9 +835,7 @@ final class HaloMotionTests: XCTestCase {
             for tick in 0..<frames.count {
                 let energy = HUDWaveform.Halo.ringEnergy(
                     ring,
-                    history: frames[tick].history,
-                    ceiling: frames[tick].ceiling
-                )
+                    history: frames[tick].history)
                 if energy > loudEnergy {
                     loudEnergy = energy
                     loudTick = tick
@@ -1190,13 +1188,10 @@ final class HaloMotionTests: XCTestCase {
             let time = Double(tick) * step
             let radius = Double(HUDWaveform.Halo.elasticCoreRadius(
                 history: frames[tick].history,
-                ceiling: frames[tick].ceiling,
                 time: time
             ))
             let energy = HUDWaveform.Halo.coreEnergy(
-                history: frames[tick].history,
-                ceiling: frames[tick].ceiling
-            )
+                history: frames[tick].history)
             let target = Double(HUDWaveform.Halo.coreRadius(energy: energy, time: time))
             smallest = min(smallest, radius)
             largest = max(largest, radius)
@@ -1223,7 +1218,7 @@ final class HaloMotionTests: XCTestCase {
             stepHistory[index] = 1
         }
         let stepTarget = Double(HUDWaveform.Halo.coreRadius(
-            energy: HUDWaveform.Halo.coreEnergy(history: stepHistory, ceiling: 1),
+            energy: HUDWaveform.Halo.coreEnergy(history: stepHistory),
             time: 11
         ))
         var stepOvershoot = -Double.infinity
@@ -1232,11 +1227,10 @@ final class HaloMotionTests: XCTestCase {
             let cut = Array(stepHistory[0..<end])
             let radius = Double(HUDWaveform.Halo.elasticCoreRadius(
                 history: cut,
-                ceiling: 1,
                 time: 11
             ))
             let target = Double(HUDWaveform.Halo.coreRadius(
-                energy: HUDWaveform.Halo.coreEnergy(history: cut, ceiling: 1),
+                energy: HUDWaveform.Halo.coreEnergy(history: cut),
                 time: 11
             ))
             stepOvershoot = max(stepOvershoot, radius - target)
@@ -1251,7 +1245,6 @@ final class HaloMotionTests: XCTestCase {
         let silence = Self.silentFrame()
         let settled = Double(HUDWaveform.Halo.elasticCoreRadius(
             history: silence.history,
-            ceiling: silence.ceiling,
             time: 12
         ))
         let settledTarget = Double(HUDWaveform.Halo.coreRadius(energy: 0, time: 12))
@@ -1303,6 +1296,12 @@ final class HaloMotionTests: XCTestCase {
     /// number the drawing uses. A ray is a triangle rather than a stroke, so its
     /// ink at a point is read as the ink of the pixel the point lands on, which is
     /// where a taper narrower than a pixel puts it.
+    ///
+    /// The rays' contrast is asserted on absolute inputs rather than on this demo
+    /// frame. The 0.08 floor was measured on energy that a peak-stretched take
+    /// pushed to the top of the range; an absolute level deliberately draws a quiet
+    /// voice dim, so the floor applies from ordinary speech up and -40 dBFS is held
+    /// to a lower one. The demo frame's own contrast is printed as a record.
     func testTheCoreGlowsAndShines() throws {
         let frames = Self.dictationFrames()
         let time = 6.96
@@ -1313,7 +1312,6 @@ final class HaloMotionTests: XCTestCase {
         let centre = (x: Double(bitmap.pixelsWide) / 2, y: Double(bitmap.pixelsHigh) / 2)
         let radius = Double(HUDWaveform.Halo.elasticCoreRadius(
             history: frame.history,
-            ceiling: frame.ceiling,
             time: time
         ))
         func ink(at multiple: Double, angle: Double) -> Double {
@@ -1333,7 +1331,7 @@ final class HaloMotionTests: XCTestCase {
             x: Int(centre.x),
             y: Int(centre.y)
         )?.usingColorSpace(.sRGB)
-        let energy = HUDWaveform.Halo.coreEnergy(history: frame.history, ceiling: frame.ceiling)
+        let energy = HUDWaveform.Halo.coreEnergy(history: frame.history)
         let turn = 2 * Double.pi * time / HUDWaveform.Halo.rayTurnSeconds
         let onRay = ink(at: 1.35, angle: turn)
         let between = ink(at: 1.35, angle: turn + Double.pi / Double(HUDWaveform.Halo.rayCount))
@@ -1366,11 +1364,46 @@ final class HaloMotionTests: XCTestCase {
             0.85,
             String(format: "the centre's luminance is %.4f, not white hot", middle)
         )
-        XCTAssertGreaterThanOrEqual(
-            onRay - between,
-            0.08,
-            String(format: "a ray inks %.4f more than the gap beside it", onRay - between)
-        )
+        // The demo frame's contrast at one point is a record, not a criterion: the
+        // floor belongs to absolute inputs. The 0.08 floor was measured on energy
+        // that a peak-stretched take pushed to the top of the range; an absolute
+        // level deliberately draws a quiet voice dim, so the floor applies from
+        // ordinary speech up and -40 dBFS is held to a lower one.
+        let window = LevelScale.window(for: nil)
+        var contrasts: [(decibels: Double, contrast: Double)] = []
+        for decibels in [-40.0, -30, -20, -10, 0] {
+            let level = LevelScale.level(decibels: decibels, window: window)
+            let measured = try rayContrast(
+                history: [Double](repeating: level, count: Waveform.historyLength),
+                ceiling: 1,
+                time: time,
+                spectrum: frame.spectrum,
+                phase: frame.phase
+            )
+            contrasts.append((decibels, measured.ray - measured.gap))
+            print(String(
+                format: "HALO H11 absolute %.0f dBFS: r %.4f, ray %.4f, gap %.4f, contrast %.4f",
+                decibels, measured.energy, measured.ray, measured.gap, measured.ray - measured.gap
+            ))
+        }
+        for entry in contrasts {
+            let floor = entry.decibels <= -40 ? 0.05 : 0.08
+            XCTAssertGreaterThanOrEqual(
+                entry.contrast,
+                floor,
+                String(format: "a ray inks %.4f more than the gap beside it at %.0f dBFS",
+                       entry.contrast, entry.decibels)
+            )
+        }
+        for index in 1..<contrasts.count {
+            XCTAssertGreaterThanOrEqual(
+                contrasts[index].contrast,
+                contrasts[index - 1].contrast,
+                String(format: "the ray's contrast falls from %.4f at %.0f dBFS to %.4f at %.0f dBFS",
+                       contrasts[index - 1].contrast, contrasts[index - 1].decibels,
+                       contrasts[index].contrast, contrasts[index].decibels)
+            )
+        }
     }
 
     // MARK: - H12: the cost of the halo
@@ -1572,15 +1605,12 @@ final class HaloMotionTests: XCTestCase {
                 let time = Double(tick) * tickSeconds
                 let radius = Double(HUDWaveform.Halo.elasticCoreRadius(
                     history: frames[tick].history,
-                    ceiling: frames[tick].ceiling,
                     time: time,
                     hertz: hertz,
                     damping: damping
                 ))
                 let energy = HUDWaveform.Halo.coreEnergy(
-                    history: frames[tick].history,
-                    ceiling: frames[tick].ceiling
-                )
+                    history: frames[tick].history)
                 let target = Double(HUDWaveform.Halo.coreRadius(energy: energy, time: time))
                 let excess = radius - target
                 if excess > reading.overshoot {
@@ -1605,7 +1635,6 @@ final class HaloMotionTests: XCTestCase {
             let silence = Self.silentFrame()
             let settled = Double(HUDWaveform.Halo.elasticCoreRadius(
                 history: silence.history,
-                ceiling: silence.ceiling,
                 time: 12,
                 hertz: hertz,
                 damping: damping
@@ -2328,9 +2357,7 @@ extension HaloMotionTests {
         for ring in 0..<HUDWaveform.Halo.ringCount {
             let energy = HUDWaveform.Halo.ringEnergy(
                 ring,
-                history: frame.history,
-                ceiling: frame.ceiling
-            )
+                history: frame.history)
             let orientation = HUDWaveform.Halo.orientation(
                 ring: ring,
                 time: time,
@@ -2405,9 +2432,7 @@ extension HaloMotionTests {
         let height = Int((rect.height * scaleY).rounded())
 
         let coreEnergy = HUDWaveform.Halo.coreEnergy(
-            history: frame.history,
-            ceiling: frame.ceiling
-        )
+            history: frame.history)
         let discRadius = Double(HUDWaveform.Halo.coreRadius(energy: coreEnergy, time: time)) + 3
         let rings = Self.ringPoints(frame: frame, time: time, canvasRect: rect)
 
@@ -2913,5 +2938,129 @@ extension HaloMotionTests {
     /// One view's SHA-256, so two frames can be compared as files.
     func frameHash(_ content: some View, size: CGSize) throws -> String {
         Self.hash(try frameData(content, size: size))
+    }
+}
+
+// MARK: - The ray energy ladder
+
+extension HaloMotionTests {
+    /// The rays' contrast against the gaps between them, at a core energy.
+    ///
+    /// Six rays, a 3 x 3 pixel patch at 1.35 core radii on each ray axis and the
+    /// same patch at the half-way angle between two rays, averaged over the rays.
+    /// The three controls are returned with it so a caller can prove they did not
+    /// move.
+    ///
+    /// - Parameters:
+    ///   - history: the envelope, oldest first, unscaled.
+    ///   - ceiling: the take's ceiling, for the tint.
+    ///   - time: the clock, in seconds, the rays are read at.
+    ///   - spectrum: the bands of the frame, which the core does not read.
+    ///   - phase: where inside the newest sample the frame sits.
+    /// - Returns: the ray ink, the gap ink, and the radius, glow and centre.
+    func rayContrast(
+        history: [Double],
+        ceiling: Double,
+        time: Double,
+        spectrum: [AudioSpectrumFrame],
+        phase: Double
+    ) throws -> (ray: Double, gap: Double, radius: Double, glow: Double, centre: Double, energy: Double) {
+        let size = Self.cardCanvas
+        let rays = HUDWaveform.Halo.rayCount
+        let frame = Frame(
+            history: history,
+            spectrum: spectrum,
+            ceiling: ceiling,
+            level: history.last ?? 0,
+            phase: phase
+        )
+        let bitmap = try rasterise(coreOnly(frame, time: time, size: size), size: size)
+        let pixels = Double(bitmap.pixelsWide) / Double(size.width)
+        let centre = (x: Double(bitmap.pixelsWide) / 2, y: Double(bitmap.pixelsHigh) / 2)
+        let radius = Double(HUDWaveform.Halo.elasticCoreRadius(history: history, time: time))
+        let turn = 2 * Double.pi * time / HUDWaveform.Halo.rayTurnSeconds
+        func patch(_ multiple: Double, _ angle: Double) -> Double {
+            let x = Int((centre.x + cos(angle) * multiple * radius * pixels).rounded())
+            let y = Int((centre.y + sin(angle) * multiple * radius * pixels).rounded())
+            var total = 0.0
+            var count = 0
+            for dy in -1...1 {
+                for dx in -1...1 {
+                    total += alpha(bitmap, x + dx, y + dy)
+                    count += 1
+                }
+            }
+            return count == 0 ? 0 : total / Double(count)
+        }
+        var rayInk = 0.0
+        var gapInk = 0.0
+        for ray in 0..<rays {
+            let axis = turn + 2 * Double.pi * Double(ray) / Double(rays)
+            rayInk += patch(1.35, axis)
+            gapInk += patch(1.35, axis + Double.pi / Double(rays))
+        }
+        return (
+            rayInk / Double(rays),
+            gapInk / Double(rays),
+            radius,
+            (0..<8).map { patch(1.6, Double($0) * Double.pi / 4) }.reduce(0, +) / 8,
+            luminance(bitmap, Int(centre.x), Int(centre.y)),
+            HUDWaveform.Halo.coreEnergy(history: history)
+        )
+    }
+
+    /// The ray's ink against the exponent its energy is raised to.
+    ///
+    /// The rays are inked from ``HUDWaveform/Halo/coreEnergy(history:)``, which is
+    /// ``VisualizerMath/displayEnergy(_:)`` of the newest six samples of the voice.
+    /// Before the height was made absolute that number was stretched towards the
+    /// take's own peak, and the ray's contrast floor of `0.08` was measured on the
+    /// stretched picture. On the absolute number the same fixture inks `0.0510`, so
+    /// the floor is a question about the ray's curve rather than about the height.
+    ///
+    /// This is a measurement, not a decision: for each exponent `g` it reports the
+    /// ray's contrast in the fixture ``testTheCoreGlowsAndShines`` measures, the
+    /// same contrast at five steady loudnesses, and whether the two loudest are
+    /// apart by enough to be told apart. The code ships `g = 1.00`, which is the
+    /// energy as it is.
+    func testTheRayEnergyLadder() throws {
+        let variant = ProcessInfo.processInfo.environment["DOT_RAY_VARIANT"] ?? "A1"
+        let time = 6.96
+        let rays = HUDWaveform.Halo.rayCount
+        let window = LevelScale.window(for: nil)
+        let frames = Self.dictationFrames()
+        let frame = frames[min(frames.count - 1, Int((time * Waveform.sampleRate).rounded()))]
+        print(String(format: "RAY variant %@ rays %d window %.2f...%.2f dBFS", variant, rays, window.bottomDBFS, window.topDBFS))
+
+        /// One input's row, from the shared harness.
+        func row(_ name: String, history: [Double], ceiling: Double) throws
+            -> (ray: Double, gap: Double, radius: Double, glow: Double, centre: Double) {
+            let measured = try rayContrast(
+                history: history,
+                ceiling: ceiling,
+                time: time,
+                spectrum: frame.spectrum,
+                phase: frame.phase
+            )
+            print(String(
+                format: "RAY %@ %@ r %.4f ceiling %.4f ray %.4f gap %.4f contrast %.4f radius %.3f glow %.4f centre %.4f",
+                variant, name, measured.energy, ceiling, measured.ray, measured.gap,
+                measured.ray - measured.gap, measured.radius, measured.glow, measured.centre
+            ))
+            return (measured.ray, measured.gap, measured.radius, measured.glow, measured.centre)
+        }
+
+        let fixture = try row("fixture", history: frame.history, ceiling: frame.ceiling)
+        var rows: [(name: String, ray: Double, gap: Double, radius: Double, glow: Double, centre: Double)] = []
+        for decibels in [-40.0, -30, -20, -10, 0] {
+            let level = LevelScale.level(decibels: decibels, window: window)
+            let histories = [Double](repeating: level, count: Waveform.historyLength)
+            let measured = try row(String(format: "%.0f", decibels), history: histories, ceiling: 1)
+            rows.append((String(format: "%.0f", decibels), measured.ray, measured.gap, measured.radius, measured.glow, measured.centre))
+        }
+        let apart = rows[4].ray - rows[3].ray
+        print(String(format: "RAY %@ summary fixture contrast %.4f 0vs-10 %.4f %@", variant,
+                     fixture.ray - fixture.gap, apart, apart >= 0.03 ? "apart" : "not apart"))
+        XCTAssertEqual(rows.count, 5, "a loudness was not measured")
     }
 }
