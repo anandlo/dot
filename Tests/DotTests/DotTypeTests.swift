@@ -1,5 +1,6 @@
 import AppKit
 import CoreText
+import DotCore
 import SwiftUI
 import XCTest
 @testable import Dot
@@ -11,8 +12,8 @@ import XCTest
 /// like it did before, so a suite that forgot to register the face would pass
 /// while measuring the system font. And a variation requested with the string
 /// "wght" is accepted into the descriptor and then ignored, so a call site that
-/// built its own descriptor would draw the file's default instance, Regular,
-/// and report nothing. Both are tested here as behaviour, not as source.
+/// built its own descriptor would draw the file's default instance, Black, and
+/// report nothing. Both are tested here as behaviour, not as source.
 final class DotTypeTests: XCTestCase {
     // MARK: - Registration
 
@@ -36,55 +37,71 @@ final class DotTypeTests: XCTestCase {
 
     // MARK: - The face
 
-    /// The family resolves to Switzer and not to a silent fallback.
+    /// The family resolves to Satoshi and not to a silent fallback.
     ///
     /// This is the assertion that catches the trap: the resolver answers the
     /// system font when the file is missing, and the app carries on, so the
     /// family name is the only thing that tells a real resolution from a
-    /// fallback.
-    func testTheFamilyResolvesToSwitzer() throws {
+    /// fallback. The point size is the requested one times the optical factor,
+    /// which is how every size in the app is drawn.
+    func testTheFamilyResolvesToSatoshi() throws {
         let font = DotType.nsFont(13, .regular)
         XCTAssertEqual(font.familyName, DotType.familyName)
-        XCTAssertEqual(font.familyName, "Switzer Variable", "the resolver fell back to the system font")
+        XCTAssertEqual(font.familyName, "Satoshi Variable", "the resolver fell back to the system font")
+        XCTAssertEqual(
+            font.fontDescriptor.postscriptName,
+            "SatoshiVariable-Bold_Regular",
+            "the regular weight did not resolve the file's Regular instance"
+        )
         XCTAssertTrue(DotType.isCustomFaceAvailable, "the last resolution did not use the bundled face")
-        XCTAssertEqual(font.pointSize, 13, accuracy: 0.001)
+        XCTAssertEqual(font.pointSize, 13 * DotType.opticalScale, accuracy: 0.001)
+        XCTAssertEqual(DotType.opticalScale, 1.01, accuracy: 0.0001)
     }
 
-    /// The file's default instance is Regular, not one of the display weights.
+    /// The file's default instance is Black, so the axis has to be set every
+    /// time.
     ///
-    /// Every weight the app draws is a variation on top of the file's default,
-    /// which the file declares as wght 400, so the face a plain lookup answers
-    /// is the body face. A file republished with a different default would make
-    /// the unweighted lookup draw something the app never chose, which is why
-    /// this is a test rather than a comment.
-    func testTheDefaultInstanceIsRegularFourHundred() throws {
-        let base = try XCTUnwrap(NSFont(name: "SwitzerVariable-Regular", size: 15))
-        XCTAssertEqual(base.familyName, "Switzer Variable")
-        XCTAssertEqual(base.fontDescriptor.postscriptName, "SwitzerVariable-Regular")
+    /// The file declares its only axis from 300 to 900 with the maximum as the
+    /// default, so a plain lookup draws Black and the body face is a variation
+    /// on top of it. This is the fact that makes an unset axis a visible defect
+    /// rather than a subtle one, which is why it is a test and not a comment.
+    func testTheDefaultInstanceIsBlackSoTheAxisIsAlwaysSet() throws {
+        let size: CGFloat = 15
+        let base = try XCTUnwrap(NSFont(name: "SatoshiVariable-Bold", size: size * DotType.opticalScale))
+        XCTAssertEqual(base.familyName, "Satoshi Variable")
+        XCTAssertEqual(base.fontDescriptor.postscriptName, "SatoshiVariable-Bold")
 
         let atDefault = (Self.sample as NSString).size(withAttributes: [.font: base]).width
         let atRegular = (Self.sample as NSString)
-            .size(withAttributes: [.font: DotType.nsFont(15, .regular)]).width
+            .size(withAttributes: [.font: DotType.nsFont(size, .regular)]).width
         let atBold = (Self.sample as NSString)
-            .size(withAttributes: [.font: DotType.nsFont(15, .bold)]).width
+            .size(withAttributes: [.font: DotType.nsFont(size, .bold)]).width
         print("DotType default: plain lookup \(atDefault) pt, wght 400 \(atRegular) pt, wght 700 \(atBold) pt")
 
-        XCTAssertEqual(
-            atDefault,
-            atRegular,
-            accuracy: 0.0001,
-            "the plain lookup is not the file's Regular instance, so the axis does not start at 400"
-        )
         XCTAssertGreaterThan(
+            atRegular,
+            0,
+            "the body face drew nothing"
+        )
+        XCTAssertLessThan(
+            atRegular,
+            atDefault,
+            "the plain lookup is not heavier than the body face, so the axis does not start at Black"
+        )
+        XCTAssertLessThan(
             atBold,
             atDefault,
-            "the bold the app asks for is not heavier than the file's default, so the axis is not "
-                + "a weight axis running upwards from Regular"
+            "the bold the app asks for is not lighter than the file's default"
+        )
+        // A lost axis is a ten percent jump in width, not a rounding error.
+        XCTAssertGreaterThan(
+            atDefault / atRegular,
+            1.05,
+            "the file's default instance is not the heaviest face, so an unset axis would go unnoticed"
         )
 
         // The axis the file declares, read from the face rather than from a
-        // descriptor the app built: the minimum, the default and the maximum are
-        // the file's own, and the default is what a plain lookup draws.
+        // descriptor the app built.
         let axes = try XCTUnwrap(
             CTFontCopyVariationAxes(base as CTFont) as? [[String: Any]],
             "the face reports no variation axis"
@@ -103,15 +120,15 @@ final class DotTypeTests: XCTestCase {
         )
         XCTAssertEqual(
             value(kCTFontVariationAxisMinimumValueKey, in: axis) ?? 0,
-            100,
+            300,
             accuracy: 0.001,
-            "the weight axis does not start at 100"
+            "the weight axis does not start at 300"
         )
         XCTAssertEqual(
             value(kCTFontVariationAxisDefaultValueKey, in: axis) ?? 0,
-            400,
+            900,
             accuracy: 0.001,
-            "the weight axis does not default to 400"
+            "the weight axis does not default to 900"
         )
         XCTAssertEqual(
             value(kCTFontVariationAxisMaximumValueKey, in: axis) ?? 0,
@@ -121,24 +138,34 @@ final class DotTypeTests: XCTestCase {
         )
     }
 
-    /// Six weights are six different widths of the same string.
+    /// Six weights are six strictly increasing advances of the same sentence,
+    /// and each one reports the axis value it was asked for.
     ///
     /// Six distinct PostScript names would prove the descriptors differ; the
-    /// advance of one string proves the drawing followed the descriptor, which
+    /// advance of one sentence proves the drawing followed the descriptor, which
     /// is the half that a string-keyed variation loses while still naming a
-    /// face. Each weight has to be wider than the one below it, because the
-    /// axis runs from 100 to 900 in one direction.
-    func testAllSixWeightsDrawDistinctAdvanceWidths() throws {
+    /// face. The axis runs from 300 to 900 in one direction, so every weight has
+    /// to be wider than the one below it.
+    func testAllSixWeightsDrawStrictlyIncreasingAdvances() throws {
         let weights: [DotType.Weight] = [.thin, .light, .regular, .medium, .semibold, .bold]
+        let size: CGFloat = 13
+        let sentence = "Write as fast as you can think."
         func width(_ weight: DotType.Weight) -> CGFloat {
-            (Self.sample as NSString).size(withAttributes: [.font: DotType.nsFont(15, weight)]).width
+            (sentence as NSString).size(withAttributes: [.font: DotType.nsFont(size, weight)]).width
         }
         let widths = weights.map(width)
-        let names = weights.map { DotType.nsFont(15, $0).fontDescriptor.postscriptName ?? "" }
+        let averages = widths.map { $0 / CGFloat(sentence.count) }
+        let names = weights.map { DotType.nsFont(size, $0).fontDescriptor.postscriptName ?? "" }
+        let variations = weights.map { weight -> Double? in
+            let font = DotType.nsFont(size, weight) as CTFont
+            guard let raw = CTFontCopyVariation(font) as NSDictionary? else { return nil }
+            return (raw[0x7767_6874] as? NSNumber)?.doubleValue
+        }
         print(
-            "DotType weights: "
-                + zip(weights, widths).map { "\($0) \($1) pt" }.joined(separator: ", ")
-                + " (names \(names))"
+            "DotType weights at \(size) pt: "
+                + zip(weights, widths).map { "\($0) \($1) pt (average \($1 / CGFloat(sentence.count)))" }
+                .joined(separator: ", ")
+                + " (names \(names), axes \(variations))"
         )
         XCTAssertEqual(
             Set(widths).count,
@@ -150,23 +177,35 @@ final class DotTypeTests: XCTestCase {
         }
         for index in 1 ..< weights.count {
             XCTAssertGreaterThan(
-                widths[index] - widths[index - 1],
-                1,
-                "\(weights[index]) is not heavier than \(weights[index - 1]): "
-                    + "\(widths[index]) pt against \(widths[index - 1]) pt for the same string at 15 pt"
+                averages[index],
+                averages[index - 1],
+                "the average advance of \(weights[index]) is not wider than \(weights[index - 1]): "
+                    + "\(averages[index]) pt against \(averages[index - 1]) pt for "
+                    + "\"\(sentence)\" at \(size) pt"
             )
         }
+        // The axis value the face carries is the one that was requested, not
+        // the file's default of 900.
+        for (index, weight) in weights.enumerated() {
+            XCTAssertEqual(
+                variations[index] ?? 0,
+                Double(weight.axisValue),
+                accuracy: 0.001,
+                "\(weight) drew a face whose axis reads \(String(describing: variations[index]))"
+            )
+        }
+        XCTAssertEqual(weights.map(\.axisValue), [300, 350, 400, 500, 600, 700])
     }
 
     /// The axis clamps at the heaviest value the file allows.
     ///
     /// The axis ends at 900, so a request above it has to draw the 900 face
-    /// rather than fall back to the default or to the system font: the app
-    /// never asks for more than 700, and a clamp that answered Regular would be
-    /// silent.
+    /// rather than fall back to the system font or to something else: the app
+    /// never asks for more than 700, and a clamp that answered the wrong face
+    /// would be silent.
     func testTheAxisClampsAboveNineHundred() throws {
         let size: CGFloat = 15
-        let base = try XCTUnwrap(NSFont(name: "SwitzerVariable-Regular", size: size))
+        let base = try XCTUnwrap(NSFont(name: "SatoshiVariable-Bold", size: size))
         func width(at value: CGFloat) -> CGFloat {
             let descriptor = base.fontDescriptor.addingAttributes([
                 .variation: [DotType.weightAxis: NSNumber(value: value)],
@@ -192,19 +231,20 @@ final class DotTypeTests: XCTestCase {
     /// nobody reintroduces the form: the descriptor keeps the key, every advance
     /// is identical to the file's default instance, and no error is raised. The
     /// app builds its variation dictionary from ``DotType/weightAxis``, a
-    /// numeric four-character code, and this test is the reason.
+    /// numeric four-character code, and this test is the reason. The file's
+    /// default is Black, so the untouched advance is the heaviest one.
     func testTheStringAxisKeyIsASilentNoOpAndMustNeverComeBack() throws {
         let size: CGFloat = 15
         func advance(_ font: NSFont) -> CGFloat {
             (Self.sample as NSString).size(withAttributes: [.font: font]).width
         }
-        let base = try XCTUnwrap(NSFont(name: "SwitzerVariable-Regular", size: size))
+        let base = try XCTUnwrap(NSFont(name: "SatoshiVariable-Bold", size: size))
         let atDefault = advance(base)
 
         let stringKeyed = try XCTUnwrap(
             NSFont(
                 descriptor: base.fontDescriptor.addingAttributes([
-                    .variation: ["wght": NSNumber(value: 200)],
+                    .variation: ["wght": NSNumber(value: 300)],
                 ]),
                 size: size
             )
@@ -227,7 +267,7 @@ final class DotTypeTests: XCTestCase {
         let numeric = try XCTUnwrap(
             NSFont(
                 descriptor: base.fontDescriptor.addingAttributes([
-                    .variation: [DotType.weightAxis: NSNumber(value: 200)],
+                    .variation: [DotType.weightAxis: NSNumber(value: 300)],
                 ]),
                 size: size
             )
@@ -247,24 +287,301 @@ final class DotTypeTests: XCTestCase {
 
     // MARK: - The width the interface was chosen for
 
-    /// Switzer is a shade narrower than the system face at the same size.
+    /// The body face is a shade narrower than the system face at the same size.
     ///
-    /// The interface was measured and chosen on this: at 13 points, the size
-    /// the rewrite rows and the body of the list are set in, a line of copy
-    /// comes to a ratio of the same line in the system face that has to stay
-    /// inside the band below. The band is the one the face was picked in; a
-    /// republished file that pushed the face past it would invalidate every
-    /// width in the HUD and the settings page.
+    /// The interface was measured and chosen on this: at 13 points, the size the
+    /// rewrite rows and the body of the list are set in, a line of copy comes to
+    /// a ratio of the same line in the system face that has to stay inside the
+    /// band below. The band is the one the face was picked in; a republished
+    /// file that pushed the face past it would invalidate every width in the HUD
+    /// and the settings page. Satoshi is drawn 5 percent larger than the
+    /// requested size, and at that size it lands just under the system face.
     func testTheRegularAdvanceIsAShadeNarrowerThanTheSystemFace() throws {
         let sentence = "Can you send Priya the updated notes"
-        let switzer = (sentence as NSString)
+        let satoshi = (sentence as NSString)
             .size(withAttributes: [.font: DotType.nsFont(13, .regular)]).width
         let system = (sentence as NSString)
             .size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width
-        let ratio = switzer / system
-        print("DotType width at 13 pt: Switzer \(switzer) pt, system \(system) pt, ratio \(ratio)")
+        let ratio = satoshi / system
+        print("DotType width at 13 pt: Satoshi \(satoshi) pt, system \(system) pt, ratio \(ratio)")
         XCTAssertGreaterThan(ratio, 0.90, "the face is narrower than the width it was chosen for")
         XCTAssertLessThan(ratio, 1.02, "the face is wider than the width it was chosen for")
+    }
+
+    // MARK: - The layout the interface was measured against
+
+    /// One fixed UI string, the size and weight its site draws it at, and the
+    /// width the same string had in Switzer at that size.
+    private struct MeasuredString {
+        let text: String
+        let size: CGFloat
+        let weight: CGFloat
+        let tabular: Bool
+        let switzer: CGFloat
+    }
+
+    /// The thirty longest fixed strings in the app, measured in Switzer.
+    ///
+    /// Each width was taken in the copy that still had Switzer, from the same
+    /// string at the same size and weight, through the same descriptor
+    /// construction the resolver uses. They are the layout this interface was
+    /// chosen in, so a face, a weight ladder or an optical factor that moves one
+    /// of them out of the band below has moved the product.
+    private static let measured: [MeasuredString] = [
+    MeasuredString(text: "Punctuation and line breaks match the app you dictate into. History keeps your original words.", size: 11.0, weight: 400, tabular: true, switzer: 458.30),
+    MeasuredString(text: "Clicking the icon starts and stops recording instead of opening the menu.", size: 11.0, weight: 400, tabular: true, switzer: 356.53),
+    MeasuredString(text: "The endpoint decides how long it keeps the audio. Dot keeps none.", size: 11.0, weight: 400, tabular: true, switzer: 325.71),
+    MeasuredString(text: "The service needs no key. Turning it on is the whole setup.", size: 11.0, weight: 400, tabular: true, switzer: 283.07),
+    MeasuredString(text: "Add the address of this service, then turn it on.", size: 11.0, weight: 400, tabular: true, switzer: 225.24),
+    MeasuredString(text: "Hesitations, stutters and false starts are removed.", size: 11.0, weight: 400, tabular: true, switzer: 243.78),
+    MeasuredString(text: "Flags PII, PHI, card numbers and offensive language.", size: 11.0, weight: 400, tabular: true, switzer: 256.56),
+    MeasuredString(text: "Tags such as (laughter) and (applause) are kept.", size: 11.0, weight: 400, tabular: true, switzer: 236.34),
+    MeasuredString(text: "Audio and transcripts are not kept for training.", size: 11.0, weight: 400, tabular: true, switzer: 223.70),
+    MeasuredString(text: "When off, transcripts are copied to the clipboard.", size: 11.0, weight: 400, tabular: true, switzer: 238.84),
+    MeasuredString(text: "Dates, times, currency, emails and phone numbers.", size: 11.0, weight: 400, tabular: true, switzer: 251.41),
+    MeasuredString(text: "Speakers are labelled agent and customer.", size: 11.0, weight: 400, tabular: true, switzer: 209.91),
+    MeasuredString(text: "Up to 32 speakers in multi-person audio.", size: 11.0, weight: 400, tabular: true, switzer: 197.53),
+    MeasuredString(text: "Hesitations such as uh and um are kept.", size: 11.0, weight: 400, tabular: true, switzer: 194.92),
+    MeasuredString(text: "ElevenLabs does not log or keep audio.", size: 11.0, weight: 400, tabular: true, switzer: 190.98),
+    MeasuredString(text: "Formatting to prefer, such as ISO dates.", size: 11.0, weight: 400, tabular: true, switzer: 192.53),
+    MeasuredString(text: "Sent with each request to help spelling.", size: 11.0, weight: 400, tabular: true, switzer: 191.84),
+    MeasuredString(text: "Based on 12 recordings with this microphone", size: 11.0, weight: 400, tabular: true, switzer: 222.45),
+    MeasuredString(text: "Deleting and sending always ask.", size: 11.0, weight: 400, tabular: true, switzer: 164.14),
+    MeasuredString(text: "Common apps are formatted automatically", size: 13.0, weight: 400, tabular: false, switzer: 249.28),
+    MeasuredString(text: "Send long recordings in parts of", size: 13.0, weight: 400, tabular: false, switzer: 183.87),
+    MeasuredString(text: "Level meter calibration", size: 13.0, weight: 400, tabular: false, switzer: 133.51),
+    MeasuredString(text: "Before an app changes something", size: 13.0, weight: 400, tabular: false, switzer: 199.64),
+    MeasuredString(text: "Your words appear as you talk. Press the shortcut again to stop.", size: 13.5, weight: 400, tabular: false, switzer: 381.52),
+    MeasuredString(text: "Your words appear as you talk. Let go of the shortcut to stop.", size: 13.5, weight: 400, tabular: false, switzer: 361.57),
+    MeasuredString(text: "Requires ⌘, ⌥ or ⌃. A function key can be used alone.", size: 12.0, weight: 400, tabular: false, switzer: 288.32),
+    MeasuredString(text: "Finished recordings appear here.", size: 11.5, weight: 400, tabular: false, switzer: 170.86),
+    MeasuredString(text: "Nothing matches this search.", size: 11.5, weight: 400, tabular: false, switzer: 150.19),
+    MeasuredString(text: "No styles. Use + Add style to create one.", size: 12.5, weight: 500, tabular: false, switzer: 224.62),
+    MeasuredString(text: "Verbose JSON with timestamps", size: 12.5, weight: 400, tabular: true, switzer: 177.75),
+    ]
+
+    /// Every fixed string is still drawn inside the band the layout was chosen in.
+    ///
+    /// The band is two-sided and each side guards one failure.
+    ///
+    /// The ceiling is +2 percent, and what it catches is a lost weight axis:
+    /// Satoshi's default instance is Black, so a resolution that never writes
+    /// `wght` draws about 10 percent wider and every string here lands far past
+    /// the ceiling rather than a little past it.
+    ///
+    /// The floor is -3.5 percent, and what it catches is a lost optical factor:
+    /// the same strings at factor 1.00 read -4.08 percent, so dropping the factor
+    /// fails the floor while the chosen 1.01 reads -3.13 percent at its widest
+    /// and stays inside.
+    ///
+    /// The measurement is of the face, at the size and weight each site asks
+    /// for, without the tracking the tabular sites add: that tracking is a
+    /// deliberate narrowing of the digits and is measured by
+    /// ``testTheTabularDigitAdvanceIsThePublishedOne`` instead, so a change to it
+    /// cannot be mistaken for a change of face.
+    func testEveryFixedStringSitsInsideTheBandTheLayoutWasChosenIn() throws {
+        var offsets: [(String, Double)] = []
+        for row in Self.measured {
+            let font = row.tabular
+                ? DotType.tabularNSFont(row.size, Self.weight(row.weight))
+                : DotType.nsFont(row.size, Self.weight(row.weight))
+            let width = (row.text as NSString).size(withAttributes: [.font: font]).width
+            offsets.append((row.text, Double(width / row.switzer - 1) * 100))
+        }
+        offsets.sort { $0.1 < $1.1 }
+        print(
+            "DotType band: min \(offsets.first?.1 ?? 0)% (\(offsets.first?.0.prefix(28) ?? "")), "
+                + "median \(offsets[offsets.count / 2].1)%, max \(offsets.last?.1 ?? 0)% "
+                + "(\(offsets.last?.0.prefix(28) ?? ""))"
+        )
+        XCTAssertEqual(offsets.count, 30)
+        XCTAssertGreaterThanOrEqual(
+            offsets.first?.1 ?? 0,
+            -3.5,
+            "a fixed string is narrower than the layout allows: \(offsets.first?.0 ?? "") at "
+                + "\(offsets.first?.1 ?? 0) percent, which is what a lost optical factor reads"
+        )
+        XCTAssertLessThanOrEqual(
+            offsets.last?.1 ?? 0,
+            2,
+            "a fixed string is wider than the layout allows: \(offsets.last?.0 ?? "") at "
+                + "\(offsets.last?.1 ?? 0) percent, which is what a lost weight axis reads"
+        )
+    }
+
+    /// The weight ladder's raw value as the enum case.
+    private static func weight(_ raw: CGFloat) -> DotType.Weight {
+        DotType.Weight(rawValue: raw) ?? .regular
+    }
+
+    /// A tabular number advances at the published fraction of its size.
+    ///
+    /// The face's `tnum` figures advance 0.66 em and the interface is laid out
+    /// for 0.62, so the tabular face is drawn with the tracking ``DotType``
+    /// publishes beside it. This is the measurement that pairs the two: two
+    /// digits set with that tracking advance 0.62 of the size the face is drawn
+    /// at, which is what the clock, the columns and the key badges were laid out
+    /// for.
+    func testTheTabularDigitAdvanceIsThePublishedOne() throws {
+        let size: CGFloat = 12
+        let clock = DotType.tabularNSFont(size, .medium)
+        let tracking = DotType.tabularTracking(size: size, in: clock)
+        let drawn = size * DotType.opticalScale
+        print("DotType tracking: \(tracking) pt at \(size) requested, drawn \(drawn) pt")
+
+        XCTAssertLessThan(tracking, 0, "the tabular face is not tracked back at all")
+        XCTAssertEqual(
+            tracking,
+            (DotType.tabularAdvance - 0.66) * size * DotType.opticalScale,
+            accuracy: 1e-9,
+            "the published tracking is not the difference between the two advances"
+        )
+        XCTAssertEqual(DotType.tabularAdvance, 0.62, accuracy: 1e-9)
+
+        let text = NSAttributedString(string: "00", attributes: [.font: clock, .kern: tracking])
+        let advance = text.size().width
+        let line = CTLineCreateWithAttributedString(text)
+        let bounds = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+        print(
+            "DotType tabular advance: measured \(advance) pt, line bounds \(bounds) pt, "
+                + "expected \(2 * DotType.tabularAdvance * drawn) pt"
+        )
+        XCTAssertEqual(
+            advance,
+            2 * DotType.tabularAdvance * drawn,
+            accuracy: 0.02,
+            "two tracked digits do not advance twice 0.62 of the drawn size"
+        )
+    }
+
+    /// Tracking follows the font the site draws with, not the last resolution.
+    ///
+    /// The value used to come from the process-wide flag the resolver keeps, so a
+    /// single fallback anywhere in the process set every clock's tracking to zero
+    /// even where the bundled face was drawn. The font answers for itself: a
+    /// fallback resolved first, then the clock's own tabular font, still reads the
+    /// 0.62 em value, and the system face reads zero.
+    func testTrackingFollowsTheDrawnFontNotTheLastResolution() throws {
+        let size: CGFloat = 12
+        let expected = (DotType.tabularAdvance - 0.66) * size * DotType.opticalScale
+
+        // The clock's font first, so the cache is warm and the fallback below is
+        // the only thing that has touched the process-wide flag since.
+        _ = DotType.tabularNSFont(size, .medium)
+        let fallback = DotType.nsFont(7.25, .thin, resolving: "SatoshiVariable-Missing")
+        XCTAssertNotEqual(fallback.familyName, DotType.familyName, "the fallback resolved the face")
+        XCTAssertFalse(DotType.isCustomFaceAvailable, "the process still reports the bundled face")
+
+        let clock = DotType.tabularNSFont(size, .medium)
+        XCTAssertEqual(clock.familyName, DotType.familyName, "the clock did not resolve the bundled face")
+        XCTAssertEqual(
+            DotType.tabularTracking(size: size, in: clock),
+            expected,
+            accuracy: 1e-9,
+            "a fallback elsewhere in the process flattened the bundled face's tracking"
+        )
+
+        let system = NSFont.systemFont(ofSize: size, weight: .medium)
+        XCTAssertEqual(
+            DotType.tabularTracking(size: size, in: system),
+            0,
+            accuracy: 1e-12,
+            "the system face was tracked, and its figures are already tabular"
+        )
+    }
+
+    /// Tracking is applied only where the string is numbers and separators.
+    ///
+    /// Tracking cannot live in a font, so it is applied where the text is drawn,
+    /// and only the sites whose string is digits and separators take it: the
+    /// clocks and the durations, whose digits have to advance at the published
+    /// fraction of their size. A site whose text can contain letters draws in the
+    /// tabular face untracked, because tightening the letters of a title or a
+    /// sentence is not what the digit advance is for.
+    ///
+    /// The numeric sites are declared here by the expression they draw, so a
+    /// new clock or counter that forgets its tracking fails, and a title or a
+    /// subtitle that grows one fails too.
+    func testOnlyNumericTabularSitesCarryTracking() throws {
+        let numeric: [String] = [
+            "Dot/HUDView.swift|Text(elapsed)",
+            "Dot/HUDView.swift|Text(elapsed)",
+            "Dot/HUDView.swift|Text(elapsed)",
+            "Dot/SettingsView.swift|Text(\"0:07\")",
+            "Dot/WelcomeTour.swift|Text(\"00:03\")",
+            "Dot/WelcomeTour.swift|Text(\"00:03\")",
+            "Dot/WelcomeTour.swift|Text(HUDClock.string(for: max(0, elapsed)))",
+        ]
+
+        let sources = Self.root.appendingPathComponent("Sources", isDirectory: true)
+        let files = try FileManager.default
+            .subpathsOfDirectory(atPath: sources.path)
+            .filter { $0.hasSuffix(".swift") }
+            .sorted()
+        XCTAssertGreaterThan(files.count, 20, "the source tree was not found")
+
+        var tokens: Set<String> = []
+        let definition = try NSRegularExpression(
+            pattern: "static var (\\w+): Font \\{ DotType\\.tabular(?:Font|NSFont)\\("
+        )
+        for file in files {
+            let text = try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
+            let whole = text as NSString
+            for match in definition.matches(in: text, range: NSRange(location: 0, length: whole.length)) {
+                tokens.insert(whole.substring(with: match.range(at: 1)))
+            }
+        }
+        XCTAssertEqual(
+            tokens,
+            ["clockFont", "titleFont", "subtitleFont"],
+            "the tabular font tokens are not the ones this test knows about: \(tokens.sorted())"
+        )
+
+        let direct = try NSRegularExpression(pattern: "DotType\\.tabular(?:Font|NSFont)\\(")
+        let throughFont = try NSRegularExpression(pattern: "\\.font\\((\\w+)\\.(\\w+)\\)")
+        var tracked: [String] = []
+        var untracked: [String] = []
+        for file in files where file.hasPrefix("Dot/") || file.hasPrefix("DotCore/") {
+            if file.hasSuffix("DotType.swift") { continue }
+            let text = try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
+            let lines = text.components(separatedBy: "\n")
+            for (index, line) in lines.enumerated() {
+                var isTabular = direct.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
+                if !isTabular,
+                   let match = throughFont.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) {
+                    let name = (line as NSString).substring(with: match.range(at: 2))
+                    isTabular = tokens.contains(name)
+                }
+                guard isTabular else { continue }
+                // A token's own definition cannot carry tracking.
+                if line.contains("static var ") { continue }
+                // The tracking has to be the modifier that follows the font, not
+                // one further down the same chain: a label's letter spacing can
+                // sit six lines below a font it has nothing to do with.
+                let window = lines[index ..< min(index + 3, lines.count)].joined(separator: "\n")
+                let draws = lines[max(0, index - 1)].trimmingCharacters(in: .whitespaces)
+                let site = "\(file)|\(draws)"
+                if window.contains(".tracking(") {
+                    tracked.append(site)
+                } else {
+                    untracked.append(site)
+                }
+            }
+        }
+        print("DotType tracked sites: \(tracked.sorted())")
+        print("DotType untracked tabular sites: \(untracked.count)")
+        XCTAssertEqual(
+            tracked.sorted(),
+            numeric.sorted(),
+            "the tracked sites are not exactly the numeric ones"
+        )
+        XCTAssertEqual(tracked.count, 7, "the clock and duration sites are not the seven declared here")
+        for site in untracked {
+            XCTAssertFalse(
+                numeric.contains(site),
+                "\(site) draws numbers and separators without its tracking"
+            )
+        }
     }
 
     // MARK: - The fallback
@@ -274,10 +591,12 @@ final class DotTypeTests: XCTestCase {
     /// The resolver is asked for a name it cannot resolve, which is the state a
     /// checkout without the font is in. The answer has to be the system face
     /// rather than an empty or unavailable font, because every view draws
-    /// whatever this returns.
+    /// whatever this returns. It is deliberately not scaled by the optical
+    /// factor: the system face is the one the layout was measured against, so
+    /// scaling it would move the fallback off the grid the bundled face keeps.
     func testTheFallbackIsTheSystemFace() throws {
         let size: CGFloat = 7.25
-        let fallback = DotType.nsFont(size, .thin, resolving: "SwitzerVariable-Missing")
+        let fallback = DotType.nsFont(size, .thin, resolving: "SatoshiVariable-Missing")
         let system = NSFont.systemFont(ofSize: size, weight: .thin)
         XCTAssertNotEqual(fallback.familyName, DotType.familyName, "a missing name resolved the face")
         XCTAssertEqual(fallback.familyName, system.familyName, "the fallback is not the system face")
@@ -292,43 +611,43 @@ final class DotTypeTests: XCTestCase {
         // The real face comes back for the next resolution, so the two states
         // are told apart and not latched.
         let rest = DotType.nsFont(13, .regular)
-        XCTAssertEqual(rest.familyName, "Switzer Variable", "the face did not come back")
+        XCTAssertEqual(rest.familyName, "Satoshi Variable", "the face did not come back")
+        XCTAssertEqual(rest.pointSize, 13 * DotType.opticalScale, accuracy: 0.001)
         XCTAssertTrue(DotType.isCustomFaceAvailable)
     }
 
     // MARK: - The figures
 
-    /// The digits of the tabular face share one advance.
+    /// The digits of the tabular face share one advance, and the plain ones do
+    /// not.
     ///
     /// A clock whose digits are ten different widths shifts as the seconds
-    /// change. Every place the app draws a number that changes is set in
-    /// ``DotType/tabularFont(_:_:)``, and this is the measurement that token
-    /// stands on: at 12 points and wght 500, the ten digits have to agree
-    /// within a hundredth of a point.
+    /// change. Satoshi's default figures are proportional, so every place the
+    /// app draws a number that changes is set in ``DotType/tabularFont(_:_:)``,
+    /// and this is the measurement that token stands on: at 12 points and wght
+    /// 500, the ten digits have to agree within a hundredth of a point while the
+    /// plain face spans more than two points between its narrowest and widest.
     func testTheDigitsOfTheTabularFaceShareOneAdvance() throws {
         let size: CGFloat = 12
         let font = DotType.tabularNSFont(size, .medium)
-        var widths: [CGFloat] = []
-        for digit in 0 ... 9 {
-            let line = CTLineCreateWithAttributedString(
-                NSAttributedString(string: "\(digit)", attributes: [.font: font])
-            )
-            widths.append(CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)))
+        func advances(_ face: NSFont) -> [CGFloat] {
+            (0 ... 9).map { digit in
+                let line = CTLineCreateWithAttributedString(
+                    NSAttributedString(string: "\(digit)", attributes: [.font: face])
+                )
+                return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            }
         }
-        let plain = DotType.nsFont(size, .medium)
-        var plainWidths: [CGFloat] = []
-        for digit in 0 ... 9 {
-            let line = CTLineCreateWithAttributedString(
-                NSAttributedString(string: "\(digit)", attributes: [.font: plain])
-            )
-            plainWidths.append(CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)))
-        }
+        let widths = advances(font)
+        let plainWidths = advances(DotType.nsFont(size, .medium))
         let spread = (widths.max() ?? 0) - (widths.min() ?? 0)
+        let plainSpread = (plainWidths.max() ?? 0) - (plainWidths.min() ?? 0)
         print(
             "DotType digits at \(size) pt wght 500: tabular "
                 + widths.map { String(format: "%.4f", $0) }.joined(separator: ", ")
                 + " (spread \(spread)); plain "
                 + plainWidths.map { String(format: "%.4f", $0) }.joined(separator: ", ")
+                + " (spread \(plainSpread))"
         )
         XCTAssertEqual(widths.count, 10)
         XCTAssertLessThanOrEqual(
@@ -336,6 +655,12 @@ final class DotTypeTests: XCTestCase {
             0.01,
             "the ten digits do not share one advance, so a clock set in this face would jitter: "
                 + "\(widths)"
+        )
+        XCTAssertGreaterThan(
+            plainSpread,
+            2,
+            "the plain face's figures are already tabular, so the tabular token proves nothing: "
+                + "\(plainWidths)"
         )
     }
 
@@ -345,8 +670,8 @@ final class DotTypeTests: XCTestCase {
     ///
     /// `Font.custom` looks a family up by name and answers the default instance
     /// every time, so the app bridges `Font(nsFont)`. The resolved font is read
-    /// back through `Font.resolve`: the family has to be Switzer and the weight
-    /// has to be the one asked for, not the file's Regular.
+    /// back through `Font.resolve`: the family has to be Satoshi and the weight
+    /// has to be the one asked for, not the file's Black.
     @MainActor
     func testTheSwiftUIBridgeKeepsTheVariation() throws {
         guard #available(macOS 26.0, *) else {
@@ -355,7 +680,7 @@ final class DotTypeTests: XCTestCase {
         let context = EnvironmentValues().fontResolutionContext
         let resolvedRegular = DotType.font(15, .regular).resolve(in: context).ctFont
         let regular = resolvedRegular as NSFont
-        XCTAssertEqual(regular.familyName, "Switzer Variable")
+        XCTAssertEqual(regular.familyName, "Satoshi Variable")
         XCTAssertEqual(
             regular.fontDescriptor.postscriptName,
             DotType.nsFont(15, .regular).fontDescriptor.postscriptName,
@@ -364,7 +689,7 @@ final class DotTypeTests: XCTestCase {
 
         let resolvedSemibold = DotType.font(15, .semibold).resolve(in: context).ctFont
         let semibold = resolvedSemibold as NSFont
-        XCTAssertEqual(semibold.familyName, "Switzer Variable")
+        XCTAssertEqual(semibold.familyName, "Satoshi Variable")
         XCTAssertNotEqual(
             semibold.fontDescriptor.postscriptName,
             regular.fontDescriptor.postscriptName,
@@ -374,19 +699,25 @@ final class DotTypeTests: XCTestCase {
 
     // MARK: - The drawn face
 
-    /// The transcript is drawn in Switzer, measured off the pixels.
+    /// The transcript is drawn in the resolved face, measured off the pixels.
     ///
     /// A test that only checked `HUDTheme.transcriptFont` would prove the token
     /// was configured, not that the card drew it: a fallback anywhere between
     /// the token and the text view would leave the suite green and the product
-    /// in the system font. So the card is drawn off every display at two pixels
-    /// per point and the ink of the transcript is measured, then compared with
-    /// the same sentence drawn in the system face at the same size. Switzer is
-    /// about 0.976 of the system width at 15 points, so the two are apart by
-    /// far more than the measurement's own error, in the opposite direction
-    /// from a wider face.
+    /// in another face. So the card is drawn off every display at two pixels per
+    /// point and the ink of the transcript is measured.
+    ///
+    /// Two things are asserted. The ink has to be the advance the resolver
+    /// measured, within the side bearings the last glyph drops. And it has to be
+    /// narrower than the file's own default instance by a wide margin: the face
+    /// ships Black as its default, so a card that lost the weight axis would
+    /// draw ten percent wider and this is the assertion that catches it. The
+    /// bundled face and the system face are within one percent of each other at
+    /// this size, so ink width can no longer tell them apart; the family and
+    /// axis tests above carry that half, and ``testOnlyDotTypeAsksTheSystemForAFont``
+    /// keeps every call site inside the resolver.
     @MainActor
-    func testTheTranscriptIsDrawnInSwitzerNotConfiguredToBe() throws {
+    func testTheTranscriptIsDrawnInTheResolvedFace() throws {
         _ = NSApplication.shared
         let sentence = "The quick brown fox jumps over the lazy dog."
         let size = HUD.transcriptSize(text: sentence)
@@ -414,45 +745,32 @@ final class DotTypeTests: XCTestCase {
         let bodyTop = CGFloat(HUDTheme.headerHeight + 1) * 2
         let drawn = try inkWidth(of: card, size: size, skippingTopPixels: bodyTop)
 
-        let system = Text(sentence)
-            .font(Font(NSFont.systemFont(ofSize: 15)))
-            .foregroundStyle(HUDTheme.ink)
-            .environment(\.colorScheme, .dark)
-        let referenceSize = CGSize(width: size.width, height: 60)
-        let systemDrawn = try inkWidth(of: system, size: referenceSize, skippingTopPixels: 0)
-
-        let switzerAdvance = (sentence as NSString)
+        let resolvedAdvance = (sentence as NSString)
             .size(withAttributes: [.font: DotType.nsFont(15, .regular)]).width
-        let systemAdvance = (sentence as NSString)
-            .size(withAttributes: [.font: NSFont.systemFont(ofSize: 15)]).width
+        let defaultAdvance = (
+            sentence as NSString
+        ).size(withAttributes: [
+            .font: NSFont(name: "SatoshiVariable-Bold", size: 15 * DotType.opticalScale)
+                ?? DotType.nsFont(15, .regular),
+        ]).width
 
         print(
-            "DotType render: Switzer ink \(drawn) pt (advance \(switzerAdvance) pt), "
-                + "system ink \(systemDrawn) pt (advance \(systemAdvance) pt), "
-                + "ratio \(drawn / systemDrawn)"
+            "DotType render: drawn ink \(drawn) pt, resolved advance \(resolvedAdvance) pt, "
+                + "default-instance advance \(defaultAdvance) pt"
         )
 
-        // Narrower ink than the system face is the signature of the bundled
-        // face; the same test before the typeface changed asserted the opposite
-        // sign, because that face was wider.
-        XCTAssertLessThan(
-            drawn,
-            systemDrawn * 0.99,
-            "the transcript drew \(drawn) pt where the system font drew \(systemDrawn) pt: "
-                + "the card is not drawing Switzer"
-        )
-        XCTAssertGreaterThan(
-            drawn,
-            systemDrawn * 0.90,
-            "the transcript drew \(drawn) pt, narrower than any reading of the bundled face: "
-                + "the card is not drawing the typeface"
-        )
         XCTAssertEqual(
             drawn,
-            switzerAdvance,
-            accuracy: switzerAdvance * 0.12,
-            "the drawn transcript (\(drawn) pt) is not the Switzer advance (\(switzerAdvance) pt), "
-                + "so the face resolved to something else"
+            resolvedAdvance,
+            accuracy: resolvedAdvance * 0.03,
+            "the drawn transcript (\(drawn) pt) is not the advance the resolver measured "
+                + "(\(resolvedAdvance) pt), so the face resolved to something else"
+        )
+        XCTAssertLessThan(
+            drawn,
+            defaultAdvance * 0.97,
+            "the transcript drew \(drawn) pt where the file's default instance draws "
+                + "\(defaultAdvance) pt: the card is not setting the weight axis"
         )
     }
 
@@ -513,6 +831,104 @@ final class DotTypeTests: XCTestCase {
         return CGFloat(high - low + 1) / CGFloat(scale)
     }
 
+    // MARK: - The glyphs the face does not carry
+
+    /// Every character of the modifier line is drawn, by the face or by the
+    /// cascade.
+    ///
+    /// Satoshi has no macOS modifier signs and no Japanese and Cyrillic, so the
+    /// line has to be completed by CoreText's cascade: Lucida Grande for the
+    /// signs, PingFang for the Japanese, Helvetica for the Cyrillic. Tofu is
+    /// glyph zero of whatever font the run resolved, so a single zero would mean
+    /// a box where a character should be. The line is also rendered when
+    /// `DOT_TYPE_RENDER_DIR` is set, so the result can be looked at rather than
+    /// only counted.
+    @MainActor
+    func testEveryGlyphInTheModifierLineIsDrawn() throws {
+        _ = NSApplication.shared
+        let line = "Command \u{2318} Option \u{2325} Shift \u{21E7} Control \u{2303} Return \u{23CE} "
+            + "\u{65E5}\u{672C}\u{8A9E} \u{041F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}"
+        let font = DotType.nsFont(13, .regular)
+        let attributed = NSAttributedString(string: line, attributes: [.font: font])
+        let ctLine = CTLineCreateWithAttributedString(attributed)
+        let runs = CTLineGetGlyphRuns(ctLine) as! [CTRun]
+
+        var families: [String] = []
+        for run in runs {
+            let count = CTRunGetGlyphCount(run)
+            var glyphs = [CGGlyph](repeating: 0, count: count)
+            CTRunGetGlyphs(run, CFRange(location: 0, length: count), &glyphs)
+            let attributes = CTRunGetAttributes(run) as NSDictionary
+            let runFont = attributes[kCTFontAttributeName] as? NSFont
+            families.append(runFont?.familyName ?? "?")
+            XCTAssertFalse(
+                glyphs.contains(0),
+                "a character in \"\(line)\" drew glyph zero, which is the empty box: \(glyphs) "
+                    + "from \(runFont?.familyName ?? "?")"
+            )
+        }
+        print("DotType cascade: \(families)")
+        XCTAssertEqual(
+            families.first,
+            DotType.familyName,
+            "the line did not start in the bundled face"
+        )
+        for expected in ["Lucida Grande", "PingFang SC", "Helvetica"] {
+            XCTAssertTrue(
+                families.contains(expected),
+                "the cascade did not reach \(expected) for the characters Satoshi does not carry: \(families)"
+            )
+        }
+
+        let value = DotMigration.environment("RENDER_TYPE_DIR") ?? ""
+        guard !value.isEmpty else { return }
+        let directory = URL(fileURLWithPath: value, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let image = try Self.render(textLine: attributed, width: 620, height: 32)
+        let data = try XCTUnwrap(image.representation(using: .png, properties: [:]))
+        try data.write(to: directory.appendingPathComponent("type-cascade.png"), options: .atomic)
+        print("DotType cascade render: \(directory.appendingPathComponent("type-cascade.png").path)")
+    }
+
+    /// One line of text drawn into a bitmap at two pixels per point.
+    @MainActor
+    private static func render(textLine: NSAttributedString, width: CGFloat, height: CGFloat) throws -> NSBitmapImageRep {
+        let scale = 2
+        let view = Text(AttributedString(textLine))
+            .foregroundStyle(Color.white)
+            .frame(width: width, height: height, alignment: .leading)
+            .background(Color.black)
+            .environment(\.colorScheme, .dark)
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        host.appearance = NSAppearance(named: .darkAqua)
+        let window = OffscreenWindow(size: CGSize(width: width, height: height), styleMask: [.borderless])
+        window.contentView = host
+        window.orderFrontRegardless()
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        let bitmap = try XCTUnwrap(
+            NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: Int(width) * scale,
+                pixelsHigh: Int(height) * scale,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            ),
+            "the render could not be allocated"
+        )
+        bitmap.size = CGSize(width: width, height: height)
+        host.cacheDisplay(in: NSRect(x: 0, y: 0, width: width, height: height), to: bitmap)
+        window.contentView = nil
+        window.orderOut(nil)
+        return bitmap
+    }
+
     /// The string the weight ladder is measured on.
     private static let sample = "Hamburgefonstiv 0123"
 
@@ -533,11 +949,11 @@ final class DotTypeTests: XCTestCase {
     ///
     /// A direct system font is a different face in the middle of a sentence, so
     /// it is a test failure and not a style note. The monospaced sites that
-    /// used to stand outside the rule are gone: Switzer's figures are tabular,
-    /// so the clock, the key badges, the labels, the footnote and the shortcut
-    /// field are all set in ``DotType/tabularFont(_:_:)``, which is part of
-    /// ``DotType`` and not a system font. The scan is by line, and the expected
-    /// list is empty, so a new call anywhere fails here.
+    /// used to stand outside the rule are gone: every number the app draws that
+    /// changes, lines up or reports a count is set in
+    /// ``DotType/tabularFont(_:_:)``, which is part of ``DotType`` and not a
+    /// system font. The scan is by line, and the expected list is empty, so a
+    /// new call anywhere fails here.
     func testOnlyDotTypeAsksTheSystemForAFont() throws {
         struct Site: Hashable {
             let file: String

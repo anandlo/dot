@@ -323,9 +323,15 @@ enum DotSelectMetrics {
     static let settingsColumn: CGFloat = 240
     /// The corner radius of a field.
     static let corner: CGFloat = 8
+    /// The size of a field's title.
+    static let titleSize: CGFloat = 12.5
     /// The title of a field, resolved on every read so a face registered after
     /// the first touch is still the one drawn.
-    static var titleFont: Font { DotType.font(12.5, .regular) }
+    ///
+    /// Tabular: a title can be a number ("30 s", "50", a model name with digits
+    /// in it), and the field and the list have to keep the same width whether
+    /// that number changes or not.
+    static var titleFont: Font { DotType.tabularFont(titleSize, .regular) }
 }
 
 /// The trigger's frame, in the coordinates a panel is placed in.

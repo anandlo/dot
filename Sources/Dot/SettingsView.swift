@@ -734,7 +734,7 @@ struct SettingsView: View {
                 .frame(width: 155)
 
                 Text(dwellText)
-                    .font(DotType.font(12, .regular))
+                    .font(DotType.tabularFont(12, .regular))
                     .foregroundStyle(DotTheme.ink2)
                     .frame(width: 44, alignment: .trailing)
             }
@@ -2772,6 +2772,7 @@ struct HUDSwatch: View {
 
             Text("0:07")
                 .font(HUDTheme.clockFont)
+                .tracking(HUDTheme.clockTracking)
                 .foregroundStyle(HUDTheme.clockInk(material))
 
             Color.clear.frame(width: 14)

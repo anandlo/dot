@@ -628,6 +628,11 @@ final class StretchScrollTests: XCTestCase {
     /// on, a white page at `0.92` and a dark one at `0.12`. The pictures are
     /// written only when the evidence directory is named; the measurements are
     /// always taken, because the row has to read over both materials.
+    ///
+    /// The statistic over the whole row also read text pixels and moved with the
+    /// bars' sub-pixel phase when the row width changed (2.022 to 1.977 with
+    /// identical bars); the criterion is that the waveform reads over glass, so
+    /// only waveform pixels are measured.
     func testTheRowReadsOverTheGlass() throws {
         let size = CGSize(width: 400, height: 160)
         let cardSize = CGSize(width: HUDState.recordingWidth, height: HUDState.recordingHeight)
@@ -677,19 +682,30 @@ final class StretchScrollTests: XCTestCase {
             region = ink
             let bareLevel = meanLuminance(bare, ink)
             let quietLevel = meanLuminance(quiet, ink)
-            let quietBackdrop = medianLuminance(quiet, ink)
+            // The waveform's own pixels: the ones the bars light between the
+            // silent frame and the loudest one. Nothing is placed by hand: the
+            // two frames are the card drawn twice, and the only thing that
+            // differs between them is the row, so the label, the clock and the
+            // card's edge cancel out of the mask by construction.
+            let loudest = try XCTUnwrap(voiced[6.96], "the loud frame was not captured")
+            let mask = waveformMask(loudest, quiet, ink)
+            XCTAssertGreaterThanOrEqual(
+                mask.count,
+                2_000,
+                "the waveform mask covers \(mask.count) pixels, which is too few to measure"
+            )
 
             for moment in moments {
                 guard let picture = voiced[moment] else { continue }
                 let level = meanLuminance(picture, ink)
-                let inkLevel = percentileLuminance(picture, ink, at: 0.995)
+                let (inkLevel, quietBackdrop) = maskedPercentiles(picture, quiet, mask)
                 let coverage = coverage(picture, quiet, ink)
                 let ratio = (max(inkLevel, quietBackdrop) + 0.05) / (min(inkLevel, quietBackdrop) + 0.05)
                 print(String(
-                    format: "STRETCH glass %@ t%.2f: region (%d, %d, %d, %d) px, bare %.4f, "
+                    format: "STRETCH glass %@ t%.2f: region (%d, %d, %d, %d) px, mask %d px, bare %.4f, "
                         + "glass %.4f, voice %.4f, mean difference %+.4f, brightest ink %.4f, "
                         + "local backdrop %.4f, ratio %.3f:1 (ink %@ the glass)",
-                    backdrop.name, moment, ink.x, ink.y, ink.width, ink.height,
+                    backdrop.name, moment, ink.x, ink.y, ink.width, ink.height, mask.count,
                     bareLevel, quietLevel, level, level - quietLevel, inkLevel, quietBackdrop,
                     ratio, inkLevel >= quietBackdrop ? "lighter than" : "darker than"
                 ))
@@ -844,6 +860,56 @@ final class StretchScrollTests: XCTestCase {
     }
 
     /// The mean luminance of a rect of a capture.
+    /// The pixels a bar lights, as coordinates inside the row's region.
+    ///
+    /// Built from the two drawn frames rather than from a rectangle: a pixel
+    /// belongs to the mask when the loudest frame differs from the silent one
+    /// there, which is true of the bars and their glow and false of the label,
+    /// the clock, the card's edge and the material, because those are drawn
+    /// identically in both.
+    func waveformMask(
+        _ loud: WindowCapture.Pixels,
+        _ quiet: WindowCapture.Pixels,
+        _ rect: WindowCapture.Rect
+    ) -> [WindowCapture.Rect] {
+        var pixels: [WindowCapture.Rect] = []
+        for y in rect.y ..< (rect.y + rect.height) {
+            for x in rect.x ..< (rect.x + rect.width) {
+                let difference = abs(
+                    WindowCapture.luminance(loud.pixel(x, y)) - WindowCapture.luminance(quiet.pixel(x, y))
+                )
+                if difference > 0.02 {
+                    pixels.append(WindowCapture.Rect(x: x, y: y, width: 1, height: 1))
+                }
+            }
+        }
+        return pixels
+    }
+
+    /// The loud frame's bright ink and the silent frame's material, over a mask.
+    ///
+    /// - Returns: the 99.5th percentile of the loud frame and the median of the
+    ///   silent one, both taken over the masked pixels only.
+    func maskedPercentiles(
+        _ loud: WindowCapture.Pixels,
+        _ quiet: WindowCapture.Pixels,
+        _ mask: [WindowCapture.Rect]
+    ) -> (ink: Double, backdrop: Double) {
+        var loudValues: [Double] = []
+        var quietValues: [Double] = []
+        loudValues.reserveCapacity(mask.count)
+        quietValues.reserveCapacity(mask.count)
+        for pixel in mask {
+            loudValues.append(WindowCapture.luminance(loud.pixel(pixel.x, pixel.y)))
+            quietValues.append(WindowCapture.luminance(quiet.pixel(pixel.x, pixel.y)))
+        }
+        loudValues.sort()
+        quietValues.sort()
+        guard !mask.isEmpty else { return (0, 0) }
+        let top = loudValues[min(loudValues.count - 1, Int(Double(loudValues.count) * 0.995))]
+        return (top, quietValues[quietValues.count / 2])
+    }
+
     func meanLuminance(_ picture: WindowCapture.Pixels, _ rect: WindowCapture.Rect) -> Double {
         var total = 0.0
         var count = 0

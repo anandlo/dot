@@ -326,6 +326,7 @@ struct HUDView: View {
 
                 Text(elapsed)
                     .font(HUDTheme.clockFont)
+                    .tracking(HUDTheme.clockTracking)
                     .foregroundStyle(HUDTheme.clockInk(model.material))
 
                 Color.clear.frame(width: 14)
@@ -520,6 +521,7 @@ struct HUDView: View {
 
                 Text(elapsed)
                     .font(HUDTheme.clockFont)
+                    .tracking(HUDTheme.clockTracking)
                     .foregroundStyle(HUDTheme.clockInk(model.material))
 
                 Color.clear.frame(width: 14)
@@ -751,6 +753,7 @@ struct HUDView: View {
                 // material.
                 Text(elapsed)
                     .font(HUDTheme.clockFont)
+                    .tracking(HUDTheme.clockTracking)
                     .foregroundStyle(HUDTheme.clockInk(model.material))
                     .fixedSize()
 

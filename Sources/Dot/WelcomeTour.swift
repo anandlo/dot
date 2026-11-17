@@ -184,6 +184,7 @@ private struct RecordingRow: View {
             TourWave(speech: speech)
             Text(HUDClock.string(for: max(0, elapsed)))
                 .font(HUDTheme.clockFont)
+                .tracking(HUDTheme.clockTracking)
                 .foregroundStyle(Color.white.opacity(0.75))
                 .monospacedDigit()
         }
@@ -379,6 +380,7 @@ private struct PasteScene: View {
                         Spacer()
                         Text("00:03")
                             .font(HUDTheme.clockFont)
+                            .tracking(HUDTheme.clockTracking)
                             .foregroundStyle(Color.white.opacity(0.6))
                     }
                     .frame(height: 22)
@@ -392,6 +394,7 @@ private struct PasteScene: View {
                         Spacer()
                         Text("00:03")
                             .font(HUDTheme.clockFont)
+                            .tracking(HUDTheme.clockTracking)
                             .foregroundStyle(Color.white.opacity(0.55))
                     }
                     .frame(height: 22)
