@@ -1,0 +1,1 @@
+Uh, rename the retry limit constant to something clearer.
