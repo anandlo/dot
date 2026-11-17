@@ -11,6 +11,13 @@ import DotCore
 final class StatusItemController: NSObject, NSMenuDelegate {
     /// Called when the user picks an item.
     var onAction: ((MenuAction) -> Void)?
+    /// Called just before the menu is built, so the app can re-read the facts the
+    /// menu shows.
+    ///
+    /// The menu is the one surface that has to be current when it opens rather
+    /// than when something changed: an input plugged in an hour ago and a login
+    /// item switched in System Settings are both news the app has not been told.
+    var onMenuOpen: (() -> Void)?
 
     /// What the menu shows. Setting it refreshes the menu the next time it
     /// opens.
@@ -104,6 +111,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     /// Rebuilds the menu in place, so an open menu reflects the truth.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        onMenuOpen?()
         let fresh = MenuBuilder.build(state: menuState, target: target)
         menu.removeAllItems()
         while let item = fresh.items.first {

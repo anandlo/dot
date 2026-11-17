@@ -38,8 +38,30 @@ enum LaunchAtLogin {
             .appendingPathComponent("Library/LaunchAgents/\(label).plist")
     }
 
+    /// The last answer the system gave, so the menu does not ask on every press.
+    ///
+    /// Reading the state is a round trip to the service that owns login items,
+    /// and `refreshMenu()` reads it on the path between a key press and a
+    /// recording. The answer only changes when Dot changes it, when the person
+    /// changes it in System Settings and opens the menu, or when the settings
+    /// window shows the switch again.
+    private static let cache = Cache()
+
     /// Whether Dot is registered to start at login.
     static var isEnabled: Bool {
+        if let cached = cache.value { return cached }
+        let fresh = readIsEnabled()
+        cache.fill(fresh)
+        return cache.value ?? fresh
+    }
+
+    /// Re-reads the login item state, for a surface that is about to show it.
+    static func refresh() {
+        cache.store(readIsEnabled())
+    }
+
+    /// The state the system reports right now.
+    private static func readIsEnabled() -> Bool {
         if SMAppService.mainApp.status == .enabled {
             return true
         }
@@ -48,6 +70,9 @@ enum LaunchAtLogin {
 
     /// Turns the login item on or off.
     static func set(_ enabled: Bool) throws {
+        // Whatever the attempt did, the system has the answer: the cache must
+        // not keep claiming the state Dot asked for instead of the one it got.
+        defer { refresh() }
         defer { removeLegacyAgents() }
         if enabled {
             if SMAppService.mainApp.status != .enabled {
@@ -132,5 +157,31 @@ enum LaunchAtLogin {
             return installed
         }
         return Bundle.main.executableURL?.path ?? installed
+    }
+
+    /// Holds the last answer, so two surfaces can read it without asking twice.
+    private final class Cache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Bool?
+
+        var value: Bool? {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+
+        /// Keeps the first answer: a second reader that raced the first must not
+        /// overwrite a fresher read with its own.
+        func fill(_ answer: Bool) {
+            lock.lock()
+            if stored == nil { stored = answer }
+            lock.unlock()
+        }
+
+        func store(_ answer: Bool) {
+            lock.lock()
+            stored = answer
+            lock.unlock()
+        }
     }
 }

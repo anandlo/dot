@@ -172,6 +172,7 @@ struct SettingsView: View {
                     ?? (headless ? nil : MicrophoneCatalog.recordingDeviceUID(configured: nil))
             }
             guard !headless else { return }
+            LaunchAtLogin.refresh()
             launchAtLogin = LaunchAtLogin.isEnabled
             if microphoneDevices.isEmpty {
                 microphoneDevices = MicrophoneCatalog.devices()
@@ -184,8 +185,20 @@ struct SettingsView: View {
             refreshModels()
             updateLanguageForModel(currentConfiguredModel)
         }
+        .onReceive(NotificationCenter.default.publisher(for: MicrophoneCatalog.didLoadNotification)) { _ in
+            guard !headless else { return }
+            // The list this window opened with was read before the catalog
+            // finished its first load: the same read again is the whole update.
+            microphoneDevices = MicrophoneCatalog.devices()
+            if defaultInputUID == nil {
+                defaultInputUID = MicrophoneCatalog.recordingDeviceUID(configured: nil)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             guard !headless else { return }
+            // The switch is the one control a person can also change outside
+            // Dot, in System Settings, while this window is open.
+            LaunchAtLogin.refresh()
             let latest = LaunchAtLogin.isEnabled
             if launchAtLogin != latest {
                 launchAtLogin = latest
