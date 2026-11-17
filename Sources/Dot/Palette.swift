@@ -157,14 +157,14 @@ struct PaletteView: View {
     private var searchField: some View {
         HStack(spacing: 9) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 12, weight: .semibold))
+                .font(DotType.font(12, .semibold))
                 .foregroundStyle(searchFocused ? DotTheme.accent : DotTheme.ink3)
                 .frame(width: 15)
                 .accessibilityHidden(true)
 
             TextField("Search dictations", text: $model.query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .font(DotType.font(13, .regular))
                 .foregroundStyle(DotTheme.ink)
                 .focused($searchFocused)
                 .accessibilityLabel("Search dictations")
@@ -176,15 +176,15 @@ struct PaletteView: View {
                     focusSearch()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(DotType.font(12, .medium))
                         .foregroundStyle(DotTheme.ink3.opacity(0.6))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(DotPressStyle())
                 .accessibilityLabel("Clear search")
             }
 
             Text("Esc")
-                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                .font(DotType.tabularFont(9.5, .semibold))
                 .foregroundStyle(DotTheme.ink3)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
@@ -232,14 +232,14 @@ struct PaletteView: View {
                 // One line per transcript: a row is a way to recognise the
                 // words, and the whole transcript is what gets inserted.
                 Text(row.preview)
-                    .font(.system(size: 12.5))
+                    .font(DotType.font(12.5, .regular))
                     .foregroundStyle(DotTheme.ink)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if let age = row.age {
                     Text(age)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(DotType.font(10, .medium))
                         .foregroundStyle(DotTheme.ink3)
                         .frame(minWidth: 46, alignment: .trailing)
                 }
@@ -264,10 +264,17 @@ struct PaletteView: View {
             )
             .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DotPressStyle())
         .onHover { hovering in
             hoveredID = hovering ? row.id : (hoveredID == row.id ? nil : hoveredID)
         }
+        // Only the hover wash is eased. Typing, filtering and the arrow keys
+        // move the selection at once: a list that caught up with the keyboard
+        // late would read as a dropped key rather than as motion.
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: DotPressFeedback.duration),
+            value: isHovered
+        )
         .accessibilityLabel(row.preview)
         .accessibilityValue(row.age ?? "")
         .accessibilityHint("Inserts this dictation at the cursor.")
@@ -306,7 +313,7 @@ struct PaletteView: View {
             }
             Spacer(minLength: 0)
             Text("Newest first")
-                .font(.system(size: 10))
+                .font(DotType.font(10, .regular))
                 .foregroundStyle(DotTheme.ink3)
         }
         .padding(.horizontal, 14)
@@ -317,7 +324,7 @@ struct PaletteView: View {
     private func hint(key: String, action: String) -> some View {
         HStack(spacing: 5) {
             Text(key)
-                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                .font(DotType.tabularFont(9.5, .semibold))
                 .foregroundStyle(DotTheme.ink2)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)
@@ -330,7 +337,7 @@ struct PaletteView: View {
                         .strokeBorder(DotTheme.keycapBorder, lineWidth: 0.5)
                 )
             Text(action)
-                .font(.system(size: 10))
+                .font(DotType.font(10, .regular))
                 .foregroundStyle(DotTheme.ink3)
         }
     }
@@ -366,6 +373,18 @@ final class PaletteController {
     static let panelSize = CGSize(width: 560, height: 400)
     /// How far below the top of the usable screen the palette sits.
     static let topInset: CGFloat = 96
+    /// The displays the palette may be placed on, and which of them is the
+    /// main one.
+    ///
+    /// The default asks AppKit. A test hands in a display that exists only for
+    /// the test, so its panel is placed where the Mac draws no window.
+    static let defaultScreens: () -> (screens: [(frame: NSRect, visible: NSRect)], main: Int?) = {
+        let screens = NSScreen.screens
+        let main = NSScreen.main.flatMap { main in screens.firstIndex { $0 === main } }
+        return (screens.map { (frame: $0.frame, visible: $0.visibleFrame) }, main)
+    }
+    /// Where the palette believes the displays are.
+    static var screens = defaultScreens
 
     private let panel: PalettePanel
     private let model: PaletteModel
@@ -552,22 +571,19 @@ final class PaletteController {
 
     /// Places the panel on the screen the pointer is on.
     private func place() {
-        let screens = NSScreen.screens
-        guard !screens.isEmpty else {
+        let screens = Self.screens()
+        guard !screens.screens.isEmpty else {
             panel.center()
             return
         }
-        let mainIndex = NSScreen.main.flatMap { main in
-            screens.firstIndex { $0 === main }
-        }
         let index = HUDPlacement.screenIndex(
             containing: NSEvent.mouseLocation,
-            frames: screens.map(\.frame),
-            fallback: mainIndex
+            frames: screens.screens.map(\.frame),
+            fallback: screens.main
         ) ?? 0
-        guard screens.indices.contains(index) else { return }
+        guard screens.screens.indices.contains(index) else { return }
         let frame = HUDPlacement.frame(
-            visibleFrame: screens[index].visibleFrame,
+            visibleFrame: screens.screens[index].visible,
             panelSize: Self.panelSize,
             topInset: Self.topInset
         )

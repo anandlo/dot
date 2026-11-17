@@ -373,6 +373,14 @@ public enum ChatStopReason: Sendable, Equatable {
 /// last. Anything after it is a bug in the provider, and a consumer may stop
 /// reading after it.
 public enum ChatEvent: Sendable, Equatable {
+    /// The service is reasoning before it answers.
+    ///
+    /// It carries no text: reasoning never reaches the card, the log or the
+    /// clipboard. A consumer that draws nothing for it still learns the two
+    /// things it needs, that the service is working and that the answer has not
+    /// stalled, which is what keeps a reasoning model from being read as a
+    /// service that went quiet.
+    case thinking
     /// A piece of the answer, as it was produced.
     case textDelta(String)
     /// A complete tool call. Providers that stream arguments accumulate their

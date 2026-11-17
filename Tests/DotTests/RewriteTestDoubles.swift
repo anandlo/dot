@@ -13,6 +13,7 @@ final class RewriteStreamSpy: ChatProvider, @unchecked Sendable {
         var milliseconds: Int
         var error: Error?
         var holdsOpen: Bool
+        var finishWithoutDone: Bool
     }
 
     private let lock = NSLock()
@@ -21,14 +22,22 @@ final class RewriteStreamSpy: ChatProvider, @unchecked Sendable {
     private var toolLists: [[ChatToolSpec]] = []
     private var models: [String] = []
     private var terminations: [(Date, AsyncThrowingStream<ChatEvent, Error>.Continuation.Termination)] = []
+    private var deliveries: [Int] = []
 
     init(
         deltas: [String],
         milliseconds: Int = 0,
         error: Error? = nil,
-        holdsOpen: Bool = false
+        holdsOpen: Bool = false,
+        finishWithoutDone: Bool = false
     ) {
-        reply = Reply(deltas: deltas, milliseconds: milliseconds, error: error, holdsOpen: holdsOpen)
+        reply = Reply(
+            deltas: deltas,
+            milliseconds: milliseconds,
+            error: error,
+            holdsOpen: holdsOpen,
+            finishWithoutDone: finishWithoutDone
+        )
     }
 
     var callCount: Int {
@@ -55,6 +64,19 @@ final class RewriteStreamSpy: ChatProvider, @unchecked Sendable {
         return models.last
     }
 
+    /// How many deltas each stream delivered, in the order the streams were asked
+    /// for.
+    ///
+    /// A stream the consumer left is cancelled before its producer has sent
+    /// everything, so its count is short of the script; a stream that was read
+    /// to the end counts every delta it was given. The test reads it instead of
+    /// timing the answer, which measures the machine rather than the cap.
+    var deliveredDeltas: [Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        return deliveries
+    }
+
     /// Every stream the consumer stopped, with when it happened.
     var stopped: [(Date, AsyncThrowingStream<ChatEvent, Error>.Continuation.Termination)] {
         lock.lock()
@@ -71,6 +93,8 @@ final class RewriteStreamSpy: ChatProvider, @unchecked Sendable {
         conversations.append(messages)
         toolLists.append(tools)
         models.append(model)
+        deliveries.append(0)
+        let index = deliveries.count - 1
         let reply = self.reply
         lock.unlock()
         return AsyncThrowingStream { continuation in
@@ -81,6 +105,7 @@ final class RewriteStreamSpy: ChatProvider, @unchecked Sendable {
                     }
                     if Task.isCancelled { break }
                     continuation.yield(.textDelta(delta))
+                    self.lock.withLock { self.deliveries[index] += 1 }
                 }
                 if reply.holdsOpen {
                     try? await Task.sleep(for: .seconds(30))
@@ -88,7 +113,9 @@ final class RewriteStreamSpy: ChatProvider, @unchecked Sendable {
                 } else if let error = reply.error {
                     continuation.finish(throwing: error)
                 } else {
-                    continuation.yield(.done(.endTurn))
+                    if !reply.finishWithoutDone {
+                        continuation.yield(.done(.endTurn))
+                    }
                     continuation.finish()
                 }
             }
@@ -102,6 +129,70 @@ final class RewriteStreamSpy: ChatProvider, @unchecked Sendable {
     }
 }
 
+/// A chat service that answers one rewrite from a script with arrival times.
+///
+/// Each event carries the moment it reaches the consumer, measured from the
+/// request, so a test can say when a service starts reasoning and when its
+/// first word lands without a sleep of its own. The waits are bounded by the
+/// script: the last event's time is the longest anything here can take.
+final class TimedRewriteProvider: ChatProvider, @unchecked Sendable {
+    /// One event the service sends, and when it arrives.
+    struct Beat {
+        /// Milliseconds from the request to the event.
+        var after: Int
+        /// The event the service sends.
+        var event: ChatEvent
+
+        init(_ after: Int, _ event: ChatEvent) {
+            self.after = after
+            self.event = event
+        }
+    }
+
+    private let script: [Beat]
+    private let lock = NSLock()
+    private var requests = 0
+
+    init(_ script: [Beat]) {
+        self.script = script
+    }
+
+    /// How many requests reached the service.
+    var callCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+
+    func stream(
+        messages: [ChatMessage],
+        tools: [ChatToolSpec],
+        model: String
+    ) -> AsyncThrowingStream<ChatEvent, Error> {
+        lock.lock()
+        requests += 1
+        lock.unlock()
+        let script = self.script
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                let start = ContinuousClock.now
+                for beat in script {
+                    let wait = ContinuousClock.now.duration(
+                        to: start.advanced(by: .milliseconds(beat.after))
+                    )
+                    if wait > .zero {
+                        try? await Task.sleep(for: wait)
+                    }
+                    if Task.isCancelled { break }
+                    continuation.yield(beat.event)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
 /// The factory a rewrite is asked of, with every call counted.
 @MainActor
 final class RewriteFactorySpy: RewriteProviderFactory {
@@ -111,6 +202,9 @@ final class RewriteFactorySpy: RewriteProviderFactory {
     var keyPresent = true
     var modelName = "claude-3-5-haiku-20241022"
     var error: Error?
+    /// Providers returned before ``provider``, in order, so a test can make the
+    /// first request succeed and the second fail without rebuilding the runner.
+    var queue: [RewriteStreamSpy] = []
     private(set) var makeCount = 0
     private(set) var temperatures: [Double] = []
 
@@ -132,6 +226,10 @@ final class RewriteFactorySpy: RewriteProviderFactory {
         makeCount += 1
         temperatures.append(temperature)
         if let error { throw error }
+        // The first request uses the standing provider; the queue supplies the
+        // providers of later requests, which is how a test makes the first
+        // answer succeed and the second fail or stall.
+        if makeCount > 1, !queue.isEmpty { return queue.removeFirst() }
         return provider
     }
 }
@@ -146,6 +244,11 @@ final class FakeTextFieldAccess: TextFieldAccess {
     var selection = NSRange(location: 0, length: 0)
     var focused = true
     var secure = false
+    var bundleIdentifier = "com.apple.mail"
+    var hasFocusedField = true
+    /// When set, each `focusedField()` call takes the next selection, so a test
+    /// can move the caret between the click and the write.
+    var fieldSelectionScript: [NSRange] = []
     var failsSelect = false
     var failsSetText = false
     /// What the reads after a write return, in order. A `nil` entry falls
@@ -162,15 +265,19 @@ final class FakeTextFieldAccess: TextFieldAccess {
     var field: FocusedTextField {
         FocusedTextField(
             processIdentifier: 42,
-            bundleIdentifier: "com.apple.mail",
+            bundleIdentifier: bundleIdentifier,
             element: AXUIElementCreateSystemWide(),
-            selection: NSRange(location: 0, length: 0),
+            selection: selection,
             isSecure: secure
         )
     }
 
     func focusedField() -> FocusedTextField? {
         calls.append("focusedField")
+        guard hasFocusedField else { return nil }
+        if !fieldSelectionScript.isEmpty {
+            selection = fieldSelectionScript.removeFirst()
+        }
         return field
     }
 

@@ -13,6 +13,12 @@ import XCTest
 /// and the frontmost application stay exactly where they were.
 @MainActor
 final class HUDScrollTests: XCTestCase {
+    /// The app's typeface, registered before the first view is built.
+    override func setUp() {
+        super.setUp()
+        FontFixture.register()
+    }
+
     private let longText = HUDPreview.longTranscript
     private let shortText = "A transcript that fits in one line of the card."
 
@@ -45,26 +51,29 @@ final class HUDScrollTests: XCTestCase {
         let activeBefore = NSApp.isActive
         let bottom = maxOffset(of: fixture.scrollView)
         XCTAssertGreaterThan(bottom, 0, "the long transcript does not scroll at all")
-        XCTAssertEqual(
+        // The card opens on the first word, which is the decision `HUDView`
+        // records in `makeNSView`: the body used to open at its end and sliced
+        // the first line of every long transcript against the top edge. The
+        // reading is taken after the dispatched scroll has run, so it is the
+        // settled position and not one pass of a race: the clip sits 13 points
+        // into a 550.5 point document inside a 180 point viewport.
+        XCTAssertLessThanOrEqual(
             fixture.scrollView.contentView.bounds.origin.y,
-            bottom,
-            accuracy: 0.5,
-            "the card did not start at the newest words"
+            HUDTheme.transcriptLineHeight,
+            "the card did not open on the first word"
+        )
+        XCTAssertLessThan(
+            fixture.scrollView.contentView.bounds.origin.y,
+            bottom - 1,
+            "the card opened at the end of the text, so the first word is cut"
         )
 
         // The wheel event carries no window of its own: AppKit reads its
         // location as a screen point and compares it with the window's frame, so
-        // the panel is moved onto the origin for the dispatch — transparent, so
-        // nothing is drawn — and put back afterwards.
-        let originalFrame = fixture.panel.frame
-        fixture.panel.alphaValue = 0
-        fixture.panel.setFrame(NSRect(origin: .zero, size: originalFrame.size), display: false)
-        defer {
-            fixture.panel.setFrame(originalFrame, display: false)
-            fixture.panel.alphaValue = 1
-        }
-
-        let point = NSPoint(x: 280, y: 90)
+        // the point is taken inside the panel's own frame, which is off every
+        // display: nothing is drawn and no window is ever on the Mac.
+        let origin = fixture.panel.frame.origin
+        let point = NSPoint(x: origin.x + 280, y: origin.y + 90)
         // SwiftUI applies the wheel on a later pass of the run loop, so the
         // offset is polled for rather than read once. The panel is asked to
         // lay out and display inside the wait, so a pass that the machine is
@@ -130,9 +139,15 @@ final class HUDScrollTests: XCTestCase {
             "the long transcript is not taller than its viewport"
         )
 
-        // The newest words are what the card opens on, and the oldest are one
-        // scroll away.
-        XCTAssertEqual(clip.bounds.origin.y, maxOffset(of: long.scrollView), accuracy: 0.5)
+        // The card opens on the first word, and the newest words are one scroll
+        // away. The opening position is read after the dispatched scroll has
+        // run: it is the behaviour `HUDView.makeNSView` states, and the older
+        // assertion here was written for the end-opening body it replaced.
+        XCTAssertLessThanOrEqual(
+            clip.bounds.origin.y,
+            HUDTheme.transcriptLineHeight,
+            "the card did not open on the first word"
+        )
         clip.scroll(to: .zero)
         long.scrollView.reflectScrolledClipView(clip)
         XCTAssertEqual(clip.bounds.origin.y, 0, accuracy: 0.5)
@@ -218,6 +233,989 @@ final class HUDScrollTests: XCTestCase {
         XCTAssertFalse(hud.isVisible, "the countdown did not resume when the pointer left")
     }
 
+    // MARK: - The style rail
+
+    /// Two fingers sideways over the chips, while Dot is not the active app.
+    ///
+    /// The island is a nonactivating panel over the application the person is
+    /// dictating into, so AppKit never hands its windows a scroll: the chips'
+    /// `ScrollView` would stay still for every swipe. The card applies the event
+    /// itself in that case, and this proves the rail really moves — and that it
+    /// moves nothing else.
+    func testTheBackgroundWheelScrollsTheStyleRailAndTakesNoFocus() throws {
+        var moves = 0
+        var actions = HUDActions()
+        actions.previousVersion = { moves += 1 }
+        actions.nextVersion = { moves += 1 }
+        let fixture = makeRailHUD(actions: actions)
+        defer {
+            fixture.hud.hide()
+            spin(for: 0.4)
+        }
+
+        let panel = fixture.hud.debugPanel
+        let windowsBefore = windowsOnScreen()
+        XCTAssertFalse(panel.canBecomeKey, "the island became able to take the keyboard")
+        XCTAssertFalse(panel.isKeyWindow)
+        XCTAssertTrue(NSApp.keyWindow !== panel)
+
+        let rail = try XCTUnwrap(
+            HUD.chipRowScrollView(in: fixture.hud.debugRootView),
+            "the card's style rail was not found"
+        )
+        let clip = rail.contentView
+        let document = try XCTUnwrap(rail.documentView)
+        XCTAssertGreaterThan(
+            document.frame.width,
+            clip.bounds.width + 1,
+            "the card's styles fit its rail, so there is nothing to scroll"
+        )
+        let maximum = document.frame.width - clip.bounds.width
+        // The rail is read once the card's appearance has stopped moving it,
+        // and the appearance is what moves it. The card arrives by scaling and
+        // offsetting itself, SwiftUI applies those transforms to the views it
+        // hosts as frame transforms, and AppKit answers each one by re-deriving
+        // the clip's bounds: the rail's origin lands a fraction of a point past
+        // its first style and moves again on the next frame. The springs that
+        // drive the transform are advanced by the island's frame loop, so on a
+        // loaded machine a fixed wait can be a handful of frames and the
+        // reading is taken mid-movement: in the full suite this read 0.9998
+        // points while the card was still arriving, where its resting position
+        // is within half a point of zero. The wait is therefore the springs'
+        // own rest state, not a duration. Every position below is the distance
+        // from that rest position, so the wheel's travel is what is asserted
+        // and not the resting offset.
+        XCTAssertTrue(
+            waitForRailToRest(fixture.hud, rail),
+            "the card's appearance never came to rest, so the rail's opening position is unknown"
+        )
+        let opened = clip.bounds.origin.x
+        XCTAssertEqual(opened, 0, accuracy: 0.5, "the rail did not open on its first style")
+
+        let point = CGPoint(x: fixture.band.midX, y: fixture.band.midY)
+
+        // Fingers left reveal the styles on the right, so the rail's origin
+        // grows by the points the gesture carried.
+        fixture.hud.debugHandleScrollEvent(try horizontalWheel(points: -60, at: point), at: point)
+        XCTAssertEqual(
+            clip.bounds.origin.x - opened,
+            60,
+            accuracy: 1,
+            "the background wheel did not move the rail"
+        )
+        // The card keeps the position through its next layout: a rail that
+        // snapped back would look still whatever the offset said.
+        settle(fixture.hud, for: 0.15)
+        XCTAssertEqual(
+            clip.bounds.origin.x - opened,
+            60,
+            accuracy: 2,
+            "the rail did not keep the position the wheel gave it"
+        )
+        fixture.hud.debugHandleScrollEvent(try horizontalWheel(points: -60, at: point), at: point)
+        XCTAssertEqual(clip.bounds.origin.x - opened, 120, accuracy: 1, "the second flick did not continue")
+        fixture.hud.debugHandleScrollEvent(try horizontalWheel(points: 60, at: point), at: point)
+        XCTAssertEqual(clip.bounds.origin.x - opened, 60, accuracy: 1, "the opposite flick did not come back")
+
+        // Neither end goes past itself, however far the gesture goes.
+        for _ in 0 ..< 6 {
+            fixture.hud.debugHandleScrollEvent(try horizontalWheel(points: -400, at: point), at: point)
+        }
+        XCTAssertLessThanOrEqual(
+            clip.bounds.origin.x,
+            maximum + 0.5,
+            "the rail scrolled past the last style"
+        )
+        XCTAssertEqual(
+            clip.bounds.origin.x,
+            maximum,
+            accuracy: 1,
+            "the rail did not come to rest at its last style"
+        )
+        for _ in 0 ..< 6 {
+            fixture.hud.debugHandleScrollEvent(try horizontalWheel(points: 400, at: point), at: point)
+        }
+        XCTAssertEqual(clip.bounds.origin.x, 0, accuracy: 0.5, "the rail scrolled past its first style")
+
+        // A sideways gesture over the rail is the rail's, not the versions': the
+        // card must not turn a swipe into a previous/next move.
+        XCTAssertEqual(moves, 0, "scrolling the chips paged the versions")
+
+        // And nothing else moved: no keyboard, no window on a display.
+        XCTAssertFalse(panel.isKeyWindow, "the scroll made the panel key")
+        XCTAssertTrue(NSApp.keyWindow !== panel, "the scroll gave Dot the keyboard")
+        XCTAssertEqual(windowsOnScreen(), windowsBefore, "the scroll put a window on a display")
+        XCTAssertTrue(windowsOnScreen().isEmpty, "the test opened a window on a display")
+    }
+
+    /// The first style is where the rail rests, not where its opening caught it.
+    ///
+    /// The card's appearance scales it, and the rail's clip position is derived
+    /// under that transform, so a reading taken while the card is still arriving
+    /// moves by up to a point. This proves the opening position is a resting
+    /// position: the rail is on its first style once the appearance has stopped,
+    /// and the frames after that do not move it.
+    func testTheStyleRailRestsOnItsFirstStyleAfterTheCardAppears() throws {
+        let fixture = makeRailHUD()
+        defer {
+            fixture.hud.hide()
+            spin(for: 0.4)
+        }
+
+        let rail = try XCTUnwrap(
+            HUD.chipRowScrollView(in: fixture.hud.debugRootView),
+            "the card's style rail was not found"
+        )
+        let clip = rail.contentView
+        XCTAssertTrue(
+            waitForRailToRest(fixture.hud, rail),
+            "the card's appearance never came to rest, so the rail's opening position is unknown"
+        )
+        let rested = clip.bounds.origin.x
+        XCTAssertEqual(rested, 0, accuracy: 0.5, "the rail rested away from its first style")
+
+        // The card's frame loop keeps running while the card is up. A rest
+        // position that its later frames moved would mean the rail had opened
+        // on a transient of its appearance rather than on its first style.
+        spin(for: 0.5)
+        fixture.hud.debugRootView.layoutSubtreeIfNeeded()
+        XCTAssertEqual(
+            clip.bounds.origin.x,
+            rested,
+            accuracy: 0.5,
+            "the rail drifted after the card's appearance came to rest"
+        )
+    }
+
+    /// A wheel of one device pixel is the person's, and the card keeps it.
+    ///
+    /// The card corrects the residue its appearance leaves in the rail's clip.
+    /// A wheel that moved the rail is not that residue, however little it
+    /// moved: the position it wrote is the correction's target, so a nudge
+    /// smaller than the residue's reach is not swallowed by it. The wheel here
+    /// is one device pixel of the display the card is on, which is the smallest
+    /// travel AppKit can hold in the clip's origin: half a point at 2x and a
+    /// point at 1x. It is sent while the card is still arriving, and the rail is
+    /// read once it has rested.
+    func testASmallWheelBeforeTheCardRestsSurvivesTheOpeningCorrection() throws {
+        try WindowCapture.requireFullMotion()
+        let card = overflowingCard()
+        let hud = HUD(offscreen: true)
+        hud.dwell = 60
+        hud.showTranscript(text: card.original, delivery: .copied, elapsed: "0:04")
+        hud.setRewrite(card)
+        hud.debugPointer(inside: true)
+        defer {
+            hud.hide()
+            spin(for: 0.4)
+        }
+
+        let rail = try XCTUnwrap(waitForRail(hud), "the card's style rail was not found")
+        let clip = rail.contentView
+        XCTAssertFalse(
+            hud.debugAppearanceAtRest,
+            "the card arrived before the wheel, so the wheel did not meet the appearance"
+        )
+        let cardFrame = HUDPlacement.cardFrame(
+            panelFrame: hud.debugPanel.frame,
+            cardSize: HUD.transcriptSize(text: card.original, rewrite: card),
+            topInset: HUD.shadowPadding
+        )
+        let band = HUD.rewriteChipRowFrame(cardFrame: cardFrame, card: card)
+        let point = CGPoint(x: band.midX, y: band.midY)
+        // The rail is at its opening position, so the wheel's own travel is the
+        // whole of the displacement it is given. One device pixel is the least
+        // travel the clip's origin can hold.
+        clip.scroll(to: .zero)
+        rail.reflectScrolledClipView(clip)
+        let pixel = 1 / hud.debugPanel.backingScaleFactor
+        let nudge = DeliveredScrollEvent(
+            window: hud.debugPanel,
+            windowNumber: hud.debugPanel.windowNumber,
+            location: hud.debugPanel.convertPoint(fromScreen: point),
+            deltaX: -pixel,
+            deltaY: 0,
+            phase: .began,
+            timestamp: ProcessInfo.processInfo.systemUptime
+        )
+        hud.debugHandleScrollEvent(nudge, at: point)
+        XCTAssertEqual(
+            clip.bounds.origin.x,
+            pixel,
+            accuracy: 1e-6,
+            "the one-pixel wheel did not move the rail"
+        )
+
+        XCTAssertTrue(
+            waitForRailToRest(hud, rail),
+            "the card's appearance never came to rest, so the wheel's survival is unknown"
+        )
+        XCTAssertGreaterThan(
+            clip.bounds.origin.x,
+            0.5 * pixel,
+            "the opening correction swallowed the wheel's pixel"
+        )
+        XCTAssertLessThanOrEqual(
+            clip.bounds.origin.x,
+            1.5,
+            "the wheel left the residue window before the correction could be tested"
+        )
+        XCTAssertEqual(
+            clip.bounds.origin.x,
+            pixel,
+            accuracy: 0.01,
+            "the opening correction did not leave the rail on the wheel's pixel"
+        )
+    }
+
+    /// The residue's reach is two points, and the window is that plus half a point.
+    ///
+    /// The appearance leaves the rail's clip inside its content by a residue
+    /// that is bounded in points rather than in device pixels: it measured 2.0
+    /// points on the hosted 1x runner and 2.0 points on a 2 px/pt display here,
+    /// which is four device pixels there. The window is therefore one value,
+    /// and the same on every display.
+    func testTheResidueWindowCoversTheMeasuredResidue() {
+        XCTAssertEqual(
+            HUD.railResidueWindow,
+            2.5,
+            accuracy: 1e-12,
+            "the window is the measured residue plus half a point of headroom"
+        )
+        XCTAssertEqual(
+            HUD.railResidueWindow,
+            2.0 + 0.5,
+            accuracy: 1e-12,
+            "the measured maximum residue is two points and the headroom is half a point"
+        )
+        XCTAssertLessThanOrEqual(
+            2.0,
+            HUD.railResidueWindow,
+            "the window does not reach the largest residue the appearance was measured at"
+        )
+    }
+
+    /// A write to the rail is the person's when it carries the rail further than the residue can.
+    ///
+    /// The rail scrolls sideways only and its clip's height never moves, so a
+    /// write that carries it across has to count even though the other axis did
+    /// not move at all. The numbers sit either side of the window the correction
+    /// reads.
+    func testARailWriteIsThePersonsOnlyPastTheResidue() {
+        let window = HUD.railResidueWindow
+        XCTAssertTrue(
+            HUD.railWriteIsPersons(
+                origin: CGPoint(x: 174.5, y: 0),
+                intended: .zero,
+                window: window
+            ),
+            "the row's reveal of a style was not taken as the person's position"
+        )
+        XCTAssertTrue(
+            HUD.railWriteIsPersons(
+                origin: CGPoint(x: 2.6, y: 0),
+                intended: .zero,
+                window: window
+            ),
+            "a write past the window was not taken as the person's position"
+        )
+        XCTAssertFalse(
+            HUD.railWriteIsPersons(
+                origin: CGPoint(x: 2.4, y: 0),
+                intended: .zero,
+                window: window
+            ),
+            "a write inside the window was taken as the person's position"
+        )
+        XCTAssertTrue(
+            HUD.railWriteIsPersons(
+                origin: CGPoint(x: 0, y: 3),
+                intended: .zero,
+                window: window
+            ),
+            "a write that moved the rail on its other axis was not taken as the person's position"
+        )
+        XCTAssertFalse(
+            HUD.railWriteIsPersons(
+                origin: CGPoint(x: 2, y: 2),
+                intended: .zero,
+                window: window
+            ),
+            "a write inside the window on both axes was taken as the person's position"
+        )
+    }
+
+    /// The correction corrects the appearance's residue and nothing else.
+    ///
+    /// A rail left two points inside its content is holding the largest
+    /// residue the appearance was measured at. The correction puts it back on
+    /// the position the person gave it, and leaves a rail that is further than
+    /// the window from that position where it is.
+    func testTheCorrectionOnlyTouchesTheResidueWindow() {
+        let wide = CGSize(width: 400, height: 0)
+        XCTAssertEqual(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 2.0, y: 0),
+                intended: .zero,
+                window: HUD.railResidueWindow,
+                scrollRange: wide
+            ),
+            .zero,
+            "a two-point residue was left in the rail"
+        )
+        XCTAssertNil(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 2.6, y: 0),
+                intended: .zero,
+                window: HUD.railResidueWindow,
+                scrollRange: wide
+            ),
+            "a position outside the residue window was corrected"
+        )
+        XCTAssertEqual(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 1.0, y: 0),
+                intended: CGPoint(x: 0.5, y: 0),
+                window: HUD.railResidueWindow,
+                scrollRange: wide
+            ),
+            CGPoint(x: 0.5, y: 0),
+            "the correction restored zero rather than the position the person wrote"
+        )
+        XCTAssertNil(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 0.5, y: 0),
+                intended: CGPoint(x: 0.5, y: 0),
+                window: HUD.railResidueWindow,
+                scrollRange: wide
+            ),
+            "a rail already on the person's position was written again"
+        )
+        XCTAssertEqual(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 0, y: 1.0),
+                intended: .zero,
+                window: HUD.railResidueWindow,
+                scrollRange: wide
+            ),
+            .zero,
+            "a residue on the vertical axis was left, and the rail has no travel there"
+        )
+        XCTAssertEqual(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 0.2, y: 0),
+                intended: CGPoint(x: -1, y: 0),
+                window: 1.5,
+                scrollRange: CGSize(width: 200, height: 0)
+            ),
+            .zero,
+            "a corrected position was written before the document's first style"
+        )
+        XCTAssertEqual(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 199.4, y: 0),
+                intended: CGPoint(x: 200.4, y: 0),
+                window: 1.5,
+                scrollRange: CGSize(width: 200, height: 0)
+            ),
+            CGPoint(x: 200, y: 0),
+            "a corrected position was written past the document's travel"
+        )
+    }
+
+    /// A version chosen while the card is arriving keeps the rail where the person put it.
+    ///
+    /// A version that carries a style opens the row on that style, and the card
+    /// used to leave the rail alone for it. The correction now serves the
+    /// position the person gave the rail, whether or not a style is selected.
+    /// This runs the action the next-version arrow runs while the appearance is
+    /// still arriving, gives the rail a half point through the card's own wheel,
+    /// which is a position inside the window the opening residue occupies and so
+    /// one the card has to know is the person's rather than the residue's, and
+    /// proves the correction does not pull it back to the rail's first style.
+    func testAVersionSelectionDuringTheEntranceSurvivesTheOpeningCorrection() throws {
+        try WindowCapture.requireFullMotion()
+        var moves = 0
+        var card = overflowingCard()
+        card.append(id: 1, style: card.choices[4], text: "A shorter version of the words.", warning: nil)
+        card.select(versionID: 0)
+        let hud = HUD(offscreen: true)
+        hud.dwell = 60
+        var actions = HUDActions()
+        actions.nextVersion = {
+            moves += 1
+            var next = card
+            next.select(versionID: 1)
+            hud.setRewrite(next)
+        }
+        hud.actions = actions
+        hud.showTranscript(text: card.original, delivery: .copied, elapsed: "0:04")
+        hud.setRewrite(card)
+        hud.debugPointer(inside: true)
+        defer {
+            hud.hide()
+            spin(for: 0.4)
+        }
+
+        // The appearance is moved by hand to the middle of its entrance, and no
+        // run-loop turn is let in between: the moment this test is about is a
+        // state of the card, and a machine that delivers the whole arrival in one
+        // turn steps over it. 0.200 s of the HUD's own clock is the card half way
+        // out of the notch, with both springs still moving.
+        for _ in 0 ..< 200 { hud.debugAdvanceAppearance(by: 0.001) }
+        XCTAssertLessThan(
+            hud.debugPresence,
+            0.99,
+            "the premise: the card is already \(hud.debugPresence) present at 0.200 s"
+        )
+        XCTAssertLessThan(
+            hud.debugContent,
+            0.99,
+            "the premise: the card's content is already \(hud.debugContent) settled at 0.200 s"
+        )
+        XCTAssertFalse(
+            hud.debugAppearanceAtRest,
+            "the card arrived before the version was chosen, so the choice did not meet the appearance"
+        )
+        hud.actions.nextVersion?()
+        XCTAssertEqual(moves, 1, "the next-version action did not run")
+
+        // The row the action asked for is laid out on the run-loop turns that
+        // follow, and the card scrolls it to the style the chosen version
+        // carries. That reveal is also the last thing that moves the rail, so
+        // the wheel is sent until its half point holds: the rail is put back on
+        // its first style and the wheel is applied again, because a wheel is
+        // travel and the row's reveal may have carried the rail anywhere. The
+        // position holds once two turns read inside the window the opening
+        // correction is defined over. Bounded: a rail that never holds its
+        // position is reported rather than read.
+        let rail = try XCTUnwrap(waitForRail(hud), "the card's style rail was not found")
+        let clip = rail.contentView
+        var selected = card
+        selected.select(versionID: 1)
+        let cardFrame = HUDPlacement.cardFrame(
+            panelFrame: hud.debugPanel.frame,
+            cardSize: HUD.transcriptSize(text: selected.original, rewrite: selected),
+            topInset: HUD.shadowPadding
+        )
+        let band = HUD.rewriteChipRowFrame(cardFrame: cardFrame, card: selected)
+        let point = CGPoint(x: band.midX, y: band.midY)
+        // One device pixel is the least travel the clip's origin can hold, so it
+        // is the amount this nudge carries: half a point at 2x and a point at 1x.
+        let pixel = 1 / hud.debugPanel.backingScaleFactor
+        var held = 0
+        for _ in 0 ..< 6 where held < 2 {
+            clip.scroll(to: .zero)
+            rail.reflectScrolledClipView(clip)
+            hud.debugHandleScrollEvent(
+                DeliveredScrollEvent(
+                    window: hud.debugPanel,
+                    windowNumber: hud.debugPanel.windowNumber,
+                    location: hud.debugPanel.convertPoint(fromScreen: point),
+                    deltaX: -pixel,
+                    deltaY: 0,
+                    phase: .began,
+                    timestamp: ProcessInfo.processInfo.systemUptime
+                ),
+                at: point
+            )
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.02))
+            hud.debugRootView.layoutSubtreeIfNeeded()
+            held = abs(clip.bounds.origin.x) <= 1.5 ? held + 1 : 0
+        }
+        XCTAssertEqual(
+            held,
+            2,
+            "the rail would not hold the position it was placed at: it read \(clip.bounds.origin.x)"
+        )
+        XCTAssertFalse(
+            hud.debugAppearanceAtRest,
+            "the card settled before the rail was placed, so the choice did not meet the appearance"
+        )
+
+        XCTAssertTrue(
+            waitForRailToRest(hud, rail),
+            "the card's appearance never came to rest, so the rail's position is unknown"
+        )
+        XCTAssertGreaterThan(
+            clip.bounds.origin.x,
+            0.5 * pixel,
+            "the opening correction pulled the rail off the version the action selected"
+        )
+        XCTAssertLessThanOrEqual(
+            clip.bounds.origin.x,
+            1.5,
+            "the rail left the residue window before the correction could be tested"
+        )
+    }
+
+    /// A card opened on a version that carries a style keeps the style the row revealed.
+    ///
+    /// The row opens centred on the style of the version the card arrives with,
+    /// which is a scroll the row runs itself while the card is still arriving,
+    /// so the card never sees the call that makes it. That scroll is the
+    /// person's position, and the opening correction has to leave the rail on
+    /// it. The reveal is read as the largest origin the rail takes before the
+    /// appearance stops, which is the one position on the rail the card did not
+    /// write.
+    func testAStyledVersionOpensTheRailOnItsStyleAndKeepsIt() throws {
+        try WindowCapture.requireFullMotion()
+        var card = overflowingCard()
+        card.append(id: 1, style: card.choices[4], text: "A shorter version of the words.", warning: nil)
+        card.select(versionID: 1)
+        let hud = HUD(offscreen: true)
+        hud.dwell = 60
+        hud.showTranscript(text: card.original, delivery: .copied, elapsed: "0:04")
+        hud.setRewrite(card)
+        hud.debugPointer(inside: true)
+        defer {
+            hud.hide()
+            spin(for: 0.4)
+        }
+
+        let rail = try XCTUnwrap(waitForRail(hud), "the card's style rail was not found")
+        let clip = rail.contentView
+        var reveal: CGFloat = 0
+        XCTAssertTrue(
+            waitUntil(timeout: 4) {
+                reveal = max(reveal, clip.bounds.origin.x)
+                return reveal > HUD.railResidueWindow
+            },
+            "the row never revealed the style the selected version carries, so the rail's position is unknown"
+        )
+        // The landing is the clip origin on the last frame before the correction,
+        // which is the frame before it decides.
+        let landing = sampleTheLanding(hud, rail)
+        XCTAssertTrue(
+            waitForRailToRest(hud, rail),
+            "the card's appearance never came to rest, so the rail's position is unknown"
+        )
+        let final = clip.bounds.origin.x
+        let target = hud.debugRailIntendedOrigin.x
+        print(
+            "rr2 styled version: reveal=\(reveal) landing=\(landing) target=\(target) final=\(final)"
+        )
+        assertTheRailCameToRestOn(final, landing: landing, hud: hud)
+        XCTAssertGreaterThan(
+            target,
+            50,
+            "the card did not record the style the row revealed, so the rail has no target"
+        )
+    }
+
+    /// The record follows a reveal to its last step, however short the steps are.
+    ///
+    /// The row's reveal is an eased scroll, so its last steps are each shorter
+    /// than the residue's reach. A threshold alone would leave the record on the
+    /// step that crossed it, and the opening correction would then pull the rail
+    /// back by the rest of the travel. One write past the threshold qualifies the
+    /// ones after it, and they are followed, at any distance, until the clip
+    /// holds still for a frame.
+    func testTheRecordFollowsARevealsLastSteps() throws {
+        try WindowCapture.requireFullMotion()
+        let card = overflowingCard()
+        let hud = HUD(offscreen: true)
+        hud.dwell = 60
+        hud.showTranscript(text: card.original, delivery: .copied, elapsed: "0:04")
+        hud.setRewrite(card)
+        hud.debugPointer(inside: true)
+        defer {
+            hud.hide()
+            spin(for: 0.4)
+        }
+
+        let rail = try XCTUnwrap(waitForRail(hud), "the card's style rail was not found")
+        let clip = rail.contentView
+        XCTAssertFalse(
+            hud.debugAppearanceAtRest,
+            "the card arrived before the reveal, so the steps did not meet the appearance"
+        )
+        // The first step is further than the residue and qualifies, and it also
+        // proves the card is reading the clip. The four after it are one point
+        // each, shorter than the window, and each is written on its own frame the
+        // way an eased scroll writes them.
+        var origin: CGFloat = 100
+        XCTAssertTrue(
+            waitUntil(timeout: 4) {
+                clip.scroll(to: NSPoint(x: origin, y: 0))
+                rail.reflectScrolledClipView(clip)
+                return hud.debugRailIntendedOrigin.x == origin
+            },
+            "the card never recorded the row's first step"
+        )
+        // One step per frame: the card's presence moves on every frame, so
+        // waiting for it to change is waiting for a frame, and every frame gets
+        // its step the way an eased scroll writes one.
+        var presence = hud.debugPresence
+        let deadline = Date().addingTimeInterval(4)
+        for _ in 0 ..< 4 {
+            while hud.debugPresence == presence, Date() < deadline {
+                RunLoop.main.run(
+                    mode: .default,
+                    before: min(deadline, Date().addingTimeInterval(0.01))
+                )
+            }
+            presence = hud.debugPresence
+            origin += 1
+            clip.scroll(to: NSPoint(x: origin, y: 0))
+            rail.reflectScrolledClipView(clip)
+        }
+        print("rr2 last steps: origin=\(origin) record=\(hud.debugRailIntendedOrigin.x)")
+        XCTAssertEqual(
+            hud.debugRailIntendedOrigin.x,
+            origin,
+            accuracy: 1e-6,
+            "the record stopped short of the reveal's last step"
+        )
+    }
+
+    /// The next-version arrow clicked while the card is arriving keeps its place.
+    ///
+    /// The appearance scales and offsets the card, so the arrow is not where its
+    /// settled geometry puts it. This aims at the control's rect under the
+    /// transform that is on screen at the moment of the click, clicks it while
+    /// the springs are still moving, and proves the style it revealed is still
+    /// on the rail once the appearance has stopped.
+    func testAnEarlyArrowClickSurvivesTheOpeningCorrection() throws {
+        try WindowCapture.requireFullMotion()
+        var moves = 0
+        var card = overflowingCard()
+        card.append(id: 1, style: card.choices[4], text: "A shorter version of the words.", warning: nil)
+        // The card opens on the original: the trailing control is then the
+        // next-version arrow, not the rerun button.
+        card.select(versionID: 0)
+        let hud = HUD(offscreen: true)
+        hud.dwell = 60
+        var actions = HUDActions()
+        actions.nextVersion = {
+            moves += 1
+            var next = card
+            next.select(versionID: 1)
+            hud.setRewrite(next)
+        }
+        hud.actions = actions
+        hud.showTranscript(text: card.original, delivery: .copied, elapsed: "0:04")
+        hud.setRewrite(card)
+        hud.debugPointer(inside: true)
+        defer {
+            hud.hide()
+            spin(for: 0.4)
+        }
+
+        let rail = try XCTUnwrap(waitForRail(hud), "the card's style rail was not found")
+        let clip = rail.contentView
+        assertTheRevealedStyleSitsPastTheThreshold(
+            choices: card.choices,
+            index: 4,
+            viewportWidth: clip.bounds.width
+        )
+        // A card at the very start of its appearance is still transparent, so
+        // the click is made once it is visibly arriving.
+        XCTAssertTrue(
+            waitUntil(timeout: 3) {
+                hud.debugPresence > 0.5 && hud.debugContent > 0.5
+            },
+            "the card never became visible"
+        )
+        XCTAssertFalse(
+            hud.debugAppearanceAtRest,
+            "the card arrived before the click, so the click did not meet the appearance"
+        )
+        let cardFrame = HUDPlacement.cardFrame(
+            panelFrame: hud.debugPanel.frame,
+            cardSize: HUD.transcriptSize(text: card.original, rewrite: card),
+            topInset: HUD.shadowPadding
+        )
+        // The next-version arrow's place on the settled card, then the same
+        // point through the scale and offset the card is drawn with now.
+        let settled = hud.debugPanel.convertPoint(fromScreen: CGPoint(
+            x: cardFrame.maxX - HUDTheme.padding - HUDRewriteLayout.versionArrowWidth / 2,
+            y: cardFrame.minY + HUDState.verticalPadding + HUDRewriteLayout.chipHeight / 2
+        ))
+        let center = hud.debugPanel.convertPoint(fromScreen: CGPoint(
+            x: cardFrame.midX,
+            y: cardFrame.midY
+        ))
+        let presence = CGFloat(hud.debugPresence)
+        let content = CGFloat(hud.debugContent)
+        // The card's appearance is the two scale and offset pairs HUDView
+        // draws: the content's 0.99…1 scale and 6 pt offset, then the card's
+        // 0.94…1 scale and 10 pt offset, both about the card's centre.
+        let innerScale = 0.99 + 0.01 * content
+        let outerScale = 0.94 + 0.06 * presence
+        let point = CGPoint(
+            x: center.x + (settled.x - center.x) * innerScale * outerScale,
+            y: center.y
+                + ((settled.y - center.y) * innerScale - (1 - content) * 6) * outerScale
+                + (1 - presence) * 10
+        )
+        // The card takes the mouse while the pointer is over it; the pointer
+        // here is the test's own, so the window is told the same.
+        hud.debugPanel.ignoresMouseEvents = false
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: type,
+                location: point,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: hud.debugPanel.windowNumber,
+                context: nil,
+                eventNumber: 1,
+                clickCount: 1,
+                pressure: type == .leftMouseDown ? 1 : 0
+            ))
+            hud.debugPanel.sendEvent(event)
+        }
+        XCTAssertEqual(moves, 1, "the early next-version arrow did not run")
+
+        XCTAssertTrue(
+            waitUntil(timeout: 4) { hud.debugRailIntendedOrigin.x > 50 },
+            "the card never recorded the style the early arrow revealed"
+        )
+        // The row is laid out again when the version arrives, so the rail and its
+        // clip are read again after the click.
+        let railAfter = try XCTUnwrap(waitForRail(hud), "the card's style rail was lost after the click")
+        let clipAfter = railAfter.contentView
+        let landing = sampleTheLanding(hud, railAfter)
+        XCTAssertTrue(
+            waitForRailToRest(hud, railAfter),
+            "the card's appearance never came to rest, so the rail's position is unknown"
+        )
+        let final = clipAfter.bounds.origin.x
+        print("rr2 early arrow: landing=\(landing) final=\(final)")
+        assertTheRailCameToRestOn(final, landing: landing, hud: hud)
+    }
+
+    /// A version arrow's reveal survives the opening correction.
+    ///
+    /// The card corrects the rail's opening position once its appearance has
+    /// stopped, and that correction must never undo a style the person reached.
+    /// The click is made after the card has arrived because the appearance
+    /// scales and offsets the views it hosts, so a click aimed at the settled
+    /// geometry cannot reach a control while the card is still moving. This
+    /// proves the arrow runs, the rail moves to the style it selected, and the
+    /// correction does not pull the rail back from it.
+    func testAVersionArrowClickSurvivesTheOpeningCorrection() throws {
+        var moves = 0
+        var card = overflowingCard()
+        card.append(id: 1, style: card.choices[4], text: "A shorter version of the words.", warning: nil)
+        // The card opens on the original: the trailing control is then the
+        // next-version arrow, not the rerun button.
+        card.select(versionID: 0)
+        let hud = HUD(offscreen: true)
+        hud.dwell = 60
+        var actions = HUDActions()
+        actions.nextVersion = {
+            moves += 1
+            var next = card
+            next.select(versionID: 1)
+            hud.setRewrite(next)
+        }
+        hud.actions = actions
+        hud.showTranscript(text: card.original, delivery: .copied, elapsed: "0:04")
+        hud.setRewrite(card)
+        hud.debugPointer(inside: true)
+        defer {
+            hud.hide()
+            spin(for: 0.4)
+        }
+
+        let rail = try XCTUnwrap(waitForRail(hud), "the card's style rail was not found")
+        XCTAssertTrue(
+            waitForRailToRest(hud, rail),
+            "the card's appearance never came to rest, so the arrow cannot be clicked"
+        )
+        let clip = rail.contentView
+        assertTheRevealedStyleSitsPastTheThreshold(
+            choices: card.choices,
+            index: 4,
+            viewportWidth: clip.bounds.width
+        )
+        let cardFrame = HUDPlacement.cardFrame(
+            panelFrame: hud.debugPanel.frame,
+            cardSize: HUD.transcriptSize(text: card.original, rewrite: card),
+            topInset: HUD.shadowPadding
+        )
+        // The next-version arrow is the row's trailing control, one gap inside
+        // the card's trailing padding.
+        let point = hud.debugPanel.convertPoint(fromScreen: CGPoint(
+            x: cardFrame.maxX - HUDTheme.padding - HUDRewriteLayout.versionArrowWidth / 2,
+            y: cardFrame.minY + HUDState.verticalPadding + HUDRewriteLayout.chipHeight / 2
+        ))
+        // The card takes the mouse while the pointer is over it; the pointer
+        // here is the test's own, so the window is told the same.
+        hud.debugPanel.ignoresMouseEvents = false
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: type,
+                location: point,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: hud.debugPanel.windowNumber,
+                context: nil,
+                eventNumber: 1,
+                clickCount: 1,
+                pressure: type == .leftMouseDown ? 1 : 0
+            ))
+            hud.debugPanel.sendEvent(event)
+        }
+        XCTAssertEqual(moves, 1, "the next-version arrow did not run")
+
+        let landing = try XCTUnwrap(
+            waitForRailToSettle(hud),
+            "the rail never settled on the style the arrow revealed"
+        )
+        // The row is laid out again when the version arrives, so the rail and
+        // its clip are read again after the click: the ones captured before it
+        // can belong to the row the click replaced.
+        let railAfter = try XCTUnwrap(waitForRail(hud), "the card's style rail was lost after the click")
+        let clipAfter = railAfter.contentView
+        let final = clipAfter.bounds.origin.x
+        print("rr2 arrow click: landing=\(landing) final=\(final)")
+        assertTheRailCameToRestOn(final, landing: landing, hud: hud)
+    }
+
+    /// A rail wheel is applied by the card, and the local monitor stops the
+    /// delivered event before any view receives it.
+    ///
+    /// The card owns every rail gesture: it moves the row itself and returns
+    /// nil from the local monitor, so a native view can never apply the same
+    /// wheel a second time. The probe view sits over the card and counts what
+    /// reaches it, which is how the test sees the swallow instead of trusting
+    /// a return value.
+    func testTheLocalMonitorStopsADeliveredRailWheelBeforeAnyViewAppliesIt() throws {
+        let fixture = makeRailHUD()
+        defer {
+            fixture.hud.hide()
+            spin(for: 0.4)
+        }
+        let hud = fixture.hud
+        let panel = hud.debugPanel
+        let host = hud.debugRootView
+        let rail = try XCTUnwrap(
+            HUD.chipRowScrollView(in: host),
+            "the card's style rail was not found"
+        )
+        let clip = rail.contentView
+        let point = CGPoint(x: fixture.band.midX, y: fixture.band.midY)
+        let windowPoint = panel.convertPoint(fromScreen: point)
+
+        // NSHostingView does not accept test subviews above its SwiftUI
+        // content, so the hosting view moves into a plain container and the
+        // probe becomes its sibling. Nothing the card draws changes.
+        let container = NSView(frame: host.frame)
+        panel.contentView = container
+        host.frame = container.bounds
+        container.addSubview(host)
+        host.layoutSubtreeIfNeeded()
+        let probe = ScrollDeliveryProbe(frame: container.bounds)
+        container.addSubview(probe)
+        defer { probe.removeFromSuperview() }
+        container.layoutSubtreeIfNeeded()
+        let before = clip.bounds.origin.x
+
+        let delivered = DeliveredScrollEvent(
+            window: panel,
+            windowNumber: panel.windowNumber,
+            location: windowPoint,
+            deltaX: 0,
+            deltaY: -30,
+            phase: .began,
+            timestamp: ProcessInfo.processInfo.systemUptime
+        )
+        XCTAssertTrue(delivered.window === panel, "the event was not associated with the panel")
+        NSApp.sendEvent(delivered)
+
+        XCTAssertEqual(
+            clip.bounds.origin.x,
+            before + 30,
+            accuracy: 0.5,
+            "the swallowed wheel was not applied exactly once"
+        )
+        XCTAssertEqual(
+            probe.scrollCount,
+            0,
+            "the swallowed wheel still reached a native view"
+        )
+
+        // A wheel the card does not own passes the monitor. The probe proves
+        // the dispatch path: without the swallow above, it would have seen the
+        // rail event too.
+        let cardFrame = HUDPlacement.cardFrame(
+            panelFrame: panel.frame,
+            cardSize: HUD.transcriptSize(text: fixture.card.original, rewrite: fixture.card),
+            topInset: HUD.shadowPadding
+        )
+        let bodyFrame = HUD.transcriptBodyFrame(cardFrame: cardFrame, card: fixture.card)
+        let bodyPoint = CGPoint(x: bodyFrame.midX, y: bodyFrame.midY)
+        let passed = DeliveredScrollEvent(
+            window: panel,
+            windowNumber: panel.windowNumber,
+            location: panel.convertPoint(fromScreen: bodyPoint),
+            deltaX: 0,
+            deltaY: -10,
+            phase: .began,
+            timestamp: ProcessInfo.processInfo.systemUptime
+        )
+        NSApp.sendEvent(passed)
+        XCTAssertEqual(
+            probe.scrollCount,
+            1,
+            "the monitor swallowed a wheel the card does not own"
+        )
+    }
+
+    /// The wheel over a long transcript in a background island.
+    ///
+    /// The body is a scroll view of its own, and a body that cannot be scrolled
+    /// is a body whose end cannot be read. The vertical gesture belongs to it;
+    /// the horizontal one is still the versions' swipe.
+    func testTheBackgroundWheelScrollsTheTranscriptBody() throws {
+        let hud = HUD(offscreen: true)
+        hud.dwell = 60
+        defer {
+            hud.hide()
+            spin(for: 0.4)
+        }
+        hud.showTranscript(text: longText, delivery: .copied, elapsed: "4:18")
+        hud.debugPointer(inside: true)
+        settle(hud)
+
+        let body = try XCTUnwrap(
+            HUD.transcriptScrollView(in: hud.debugRootView),
+            "the long transcript is not in a scrollable body"
+        )
+        let clip = body.contentView
+        let maximum = max(0, (body.documentView?.frame.height ?? 0) - clip.bounds.height)
+        XCTAssertGreaterThan(maximum, 40, "the transcript is not longer than its body")
+
+        // Start in the middle so both directions have room, then let the wheel
+        // go back and forth over the words.
+        clip.scroll(to: NSPoint(x: 0, y: maximum / 2))
+        body.reflectScrolledClipView(clip)
+        let middle = clip.bounds.origin.y
+
+        let cardFrame = HUDPlacement.cardFrame(
+            panelFrame: hud.debugPanel.frame,
+            cardSize: HUD.transcriptSize(text: longText),
+            topInset: HUD.shadowPadding
+        )
+        let bodyFrame = HUD.transcriptBodyFrame(cardFrame: cardFrame, card: nil)
+        let point = CGPoint(x: bodyFrame.midX, y: bodyFrame.midY)
+
+        hud.debugHandleScrollEvent(try verticalWheel(points: 30, at: point), at: point)
+        XCTAssertEqual(
+            clip.bounds.origin.y,
+            max(0, middle - 30),
+            accuracy: 1,
+            "the wheel did not go back to the earlier words"
+        )
+        hud.debugHandleScrollEvent(try verticalWheel(points: -30, at: point), at: point)
+        XCTAssertEqual(clip.bounds.origin.y, middle, accuracy: 1, "the wheel did not come forward again")
+        XCTAssertFalse(hud.debugPanel.isKeyWindow, "the scroll made the panel key")
+        XCTAssertTrue(NSApp.keyWindow !== hud.debugPanel, "the scroll gave Dot the keyboard")
+    }
+
     // MARK: - Fixtures
 
     /// A panel with the transcript card in it, off every screen.
@@ -244,12 +1242,7 @@ final class HUDScrollTests: XCTestCase {
             .frame(width: size.width, height: size.height)
         )
 
-        let panel = HUDPanel(
-            contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
+        let panel = OffscreenHUDPanel(size: size)
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.ignoresMouseEvents = false
@@ -260,12 +1253,13 @@ final class HUDScrollTests: XCTestCase {
         host.frame = NSRect(origin: .zero, size: size)
         panel.contentView = host
 
-        panel.setFrame(
-            NSRect(x: -10_000, y: -10_000, width: size.width, height: size.height),
-            display: false
-        )
         panel.orderFrontRegardless()
         host.layoutSubtreeIfNeeded()
+        for _ in 0 ..< 4 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            host.layoutSubtreeIfNeeded()
+            panel.displayIfNeeded()
+        }
 
         let scrollView = try XCTUnwrap(
             firstScrollView(in: host),
@@ -327,6 +1321,322 @@ final class HUDScrollTests: XCTestCase {
         return try XCTUnwrap(NSEvent(cgEvent: event))
     }
 
+    /// A sideways wheel at a point: the two-finger swipe of a trackpad, with
+    /// precise point deltas and no window of its own, which is what the global
+    /// monitor sees while another application is frontmost.
+    private func horizontalWheel(points: Int32, at point: NSPoint) throws -> NSEvent {
+        try scrollWheel(wheel1: 0, wheel2: points, at: point)
+    }
+
+    /// A vertical wheel at a point, with precise point deltas.
+    private func verticalWheel(points: Int32, at point: NSPoint) throws -> NSEvent {
+        try scrollWheel(wheel1: points, wheel2: 0, at: point)
+    }
+
+    private func scrollWheel(wheel1: Int32, wheel2: Int32, at point: NSPoint) throws -> NSEvent {
+        let screenHeight = NSScreen.screens.first?.frame.height ?? 0
+        let event = try XCTUnwrap(
+            CGEvent(
+                scrollWheelEvent2Source: nil,
+                units: .pixel,
+                wheelCount: wheel2 == 0 ? 1 : 2,
+                wheel1: wheel1,
+                wheel2: wheel2,
+                wheel3: 0
+            )
+        )
+        event.location = CGPoint(x: point.x, y: screenHeight - point.y)
+        return try XCTUnwrap(NSEvent(cgEvent: event))
+    }
+
+    /// The windows of this process that sit on a display.
+    ///
+    /// Every fixture here is ordered front off every screen, so the set stays
+    /// empty: it is how a test says the island was never drawn on the Mac.
+    private func windowsOnScreen() -> Set<Int> {
+        Set(
+            NSApp.windows
+                .filter { window in
+                    guard window.isVisible, !window.frame.isEmpty else { return false }
+                    return NSScreen.screens.contains { $0.frame.intersects(window.frame) }
+                }
+                .map(\.windowNumber)
+        )
+    }
+
+    /// An island with a card whose styles outgrow its rail, off every screen.
+    ///
+    /// The card is the island's own — the panel, the hosting view, the model
+    /// that the wheel is applied through — not a replica of them.
+    private func makeRailHUD(
+        actions: HUDActions = HUDActions()
+    ) -> (hud: HUD, card: RewriteCard, band: CGRect) {
+        _ = NSApplication.shared
+        let card = overflowingCard()
+        let hud = HUD(offscreen: true)
+        hud.dwell = 60
+        hud.actions = actions
+        hud.showTranscript(text: card.original, delivery: .copied, elapsed: "0:04")
+        hud.setRewrite(card)
+        hud.debugPointer(inside: true)
+        settle(hud)
+
+        let cardFrame = HUDPlacement.cardFrame(
+            panelFrame: hud.debugPanel.frame,
+            cardSize: HUD.transcriptSize(text: card.original, rewrite: card),
+            topInset: HUD.shadowPadding
+        )
+        let band = HUD.rewriteChipRowFrame(cardFrame: cardFrame, card: card)
+        XCTAssertFalse(band.isEmpty, "the card drew no band for its chips")
+        return (hud, card, band)
+    }
+
+    /// The card's words, and more styles than the card can show at once.
+    private func overflowingCard() -> RewriteCard {
+        let custom = (0 ..< 6).map { index in
+            RewriteStyle(
+                CustomRewriteStyle(
+                    id: "custom-\(index)",
+                    title: String(repeating: "W", count: CustomRewriteStyle.maximumTitleLength),
+                    instruction: "Rewrite."
+                )
+            )
+        }
+        return RewriteCard(
+            original: "A transcript with enough words to fill the body of the card and give every style something to work on.",
+            choices: RewriteStyle.builtIns + custom
+        )
+    }
+
+    /// Lays the island's card out, off every screen.
+    private func settle(_ hud: HUD, for seconds: TimeInterval = 0.4) {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            hud.debugRootView.layoutSubtreeIfNeeded()
+            RunLoop.main.run(mode: .default, before: min(deadline, Date().addingTimeInterval(0.02)))
+        }
+        hud.debugRootView.layoutSubtreeIfNeeded()
+    }
+
+    /// Waits for the card's style rail to be drawn and wider than its clip.
+    ///
+    /// A click needs the card's layout, which is not the same thing as its
+    /// appearance: the row exists as soon as SwiftUI has laid the card out, and
+    /// this waits on that rather than on the animation the appearance runs.
+    ///
+    /// - Parameters:
+    ///   - hud: the island the card is drawn in.
+    ///   - seconds: the deadline.
+    /// - Returns: the rail, or `nil` when the card never drew one.
+    private func waitForRail(_ hud: HUD, within seconds: TimeInterval = 2) -> NSScrollView? {
+        let deadline = Date().addingTimeInterval(seconds)
+        repeat {
+            hud.debugRootView.layoutSubtreeIfNeeded()
+            if let rail = HUD.chipRowScrollView(in: hud.debugRootView),
+               let document = rail.documentView,
+               document.frame.width > rail.contentView.bounds.width + 1 {
+                return rail
+            }
+            RunLoop.main.run(
+                mode: .default,
+                before: min(deadline, Date().addingTimeInterval(0.02))
+            )
+        } while Date() < deadline
+        return nil
+    }
+
+    /// Waits for the card's appearance to stop moving the rail, and lays it out.
+    ///
+    /// The card arrives by scaling and offsetting itself, SwiftUI hands those
+    /// transforms to the views it hosts as frame transforms, and AppKit
+    /// re-derives the clip's bounds under each one: what the clip's origin
+    /// reads is the appearance's position, not the rail's. The two springs that
+    /// drive it are advanced by the island's frame loop, so their rest is a
+    /// state and not a duration — a busy machine delivers fewer frames, and a
+    /// fixed wait reads the rail mid-movement.
+    ///
+    /// The rail is settled when the springs rest and its clip, its document and
+    /// the hosting view keep the same geometry through several layout passes,
+    /// which is the last transform having been answered.
+    ///
+    /// - Parameters:
+    ///   - hud: the island the card is drawn in.
+    ///   - rail: the card's style rail.
+    ///   - seconds: the deadline. A card that never comes to rest is reported
+    ///     rather than read mid-movement.
+    /// - Returns: whether the card came to rest within the deadline.
+    @discardableResult
+    private func waitForRailToRest(
+        _ hud: HUD,
+        _ rail: NSScrollView,
+        within seconds: TimeInterval = 4
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        var previous = RailRestGeometry()
+        var still = 0
+        repeat {
+            hud.debugRootView.layoutSubtreeIfNeeded()
+            let geometry = RailRestGeometry(hud: hud, rail: rail)
+            if hud.debugAppearanceAtRest, geometry == previous {
+                still += 1
+                if still >= 3 { return true }
+            } else {
+                still = 0
+            }
+            previous = geometry
+            RunLoop.main.run(
+                mode: .default,
+                before: min(deadline, Date().addingTimeInterval(0.02))
+            )
+        } while Date() < deadline
+        return false
+    }
+
+    /// Waits for the rail to stop moving after an arrow asked it to reveal a
+    /// style.
+    ///
+    /// ``waitForRailToRest(_:_:within:)`` answers a different question: whether
+    /// the card's appearance has stopped transforming the views it hosts. A
+    /// reveal is a scroll the card runs *after* that, over 0.18 s, and it starts
+    /// on the SwiftUI update that follows the click, so a wait that only counts
+    /// layout passes can return before the reveal's first frame and read the
+    /// rail where it started. Measured here, that read was 0.0, 3.5, 10.5 and
+    /// 14.5 points across runs while the rail came to rest at 174.5.
+    ///
+    /// This waits for the rail itself: the clip's origin has to hold still for
+    /// longer than the reveal's animation, so what it returns is the position
+    /// the rail came to rest at and not one frame of the scroll on its way
+    /// there. A rail that never moves is still reported as at rest, which is
+    /// what lets the assertion after it name a reveal that did not happen.
+    ///
+    /// - Parameters:
+    ///   - hud: the island the card is drawn in.
+    ///   - rail: the card's style rail.
+    ///   - seconds: the deadline.
+    /// - Returns: whether the rail came to rest within the deadline.
+    @discardableResult
+    /// Waits for a reveal to arrive and for the rail to come to rest on it.
+    ///
+    /// The state is read rather than timed: the card has to have recorded a
+    /// position past the threshold, its record has to have stopped following the
+    /// reveal's steps, the appearance has to be at rest, and the clip has to sit
+    /// within a quarter point of the record. The seconds are a failure limit, not
+    /// a wait.
+    ///
+    /// - Parameters:
+    ///   - hud: the card.
+    ///   - within: the failure limit.
+    /// - Returns: the clip origin on the last frame the reveal wrote, or `nil` if
+    ///   the rail never arrived.
+    private func waitForRailToSettle(_ hud: HUD, within seconds: TimeInterval = 4) -> CGFloat? {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline, hud.debugRailIntendedOrigin.x <= 50 {
+            RunLoop.main.run(
+                mode: .default,
+                before: min(deadline, Date().addingTimeInterval(0.02))
+            )
+        }
+        var landing: CGFloat?
+        while Date() < deadline {
+            hud.debugRootView.layoutSubtreeIfNeeded()
+            let rail = HUD.chipRowScrollView(in: hud.debugRootView)
+            let origin = rail?.contentView.bounds.origin.x ?? 0
+            if hud.debugRailFollowsWrites {
+                landing = origin
+            } else if hud.debugAppearanceAtRest,
+                      abs(origin - hud.debugRailIntendedOrigin.x) <= 0.25 {
+                return landing ?? origin
+            }
+            RunLoop.main.run(
+                mode: .default,
+                before: min(deadline, Date().addingTimeInterval(0.02))
+            )
+        }
+        return nil
+    }
+
+    /// The clip origin on the last frame before the correction decides.
+    ///
+    /// The correction runs once per appearance and reads the clip in the frame it
+    /// decides on, so the frame before that is the last position it can answer
+    /// to. The reading is taken between run-loop turns while the card still
+    /// reports the correction as undecided.
+    ///
+    /// - Parameters:
+    ///   - hud: the card.
+    ///   - rail: its rail.
+    /// - Returns: the clip origin on the last frame the correction could read.
+    private func sampleTheLanding(_ hud: HUD, _ rail: NSScrollView) -> CGFloat {
+        var landing = rail.contentView.bounds.origin.x
+        let deadline = Date().addingTimeInterval(4)
+        while Date() < deadline, !hud.debugRailPositionRestored {
+            landing = rail.contentView.bounds.origin.x
+            RunLoop.main.run(
+                mode: .default,
+                before: min(deadline, Date().addingTimeInterval(0.01))
+            )
+        }
+        return landing
+    }
+
+    /// Asserts the rail rests on the landing, to the pixel the clip can hold.
+    ///
+    /// The clip's origin settles on whole device pixels, so the rail can differ
+    /// from the frame the correction read by up to one of them.
+    ///
+    /// - Parameters:
+    ///   - final: where the rail came to rest.
+    ///   - landing: the clip origin on the last frame before the correction.
+    ///   - hud: the card, for the display it is on.
+    private func assertTheRailCameToRestOn(
+        _ final: CGFloat,
+        landing: CGFloat,
+        hud: HUD,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let pixel = 1 / hud.debugPanel.backingScaleFactor
+        XCTAssertEqual(
+            final,
+            landing,
+            accuracy: pixel + 0.05,
+            "the rail came to rest away from the landing, by more than one device pixel of the panel",
+            file: file,
+            line: line
+        )
+    }
+
+    /// Asserts the style an arrow reveals sits far enough along the rail that
+    /// revealing it must move the rail by more than the 50 points the arrow
+    /// tests require.
+    ///
+    /// Those tests only see a reveal if the row both outgrows its viewport and
+    /// keeps the revealed style well past the middle of it. A narrower face or
+    /// a shorter label can quietly turn the reveal into a no-op, and the tests
+    /// would then be asserting on a rail that never had anywhere to go. The
+    /// numbers come from the metrics the row itself lays out with, so this is
+    /// the same arithmetic the card does and not a second opinion about it.
+    ///
+    /// - Parameters:
+    ///   - choices: the styles on the card, in the row's order.
+    ///   - index: the style the arrow reveals.
+    ///   - viewportWidth: the width the styles are clipped to.
+    private func assertTheRevealedStyleSitsPastTheThreshold(
+        choices: [RewriteStyle],
+        index: Int,
+        viewportWidth: CGFloat
+    ) {
+        let leading = RewriteChipMetrics.rowWidth(choices.prefix(index).map(\.title))
+            + HUDRewriteLayout.chipGap
+        let centre = leading + RewriteChipMetrics.chipWidth(choices[index].title) / 2
+        XCTAssertGreaterThan(
+            centre - viewportWidth / 2,
+            50,
+            "the style the arrow reveals sits \(centre - viewportWidth / 2) points along the rail, "
+                + "so revealing it cannot move the rail the 50 points this test asserts"
+        )
+    }
+
     private func firstScrollView(in view: NSView) -> NSScrollView? {
         if let scrollView = view as? NSScrollView { return scrollView }
         for subview in view.subviews {
@@ -344,5 +1654,90 @@ final class HUDScrollTests: XCTestCase {
                 before: min(deadline, Date().addingTimeInterval(0.01))
             )
         }
+    }
+}
+
+/// Counts the scroll wheels a view is asked to apply.
+private final class ScrollDeliveryProbe: NSView {
+    private(set) var scrollCount = 0
+
+    override func scrollWheel(with event: NSEvent) {
+        scrollCount += 1
+    }
+}
+
+/// A wheel that carries the panel it was delivered to.
+///
+/// A scroll `NSEvent` cannot be given a window from the outside, and a local
+/// monitor only sees the events this application dispatches. The subclass
+/// supplies the window and the event-time location that `NSApp.sendEvent`
+/// would have supplied on a real delivery, so the production monitor can be
+/// exercised without a visible window or a real gesture.
+private final class DeliveredScrollEvent: NSEvent {
+    private let fakeWindow: NSWindow?
+    private let fakeWindowNumber: Int
+    private let fakeLocation: CGPoint
+    private let fakeDeltaX: CGFloat
+    private let fakeDeltaY: CGFloat
+    private let fakePhase: NSEvent.Phase
+    private let fakeTimestamp: TimeInterval
+
+    init(
+        window: NSWindow,
+        windowNumber: Int,
+        location: CGPoint,
+        deltaX: CGFloat,
+        deltaY: CGFloat,
+        phase: NSEvent.Phase,
+        timestamp: TimeInterval
+    ) {
+        fakeWindow = window
+        fakeWindowNumber = windowNumber
+        fakeLocation = location
+        fakeDeltaX = deltaX
+        fakeDeltaY = deltaY
+        fakePhase = phase
+        fakeTimestamp = timestamp
+        super.init()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("unused")
+    }
+
+    override var type: NSEvent.EventType { .scrollWheel }
+    override var window: NSWindow? { fakeWindow }
+    override var windowNumber: Int { fakeWindowNumber }
+    override var locationInWindow: NSPoint { fakeLocation }
+    override var scrollingDeltaX: CGFloat { fakeDeltaX }
+    override var scrollingDeltaY: CGFloat { fakeDeltaY }
+    override var deltaX: CGFloat { fakeDeltaX }
+    override var deltaY: CGFloat { fakeDeltaY }
+    override var hasPreciseScrollingDeltas: Bool { true }
+    override var phase: NSEvent.Phase { fakePhase }
+    override var momentumPhase: NSEvent.Phase { [] }
+    override var isDirectionInvertedFromDevice: Bool { false }
+    override var timestamp: TimeInterval { fakeTimestamp }
+}
+
+/// The geometry a style rail keeps when nothing is moving it.
+///
+/// The clip's position and the sizes that decide it are read together: a
+/// scroll view whose clip, document or host is still changing size has not
+/// finished the layout pass that the position belongs to.
+private struct RailRestGeometry: Equatable {
+    var origin = CGPoint.zero
+    var clipSize = CGSize.zero
+    var documentSize = CGSize.zero
+    var hostSize = CGSize.zero
+
+    init() {}
+
+    @MainActor
+    init(hud: HUD, rail: NSScrollView) {
+        origin = rail.contentView.bounds.origin
+        clipSize = rail.contentView.bounds.size
+        documentSize = rail.documentView?.frame.size ?? .zero
+        hostSize = hud.debugRootView.frame.size
     }
 }

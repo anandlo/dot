@@ -18,6 +18,7 @@ final class DotSelectAnchorTests: XCTestCase {
     /// forty row page, with the picker thirty rows down.
     func testRegressionTheListOpensUnderTheTriggerAfterThePageScrolled() throws {
         let page = try makePage()
+        defer { OffscreenScreen.restore() }
         page.scroll(to: 10_000)
         try assertListOpensUnderItsTrigger(page, "after scrolling to the foot of the page")
     }
@@ -26,6 +27,7 @@ final class DotSelectAnchorTests: XCTestCase {
     /// on another display.
     func testRegressionTheListOpensUnderTheTriggerAfterTheWindowMoved() throws {
         let page = try makePage()
+        defer { OffscreenScreen.restore() }
         page.scroll(to: 1_150)
         page.moveWindow(by: CGSize(width: 120, height: -40))
         try assertListOpensUnderItsTrigger(page, "after the window moved")
@@ -34,6 +36,7 @@ final class DotSelectAnchorTests: XCTestCase {
     /// Two opens at two different scroll positions, one after the other.
     func testRegressionTwoOpensAtDifferentScrollOffsetsBothLandOnTheTrigger() throws {
         let page = try makePage()
+        defer { OffscreenScreen.restore() }
         page.scroll(to: 1_180)
         try assertListOpensUnderItsTrigger(page, "at the first offset")
         page.scroll(to: 1_282)
@@ -55,7 +58,9 @@ final class DotSelectAnchorTests: XCTestCase {
         XCTAssertTrue(trigger.accessibilityPerformPress(), "the trigger did not open (\(what))")
 
         let card = try XCTUnwrap(page.cardFrame, "no list opened (\(what))")
-        let visible = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
+        // The display the controller was handed, which is the one the window is
+        // on: the window is on no display the Mac owns.
+        let visible = OffscreenScreen.frame
         let expected = DotSelectPlacement.frame(anchor: before, size: card.size, visibleFrame: visible)
         XCTAssertEqual(card.minX, before.minX, accuracy: 1, "the list is beside its trigger (\(what))")
         XCTAssertEqual(
@@ -71,6 +76,7 @@ final class DotSelectAnchorTests: XCTestCase {
     private func makePage() throws -> AnchorPage {
         _ = NSApplication.shared
         DotSelectListController.shared.close()
+        OffscreenScreen.install()
         let page = try AnchorPage(rows: 40, pickerRow: 30)
         fixture = page
         return page
@@ -84,16 +90,10 @@ final class AnchorPage {
     let host: NSHostingView<AnchorPageView>
 
     init(rows: Int, pickerRow: Int) throws {
-        window = NSWindow(
-            contentRect: NSRect(x: 200, y: 120, width: 820, height: 600),
-            styleMask: [.titled], backing: .buffered, defer: false
-        )
-        window.isReleasedWhenClosed = false
+        window = OffscreenWindow(size: CGSize(width: 820, height: 600), styleMask: [.titled])
         host = NSHostingView(rootView: AnchorPageView(rows: rows, pickerRow: pickerRow))
         host.frame = NSRect(origin: .zero, size: window.frame.size)
         window.contentView = host
-        let screen = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
-        window.setFrameOrigin(NSPoint(x: screen.minX + 20, y: screen.minY + 20))
         window.orderFrontRegardless()
         host.layoutSubtreeIfNeeded()
         window.displayIfNeeded()

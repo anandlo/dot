@@ -7,9 +7,13 @@ import Foundation
 /// model to invent facts and then be applied as if it had not.
 public struct CustomRewriteStyle: Codable, Sendable, Equatable, Identifiable {
     /// The suffix every custom instruction carries.
+    ///
+    /// Facts, names and negations are kept whole and only numbers are
+    /// qualified, which is what lets the shared cleanup sentence allow a clear
+    /// misrecognition to be repaired.
     public static let suffix = """
-    Keep every fact, name, number and negation. Do not add anything that was not said. Output only \
-    the rewrite.
+    Keep every fact, name and negation, and every meaningful number. Do not add anything that was \
+    not said. Output only the rewrite.
     """
     /// The longest name a custom style may have.
     public static let maximumTitleLength = 24
@@ -121,5 +125,5 @@ public struct RewriteStyle: Sendable, Equatable, Identifiable {
     public static let formal = RewriteStyle(.formal)
 
     /// The built-in styles in the order the chips show them.
-    public static let builtIns: [RewriteStyle] = RewriteStyleID.allCases.map(RewriteStyle.init)
+    public static let builtIns: [RewriteStyle] = RewriteStyleID.shippedCases.map(RewriteStyle.init)
 }

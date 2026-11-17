@@ -19,11 +19,15 @@ struct AssistantCatalogueFactory: ChatProviderFactory {
     }
 
     func makeProvider(_ settings: AssistantSettings) async throws -> any ChatProvider {
-        let row = AssistantProviderCatalogue.row(for: settings.providerID)
+        // One id for the catalogue row and the Keychain item: a hand-edited
+        // file with a space around its service must not read a key the row
+        // does not name.
+        let providerID = settings.resolvedProviderID
+        let row = AssistantProviderCatalogue.row(for: providerID)
         // A service on this Mac has no key to read, and reading one would ask
         // the person for a Keychain item they never made.
         let key = row.requiresKey
-            ? await AssistantCredentials.resolvedKey(for: settings.providerID, cache: credentials)
+            ? await AssistantCredentials.resolvedKey(for: providerID, cache: credentials)
             : nil
         return try AssistantProviderCatalogue.makeProvider(settings: settings, apiKey: key)
     }

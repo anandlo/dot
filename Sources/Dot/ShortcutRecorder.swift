@@ -49,10 +49,10 @@ final class ShortcutRecorder {
         window.center()
 
         let caption = NSTextField(labelWithString: "New shortcut")
-        caption.font = NSFont.systemFont(ofSize: 15, weight: .semibold)
+        caption.font = DotType.nsFont(15, .semibold)
         caption.textColor = NSColor.labelColor
 
-        hintLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        hintLabel.font = DotType.nsFont(12, .regular)
         hintLabel.textColor = NSColor.secondaryLabelColor
         hintLabel.alignment = .center
         hintLabel.stringValue = "Requires ⌘, ⌥ or ⌃. A function key can be used alone."

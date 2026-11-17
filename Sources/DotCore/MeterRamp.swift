@@ -74,6 +74,23 @@ public enum MeterRamp {
         )
     }
 
+    /// The warm tip of the ramp mixed towards the card's ink, `#FFF4E6`.
+    ///
+    /// It is the centre of a lamp. A lit dot that was flat amber reads as paint,
+    /// and one with a little of the card's own ink in its middle reads as a
+    /// light; the recorder's grid and the lattice that waits on the rewrite card
+    /// draw their centres with this one mix, so the two dot surfaces cannot
+    /// drift into two different ambers.
+    ///
+    /// - Parameter amount: how far towards the ink to go, from `0` to `1`.
+    /// - Returns: the colour of the centre of a dot at that heat.
+    public static func hot(_ amount: Double) -> MeterTint {
+        mix(tip, ink, amount)
+    }
+
+    /// The ink of the card's marks, `#FFF4E6`.
+    private static let ink = MeterTint(red: 1.0, green: 0.957, blue: 0.902, opacity: 1)
+
     /// One stop between two others.
     static func mix(_ from: MeterTint, _ to: MeterTint, _ amount: Double) -> MeterTint {
         let t = min(max(amount, 0), 1)

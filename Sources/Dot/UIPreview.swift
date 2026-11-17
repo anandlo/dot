@@ -219,6 +219,16 @@ enum UIPreview {
         }
     }
 
+    /// The appearance a preview of `scheme` must carry.
+    ///
+    /// The settings page paints itself from the configuration's appearance, and
+    /// the shipped default is dark, so a light render has to say `light` or it
+    /// would draw ink on a paper bitmap. `system` is never used here: a render
+    /// names the palette it is meant to show.
+    private static func appearance(for scheme: ColorScheme) -> AppearanceMode {
+        scheme == .dark ? .dark : .light
+    }
+
     /// The configuration every settings render is drawn from.
     ///
     /// The input card's calibration line is part of the shipped surface, so the
@@ -227,6 +237,9 @@ enum UIPreview {
     /// render turns it on and gives it two overrides: one that changes the
     /// table's answer and one that restores the plain text for an app the table
     /// knows.
+    ///
+    /// The appearance is not part of the sample: every render sets it to the
+    /// scheme it draws.
     private static func settingsSampleConfig() -> DotConfig {
         var config = DotConfig.default
         ProviderPreset.openAI.apply(to: &config)
@@ -277,9 +290,7 @@ enum UIPreview {
 
         for page in pages {
             var config = sampleConfig
-            if page.scheme == .dark {
-                config.appearance = .dark
-            }
+            config.appearance = appearance(for: page.scheme)
             let settings = settingsPreview(
                 config: config,
                 providers: providers,
@@ -300,9 +311,7 @@ enum UIPreview {
         let tallSize = CGSize(width: 820, height: 1180)
         for page in pages {
             var config = sampleConfig
-            if page.scheme == .dark {
-                config.appearance = .dark
-            }
+            config.appearance = appearance(for: page.scheme)
             let settings = settingsPreview(
                 config: config,
                 providers: providers,
@@ -343,6 +352,7 @@ enum UIPreview {
         // no row for: the card presents it as the custom endpoint it is, with the
         // stored endpoint and model in the fields.
         var storedConfig = DotConfig.default
+        storedConfig.appearance = .light
         storedConfig.provider = ProviderIdentifier.xiaomi
         try writeHosted(
             WindowPreview(size: size) {
@@ -358,6 +368,7 @@ enum UIPreview {
         )
 
         var azureConfig = DotConfig.default
+        azureConfig.appearance = .light
         azureConfig.provider = ProviderIdentifier.azure
         try writeHosted(
             WindowPreview(size: size) {
@@ -381,10 +392,12 @@ enum UIPreview {
             ("settings-about-update-unreachable.png", .unreachable),
         ]
         for state in aboutStates {
+            var config = sampleConfig
+            config.appearance = .light
             try writeHosted(
                 WindowPreview(size: tallSize) {
                     settingsPreview(
-                        config: sampleConfig,
+                        config: config,
                         providers: providers,
                         tab: 4,
                         aboutUpdate: state.update,
@@ -407,12 +420,10 @@ enum UIPreview {
         ]
         for scheme in [ColorScheme.light, ColorScheme.dark] {
             var config = sampleConfig
+            config.appearance = appearance(for: scheme)
             var openAISettings = config.settings(for: ProviderIdentifier.openAI)
             openAISettings.model = "gpt-4o-transcribe"
             config.providers[ProviderIdentifier.openAI] = openAISettings
-            if scheme == .dark {
-                config.appearance = .dark
-            }
             let suffix = scheme == .dark ? "-dark" : ""
             try writeHosted(
                 WindowPreview(size: tallSize) {
@@ -438,9 +449,7 @@ enum UIPreview {
                 var config = sampleConfig
                 preset.apply(to: &config)
                 config.provider = preset.providerID
-                if scheme == .dark {
-                    config.appearance = .dark
-                }
+                config.appearance = appearance(for: scheme)
                 let suffix = scheme == .dark ? "-dark" : ""
                 let name = "settings-provider-" + preset.id + suffix + ".png"
                 try writeHosted(
@@ -461,13 +470,12 @@ enum UIPreview {
         try renderAssistantSettings(to: directory, providers: providers)
     }
 
-    /// Renders the Assistant, Voices and Connectors pages into `directory`.
+    /// Renders the AI rewrite page into `directory`, in the states it can hold.
     ///
     /// Every fact a page would read at run time is handed to it here: the keys a
-    /// service holds, the voices a provider offers and the permission each
-    /// connector was granted. A render must not read the Keychain, the installed
-    /// voices or the privacy database, and the two states of a page must be two
-    /// files rather than two different Macs.
+    /// service holds and the model list its service would answer with. A render
+    /// must not read the Keychain or ask a service, and the two states of a page
+    /// must be two files rather than two different Macs.
     private static func renderAssistantSettings(
         to directory: URL,
         providers: [MenuProvider]
@@ -477,44 +485,6 @@ enum UIPreview {
         var base = DotConfig.default
         ProviderPreset.openAI.apply(to: &base)
 
-        let appleVoices = [
-            VoiceDescriptor(
-                providerID: VoiceProviderID.apple,
-                id: "com.apple.voice.premium.en-US.Ava",
-                name: "Ava",
-                language: "en-US",
-                quality: .premium,
-                detail: "Premium. American English."
-            ),
-            VoiceDescriptor(
-                providerID: VoiceProviderID.apple,
-                id: "com.apple.voice.enhanced.en-GB.Daniel",
-                name: "Daniel",
-                language: "en-GB",
-                quality: .enhanced,
-                detail: "Enhanced. British English."
-            ),
-        ]
-        let cloudVoices = [
-            VoiceDescriptor(
-                providerID: VoiceProviderID.elevenLabs,
-                id: "JBFqnCBsd6RMkjVDRZzb",
-                name: "George",
-                language: "en-GB",
-                quality: .premium,
-                detail: "Warm and British."
-            ),
-            VoiceDescriptor(
-                providerID: VoiceProviderID.elevenLabs,
-                id: "21m00Tcm4TlvDq8ikWAM",
-                name: "Rachel",
-                language: "en-US",
-                quality: .premium,
-                detail: "Calm and American."
-            ),
-        ]
-        let connectorRows = sampleConnectorSummaries()
-
         func render(
             _ name: String,
             tab: Int,
@@ -522,16 +492,15 @@ enum UIPreview {
             voices: [VoiceDescriptor]? = nil,
             connectors: [ConnectorSummary]? = nil,
             connection: AssistantConnectionState? = nil,
-            height: CGFloat? = nil,
+            models: [DiscoveredModel]? = nil,
+            style: AssistantPage.StyleSelection? = nil,
             configure: (inout DotConfig) -> Void
         ) throws {
-            let size = CGSize(width: width, height: height ?? tallPage)
+            let size = CGSize(width: width, height: tallPage)
             for scheme in [ColorScheme.light, ColorScheme.dark] {
                 var config = base
                 configure(&config)
-                if scheme == .dark {
-                    config.appearance = .dark
-                }
+                config.appearance = appearance(for: scheme)
                 let suffix = scheme == .dark ? "-dark" : ""
                 try writeHosted(
                     WindowPreview(size: size) {
@@ -541,6 +510,8 @@ enum UIPreview {
                             tab: tab,
                             assistantKeys: keys,
                             assistantConnection: connection,
+                            assistantDiscoveredModels: models,
+                            assistantStyleSelection: style,
                             voices: voices,
                             connectors: connectors,
                             height: size.height
@@ -553,10 +524,6 @@ enum UIPreview {
             }
         }
 
-        // The rewrite page carries the working rules field under the prompt
-        // style, so it is drawn in a window tall enough to hold the whole card
-        // rather than a page cut at its last row.
-        let rewritePage: CGFloat = 1320
         let customStyles = [
             CustomRewriteStyle(
                 id: "haiku",
@@ -568,6 +535,44 @@ enum UIPreview {
                 title: "Email",
                 instruction: "Rewrite for a work email."
             ),
+        ]
+
+        // What each service would answer with. The catalogue no longer ships a
+        // model list, so the samples are handed to the page the way a live read
+        // would: the ids a picker shows, and what the service published about
+        // them. `assistant-connected` carries no reasoning support and
+        // `assistant-rewrite` does, which is what puts both states of the
+        // Reasoning row in front of the reviewer.
+        let plainModels = [
+            DiscoveredModel(id: "gpt-4o", name: "GPT-4o"),
+            DiscoveredModel(id: "gpt-4o-mini", name: "GPT-4o mini"),
+        ]
+        let reasoningModels = [
+            DiscoveredModel(
+                id: "gpt-4o",
+                name: "GPT-4o",
+                reasoning: ModelReasoningSupport(
+                    efforts: ["low", "high", "max"],
+                    toggle: true,
+                    defaultEffort: "high"
+                )
+            ),
+            DiscoveredModel(id: "gpt-4o-mini", name: "GPT-4o mini"),
+        ]
+        // A sample id, never a brand: the UI layer may only show the name a
+        // catalogue row carries.
+        let planModels = [DiscoveredModel(id: "chat-model")]
+        let subscriptionModels = [
+            DiscoveredModel(
+                id: "kimi-k3",
+                name: "Kimi K3",
+                reasoning: ModelReasoningSupport(
+                    efforts: ["low", "high", "max"],
+                    toggle: true,
+                    defaultEffort: "high"
+                )
+            ),
+            DiscoveredModel(id: "kimi-k2", name: "Kimi K2"),
         ]
 
         /// An assistant the person set up on one row, with the status a check
@@ -592,6 +597,15 @@ enum UIPreview {
                 model: "gpt-4o-mini"
             )
         }
+        // The reported state: a custom endpoint the build was told about, with no
+        // address and no set-up flag. The page has to name it rather than show
+        // "None", so the address field and the switch that finishes it are
+        // reachable.
+        try render("assistant-custom-unfinished", tab: 5, keys: [], connection: .notSetUp) { config in
+            config.assistant.chat = AssistantSettings(
+                providerID: AssistantProviderCatalogue.customRow.id
+            )
+        }
         try render(
             "assistant-checking",
             tab: 5,
@@ -600,14 +614,21 @@ enum UIPreview {
         ) { config in
             setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
         }
-        try render("assistant-connected", tab: 5, keys: [AssistantSettings.defaultProviderID], connection: .connected) { config in
+        try render(
+            "assistant-connected",
+            tab: 5,
+            keys: [AssistantSettings.defaultProviderID],
+            connection: .connected,
+            models: plainModels
+        ) { config in
             setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
         }
         try render(
             "assistant-unreachable",
             tab: 5,
             keys: [AssistantSettings.defaultProviderID],
-            connection: .notConnected("Rejected the key (401)")
+            connection: .notConnected("Rejected the key (401)"),
+            models: plainModels
         ) { config in
             setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
         }
@@ -619,50 +640,104 @@ enum UIPreview {
         let planName = "assistant-" + planRow.id
         let tokenPlanName = planName + "-token-plan"
         let subscriptionName = "assistant-" + subscriptionRow.id
-        let planModel = planRow.defaultModels.first ?? ""
         let planAddress = planRow.plans.first { $0.id == "token-plan" }?.baseURL?.absoluteString
-        try render(planName, tab: 5, keys: [planRow.id], connection: .connected) { config in
-            setUp(&config, providerID: planRow.id, model: planModel)
+        try render(planName, tab: 5, keys: [planRow.id], connection: .connected, models: planModels) { config in
+            setUp(&config, providerID: planRow.id, model: "chat-model")
         }
-        try render(tokenPlanName, tab: 5, keys: [planRow.id], connection: .connected) { config in
-            setUp(&config, providerID: planRow.id, model: planModel)
+        try render(
+            tokenPlanName,
+            tab: 5,
+            keys: [planRow.id],
+            connection: .connected,
+            models: planModels
+        ) { config in
+            setUp(&config, providerID: planRow.id, model: "chat-model")
             config.assistant.chat.baseURL = planAddress
         }
-        let subscriptionModel = subscriptionRow.defaultModels.first ?? ""
-        try render(subscriptionName, tab: 5, keys: [subscriptionRow.id], connection: .connected) { config in
-            setUp(&config, providerID: subscriptionRow.id, model: subscriptionModel)
+        try render(
+            subscriptionName,
+            tab: 5,
+            keys: [subscriptionRow.id],
+            connection: .connected,
+            models: subscriptionModels
+        ) { config in
+            setUp(&config, providerID: subscriptionRow.id, model: "kimi-k3")
         }
+        // The page with the master switch off: one card, and nothing below it.
+        try render("assistant-off", tab: 5, keys: [AssistantSettings.defaultProviderID], connection: .connected) { config in
+            setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
+            AssistantPage.setRewriting(false, in: &config.assistant)
+        }
+        // The agent prompt's own card: its switch and its prompt editor, whose
+        // template now carries the working rules the model weaves into the
+        // task.
         try render(
             "assistant-rewrite",
             tab: 5,
             keys: [AssistantSettings.defaultProviderID],
             connection: .connected,
-            height: rewritePage
+            models: reasoningModels
         ) { config in
-            config.assistant.isSetUp = true
+            setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
+            config.assistant.rewrite.custom = customStyles
+        }
+        // Concise and a custom style, which is what proves the working rules
+        // are scoped to the agent prompt and the editor belongs to one style.
+        try render(
+            "assistant-rewrite-concise",
+            tab: 5,
+            keys: [AssistantSettings.defaultProviderID],
+            connection: .connected,
+            models: plainModels,
+            style: .builtIn(.concise)
+        ) { config in
+            setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
             config.assistant.rewrite.custom = customStyles
         }
         try render(
-            "assistant-rewrite-rules-off",
+            "assistant-rewrite-custom",
             tab: 5,
             keys: [AssistantSettings.defaultProviderID],
-            connection: .connected
+            connection: .connected,
+            models: plainModels,
+            style: .custom("haiku")
         ) { config in
-            config.assistant.isSetUp = true
+            setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
             config.assistant.rewrite.custom = customStyles
-            config.assistant.rewrite.workingRulesEnabled = false
         }
-        try render("voices", tab: 6, keys: [], voices: appleVoices) { config in
-            config.assistant.voice = VoiceSettings(providerID: VoiceProviderID.apple)
+        // Two shipped styles removed: the row loses them, the selection moves
+        // to the first style still offered, and the row that restores them is
+        // drawn under the card.
+        try render(
+            "assistant-rewrite-deleted",
+            tab: 5,
+            keys: [AssistantSettings.defaultProviderID],
+            connection: .connected,
+            models: plainModels
+        ) { config in
+            setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
+            config.assistant.rewrite.deleteBuiltIn(.prompt)
+            config.assistant.rewrite.deleteBuiltIn(.casual)
         }
-        try render("voices-cloud", tab: 6, keys: [VoiceProviderID.elevenLabs], voices: cloudVoices) { config in
-            config.assistant.voice = VoiceSettings(
-                providerID: VoiceProviderID.elevenLabs,
-                voiceID: "JBFqnCBsd6RMkjVDRZzb",
-                speed: 1.2
-            )
+        // Every shipped style removed and none of the person's own added: the
+        // card says what to do instead of drawing the controls of a style that
+        // is not there.
+        try render(
+            "assistant-rewrite-empty",
+            tab: 5,
+            keys: [AssistantSettings.defaultProviderID],
+            connection: .connected,
+            models: plainModels
+        ) { config in
+            setUp(&config, providerID: AssistantSettings.defaultProviderID, model: "gpt-4o")
+            for id in RewriteStyleID.shippedCases {
+                config.assistant.rewrite.deleteBuiltIn(id)
+            }
         }
-        try render("connectors", tab: 7, keys: [], connectors: connectorRows) { _ in }
+        // Voices and Connectors are not pages of this product: the sidebar
+        // offers Speech to text and AI rewrite, and tab 6 and 7 open AI rewrite.
+        // Rendering either tab here would write a picture named for a page the
+        // window no longer has.
     }
 
     /// Connector rows with a mixture of permission states, built from the
@@ -717,6 +792,8 @@ enum UIPreview {
         models: [AvailableModel]? = nil,
         assistantKeys: Set<String>? = nil,
         assistantConnection: AssistantConnectionState? = nil,
+        assistantDiscoveredModels: [DiscoveredModel]? = nil,
+        assistantStyleSelection: AssistantPage.StyleSelection? = nil,
         voices: [VoiceDescriptor]? = nil,
         connectors: [ConnectorSummary]? = nil,
         height: CGFloat? = nil
@@ -740,6 +817,8 @@ enum UIPreview {
         .environment(\.settingsHeightOverride, height)
         .environment(\.assistantKeyedProviders, assistantKeys)
         .environment(\.assistantConnectionPreview, assistantConnection)
+        .environment(\.assistantDiscoveredModelsPreview, assistantDiscoveredModels)
+        .environment(\.assistantStyleSelectionPreview, assistantStyleSelection)
         .environment(\.settingsVoiceOptions, voices)
         .environment(\.settingsConnectorSummaries, connectors)
     }
@@ -1175,7 +1254,7 @@ private struct DotSelectOpenPreview: View {
             DotTheme.paper
             pageCard(triggerX: triggerX)
             Text(label)
-                .font(.system(size: 13))
+                .font(DotType.font(13, .regular))
                 .foregroundStyle(DotTheme.ink)
                 .offset(x: pageInset + rowInset, y: triggerY + 6)
             DotSelectTriggerPreview(title: title, width: triggerWidth)
@@ -1229,7 +1308,7 @@ private struct DotSelectTriggerPreview: View {
                 .truncationMode(.tail)
             Spacer(minLength: 0)
             Image(systemName: "chevron.up.chevron.down")
-                .font(.system(size: 9, weight: .semibold))
+                .font(DotType.font(9, .semibold))
                 .foregroundStyle(DotTheme.ink3)
                 .fixedSize()
         }

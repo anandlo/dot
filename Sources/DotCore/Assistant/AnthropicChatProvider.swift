@@ -25,8 +25,21 @@ public struct AnthropicChatProvider: ChatProvider {
     public let apiKey: String?
     public let version: String
     public let extraHeaders: [String: String]
+    /// The header this endpoint asks every request of one conversation to
+    /// carry, when it asks for one. `nil` for an endpoint that never asked.
+    public let sessionHeader: AssistantSessionHeader?
+    /// The id every request of this provider sends in ``sessionHeader``.
+    ///
+    /// It is minted once, when the provider is built, and never written to the
+    /// configuration or a log: it names one conversation on the service, not
+    /// the person or the account. A new provider is a new conversation, so a
+    /// rewrite — which builds one per request — starts its own.
+    let sessionID: String?
     public let maxTokens: Int
     public let temperature: Double?
+    /// Body members the catalogue names for this call, e.g. a vendor's
+    /// reasoning choice. A member the request already writes is never replaced.
+    public let extraBody: [String: JSONValue]
     public let timeout: TimeInterval
     public let limits: AssistantStreamLimits
     private let session: URLSession
@@ -37,8 +50,10 @@ public struct AnthropicChatProvider: ChatProvider {
         apiKey: String? = nil,
         version: String = AnthropicChatProvider.defaultVersion,
         extraHeaders: [String: String] = [:],
+        sessionHeader: AssistantSessionHeader? = nil,
         maxTokens: Int = 1024,
         temperature: Double? = nil,
+        extraBody: [String: JSONValue] = [:],
         timeout: TimeInterval = 120,
         limits: AssistantStreamLimits = .default,
         session: URLSession = AnthropicChatProvider.makeSession()
@@ -48,8 +63,11 @@ public struct AnthropicChatProvider: ChatProvider {
         self.apiKey = apiKey
         self.version = version
         self.extraHeaders = extraHeaders
+        self.sessionHeader = sessionHeader
+        self.sessionID = sessionHeader == nil ? nil : AssistantSessionHeader.makeIdentifier()
         self.maxTokens = max(1, maxTokens)
         self.temperature = temperature
+        self.extraBody = extraBody
         self.timeout = timeout
         self.limits = limits
         self.session = session
@@ -69,7 +87,7 @@ public struct AnthropicChatProvider: ChatProvider {
 
     /// The address a message is posted to.
     public var messagesURL: URL {
-        baseURL.appendingPathComponent(path)
+        AssistantEndpoint.url(base: baseURL, path: path)
     }
 
     /// Builds the request a turn sends.
@@ -82,7 +100,7 @@ public struct AnthropicChatProvider: ChatProvider {
         if let rejection = EndpointPolicy.validate(url) { throw rejection }
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedModel.isEmpty else {
-            throw ProviderError.unavailable("No model is selected for this chat service.")
+            throw ProviderError.unavailable("Choose a model in Settings.")
         }
         let converted = AnthropicMessages.convert(messages)
         let body = AnthropicRequestBody(
@@ -92,7 +110,8 @@ public struct AnthropicChatProvider: ChatProvider {
             messages: converted.messages,
             tools: tools.isEmpty ? nil : tools.map(AnthropicToolPayload.init),
             stream: true,
-            temperature: temperature
+            temperature: temperature,
+            extraBody: extraBody
         )
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -104,6 +123,12 @@ public struct AnthropicChatProvider: ChatProvider {
         }
         for (name, value) in extraHeaders {
             request.setValue(value, forHTTPHeaderField: name)
+        }
+        // One id for this provider's whole life, so every request of the
+        // conversation carries it. An endpoint that did not name a header in
+        // the catalogue has no `sessionID` and is sent none.
+        if let sessionHeader, let sessionID {
+            request.setValue(sessionID, forHTTPHeaderField: sessionHeader.rawValue)
         }
         request.timeoutInterval = timeout
         request.httpBody = try JSONEncoder().encode(body)
@@ -173,15 +198,55 @@ private struct AnthropicRequestBody: Encodable {
     var tools: [AnthropicToolPayload]?
     var stream: Bool
     var temperature: Double?
+    /// Members the catalogue adds for one call, e.g. a reasoning choice.
+    var extraBody: [String: JSONValue] = [:]
 
-    enum CodingKeys: String, CodingKey {
-        case model
-        case maxTokens = "max_tokens"
-        case system
-        case messages
-        case tools
-        case stream
-        case temperature
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: AnthropicJSONKey.self)
+        // The members this shape owns. A row may add to the body; it may not
+        // replace a member the request already writes.
+        var written: Set<String> = ["model", "messages", "stream", "max_tokens"]
+        try container.encode(model, forKey: AnthropicJSONKey("model"))
+        try container.encode(maxTokens, forKey: AnthropicJSONKey("max_tokens"))
+        try container.encode(messages, forKey: AnthropicJSONKey("messages"))
+        try container.encode(stream, forKey: AnthropicJSONKey("stream"))
+        if let system {
+            written.insert("system")
+            try container.encode(system, forKey: AnthropicJSONKey("system"))
+        }
+        if let tools {
+            written.insert("tools")
+            try container.encode(tools, forKey: AnthropicJSONKey("tools"))
+        }
+        if let temperature {
+            written.insert("temperature")
+            try container.encode(temperature, forKey: AnthropicJSONKey("temperature"))
+        }
+        for (name, value) in extraBody where !written.contains(name) {
+            try container.encode(value, forKey: AnthropicJSONKey(name))
+        }
+    }
+}
+
+/// A body member of the message request.
+///
+/// The members are named rather than listed in a `CodingKeys` enum because a
+/// catalogue row adds one this file has never heard of, and one container can
+/// only be keyed by one type.
+private struct AnthropicJSONKey: CodingKey {
+    var stringValue: String
+    var intValue: Int? { nil }
+
+    init(_ name: String) {
+        stringValue = name
+    }
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+    }
+
+    init?(intValue: Int) {
+        nil
     }
 }
 
@@ -290,8 +355,14 @@ extension AnthropicChatProvider {
             case "content_block_start":
                 state.open(index: payload.index ?? 0, block: payload.contentBlock)
             case "content_block_delta":
-                // A text delta carries `text`; an argument delta carries
-                // `partial_json`. Only one of them is ever present.
+                // A text delta carries `text`, a reasoning delta carries
+                // `thinking` and an argument delta carries `partial_json`. Only
+                // one of them is ever present.
+                if payload.delta?.type == "thinking_delta",
+                   let thinking = payload.delta?.thinking,
+                   !thinking.isEmpty {
+                    continuation.yield(.thinking)
+                }
                 if let text = payload.delta?.text, !text.isEmpty {
                     continuation.yield(.textDelta(text))
                 }
@@ -348,12 +419,16 @@ private struct AnthropicStreamEvent: Decodable {
     struct Delta: Decodable {
         var type: String?
         var text: String?
+        /// The reasoning a `thinking_delta` carries. It is reported as activity
+        /// and never as text.
+        var thinking: String?
         var partialJSON: String?
         var stopReason: String?
 
         enum CodingKeys: String, CodingKey {
             case type
             case text
+            case thinking
             case partialJSON = "partial_json"
             case stopReason = "stop_reason"
         }

@@ -94,9 +94,161 @@ final class AssistantConnectionTests: XCTestCase {
         config.chat.providerID = "ollama"
         XCTAssertTrue(AssistantAvailability.isUsable(config: config, hasKey: false))
 
-        // A hand-filled endpoint is the same case: the row requires no key.
+        // A hand-filled endpoint is the same case: the row requires no key, and
+        // an address is what it is missing.
         config.chat.providerID = "my-proxy"
+        config.chat.baseURL = "https://proxy.example.com/v1"
         XCTAssertTrue(AssistantAvailability.isUsable(config: config, hasKey: false))
+    }
+
+    /// The state the report was made in: set up on paper, a custom endpoint, no
+    /// address stored.
+    ///
+    /// The old rule returned `true` here, so the chips were offered and every
+    /// rewrite then failed in the provider factory. The address is part of what
+    /// makes a turn possible, not a detail a request can fill in.
+    func testACustomEndpointWithoutAnAddressIsNotUsable() {
+        var config = AssistantConfiguration.default
+        config.isSetUp = true
+        config.chat.providerID = "custom"
+        let readiness = AssistantAvailability.readiness(config: config, hasKey: false)
+        XCTAssertEqual(readiness, .missingAddress)
+        XCTAssertFalse(AssistantAvailability.isUsable(config: config, hasKey: false))
+        XCTAssertFalse(AssistantAvailability.isUsable(config: config, hasKey: true))
+        XCTAssertEqual(readiness.message, "Add the address this service is reached at.")
+    }
+
+    func testTheAddressARowShipsIsEnoughEvenWithNoTypedOne() {
+        // Ollama and LM Studio ship a loopback address. The rule may not treat
+        // "no typed address" as "no address" for them.
+        for id in ["ollama", "lmstudio"] {
+            var config = AssistantConfiguration.default
+            config.isSetUp = true
+            config.chat.providerID = id
+            XCTAssertTrue(
+                AssistantAvailability.isUsable(config: config, hasKey: false),
+                "\(id) should be usable at its shipped address"
+            )
+            XCTAssertNil(AssistantAvailability.readiness(config: config, hasKey: false).message)
+        }
+    }
+
+    func testAnAddressThePolicyRefusesIsNotUsable() {
+        var config = AssistantConfiguration.default
+        config.isSetUp = true
+        config.chat.providerID = "custom"
+        config.chat.baseURL = "http://api.example.com/v1"
+        let readiness = AssistantAvailability.readiness(config: config, hasKey: false)
+        XCTAssertEqual(readiness, .refusedAddress(.cleartextHost("api.example.com")))
+        XCTAssertFalse(AssistantAvailability.isUsable(config: config, hasKey: false))
+        XCTAssertEqual(
+            readiness.message,
+            "That address would be reached unencrypted. Use https, "
+                + "or 127.0.0.1 for a server on this Mac."
+        )
+    }
+
+    func testALoopbackAddressIsUsable() {
+        var config = AssistantConfiguration.default
+        config.isSetUp = true
+        config.chat.providerID = "custom"
+        config.chat.baseURL = "http://127.0.0.1:8080/v1"
+        XCTAssertTrue(AssistantAvailability.isUsable(config: config, hasKey: false))
+    }
+
+    func testAServiceThatNeedsAKeyIsNotUsableWithoutOneHoweverGoodTheAddress() {
+        var config = AssistantConfiguration.default
+        config.isSetUp = true
+        config.chat.providerID = "anthropic"
+        config.chat.baseURL = "https://api.anthropic.com"
+        XCTAssertEqual(
+            AssistantAvailability.readiness(config: config, hasKey: false),
+            .missingKey(service: "Anthropic")
+        )
+        XCTAssertEqual(AssistantAvailability.readiness(config: config, hasKey: false).message,
+                       "Add a key for Anthropic.")
+    }
+
+    /// A key the speech page stored may not turn a record on, even when the
+    /// record names a custom endpoint and carries a perfectly good address.
+    func testAStoredKeyAloneNeverTurnsACustomEndpointOn() {
+        var config = AssistantConfiguration.default
+        config.chat.providerID = "custom"
+        config.chat.baseURL = "https://proxy.example.com/v1"
+        XCTAssertFalse(config.isSetUp)
+        XCTAssertEqual(
+            AssistantAvailability.readiness(config: config, hasKey: true),
+            .notSetUp
+        )
+        XCTAssertFalse(AssistantAvailability.isUsable(config: config, hasKey: true))
+    }
+
+    /// The page and the chips read the same record the request builder reads.
+    func testABlankProviderIsReadTheWayTheFactoryReadsIt() {
+        var config = AssistantConfiguration.default
+        config.isSetUp = true
+        config.chat.providerID = "   "
+        XCTAssertEqual(
+            AssistantAvailability.readiness(config: config, hasKey: false),
+            .missingKey(service: "OpenAI"),
+            "a blank id falls back to the build's default, as makeProvider does"
+        )
+        XCTAssertTrue(AssistantAvailability.isUsable(config: config, hasKey: true))
+    }
+
+    func testASpaceAroundTheProviderIDFindsTheSameRowAndKey() {
+        var local = AssistantConfiguration.default
+        local.isSetUp = true
+        local.chat.providerID = "  ollama  "
+        XCTAssertEqual(
+            AssistantAvailability.readiness(config: local, hasKey: false),
+            .ready,
+            "the trimmed id has to reach Ollama's shipped address"
+        )
+
+        var keyed = AssistantConfiguration.default
+        keyed.isSetUp = true
+        keyed.chat.providerID = "  anthropic  "
+        XCTAssertEqual(
+            AssistantAvailability.readiness(config: keyed, hasKey: true),
+            .ready,
+            "the trimmed id has to be the one the key was stored under"
+        )
+        XCTAssertEqual(
+            AssistantAvailability.readiness(config: keyed, hasKey: false),
+            .missingKey(service: "Anthropic")
+        )
+        XCTAssertEqual(
+            AssistantProviderCatalogue.model(
+                for: AssistantSettings(providerID: "  anthropic  ")
+            ),
+            "",
+            "no row suggests a model, and the trimmed id is the row that is read"
+        )
+    }
+
+    /// An address can carry a query string or a pasted credential. The status
+    /// row gets the reason, never the address itself.
+    func testTheStatusLineNeverRepeatsTheAddressItRefused() {
+        let secret = "sk-live-0123456789abcdef"
+        let rejection = EndpointPolicy.Rejection.notAnAddress(secret)
+        let readiness = AssistantAvailability.Readiness.refusedAddress(rejection)
+        let message = readiness.message ?? ""
+        XCTAssertFalse(message.isEmpty)
+        XCTAssertFalse(message.contains(secret), "the typed address reached the status row")
+        XCTAssertFalse(AssistantConnectionVerifier.detail(for: rejection).contains(secret))
+    }
+
+    func testACheckFailureDoesNotRepeatTheAddressItRefused() {
+        var config = AssistantConfiguration.default
+        config.isSetUp = true
+        config.chat.providerID = "custom"
+        config.chat.baseURL = "sk-live-0123456789abcdef"
+        let readiness = AssistantAvailability.readiness(config: config, hasKey: false)
+        guard case .refusedAddress = readiness else {
+            return XCTFail("a value that is not an address was accepted")
+        }
+        XCTAssertFalse((readiness.message ?? "").contains("sk-live"))
     }
 
     func testThePageStateFollowsTheRule() {
@@ -206,6 +358,33 @@ final class AssistantConnectionTests: XCTestCase {
         )
         XCTAssertEqual(result, .notConnected("Rejected the key (401)"))
         XCTAssertEqual(result.state.detail, "Rejected the key (401)")
+    }
+
+    /// A failed answer is a status, never its body.
+    ///
+    /// A proxy can repeat the credential it was sent in the error body. The
+    /// status row names the refusal and nothing from the document.
+    func testARejectedAnswerNeverShowsItsBody() async {
+        let secret = "sk-live-0123456789abcdef"
+        let server = try? StubServer(responses: [
+            StubServer.Response(
+                status: 401,
+                json: #"{"error":"bad key \#(secret)","hint":"Authorization: Bearer \#(secret)"}"#
+            ),
+        ])
+        guard let server else { return XCTFail("the stub did not start") }
+        guard let base = try? AssistantTestSupport.loopbackURL(server) else {
+            return XCTFail("the loopback address was refused")
+        }
+        let result = await AssistantConnectionVerifier.verify(
+            settings: settings("openai", baseURL: base.absoluteString),
+            apiKey: secret,
+            session: AssistantTestSupport.session()
+        )
+        XCTAssertEqual(result, .notConnected("Rejected the key (401)"))
+        let detail = result.state.detail ?? ""
+        XCTAssertFalse(detail.contains(secret), "the response body reached the status row")
+        XCTAssertFalse(detail.contains("hint"))
     }
 
     func testAnUnreachableServiceSaysSo() async {

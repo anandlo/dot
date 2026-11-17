@@ -48,7 +48,7 @@ enum MenuDump {
         state.selectedPresetID = ProviderPreset.presenting(config).id
         state.autoPasteEnabled = config.autoPaste
         state.launchAtLogin = LaunchAtLogin.isEnabled
-        let assistantRow = AssistantProviderCatalogue.row(for: config.assistant.chat.providerID)
+        let assistantRow = AssistantProviderCatalogue.row(for: config.assistant.chat.resolvedProviderID)
         state.assistantUsable = AssistantAvailability.isUsable(
             config: config.assistant,
             hasKey: assistantRow.requiresKey ? CredentialStore.hasKey(for: assistantRow.id) : false

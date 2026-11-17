@@ -1,6 +1,7 @@
 import AppKit
 import DotCore
 @testable import Dot
+import SwiftUI
 import XCTest
 
 /// Drives the offscreen renderer for the light windows.
@@ -10,6 +11,17 @@ import XCTest
 /// suite.
 @MainActor
 final class UIPreviewTests: XCTestCase {
+    /// The app's typeface, registered before the first window is drawn.
+    ///
+    /// The packaged app is covered by `ATSApplicationFontsPath`; a test bundle
+    /// is not. Without this every PNG here would be the fallback, which looks
+    /// plausible and is a different product: the renders exist to be looked at,
+    /// so they have to be drawn in the face the app ships.
+    override func setUp() {
+        super.setUp()
+        FontFixture.register()
+    }
+
     func testWelcomeAndAboutRenderToPNGs() throws {
         guard let value = DotMigration.environment("RENDER_UI_DIR"),
               !value.isEmpty
@@ -113,6 +125,8 @@ final class UIPreviewTests: XCTestCase {
             "settings-assistant-dark-tall.png",
             "settings-assistant-no-key-tall.png",
             "settings-assistant-no-key-dark-tall.png",
+            "settings-assistant-custom-unfinished-tall.png",
+            "settings-assistant-custom-unfinished-dark-tall.png",
             "settings-assistant-checking-tall.png",
             "settings-assistant-checking-dark-tall.png",
             "settings-assistant-connected-tall.png",
@@ -127,14 +141,16 @@ final class UIPreviewTests: XCTestCase {
             "settings-assistant-opencode-go-dark-tall.png",
             "settings-assistant-rewrite-tall.png",
             "settings-assistant-rewrite-dark-tall.png",
-            "settings-assistant-rewrite-rules-off-tall.png",
-            "settings-assistant-rewrite-rules-off-dark-tall.png",
-            "settings-voices-tall.png",
-            "settings-voices-dark-tall.png",
-            "settings-voices-cloud-tall.png",
-            "settings-voices-cloud-dark-tall.png",
-            "settings-connectors-tall.png",
-            "settings-connectors-dark-tall.png",
+            "settings-assistant-off-tall.png",
+            "settings-assistant-off-dark-tall.png",
+            "settings-assistant-rewrite-concise-tall.png",
+            "settings-assistant-rewrite-concise-dark-tall.png",
+            "settings-assistant-rewrite-custom-tall.png",
+            "settings-assistant-rewrite-custom-dark-tall.png",
+            "settings-assistant-rewrite-deleted-tall.png",
+            "settings-assistant-rewrite-deleted-dark-tall.png",
+            "settings-assistant-rewrite-empty-tall.png",
+            "settings-assistant-rewrite-empty-dark-tall.png",
         ]
         // Every engine has a page, and each page is drawn in both appearances.
         for preset in ProviderPreset.all {
@@ -163,19 +179,17 @@ final class UIPreviewTests: XCTestCase {
             let isTall = name.contains("-tall")
                 || name.contains("settings-about-update")
                 || name.contains("settings-provider-connected")
-            // The rewrite page holds the working rules field as well as the two
-            // custom styles, so its window is taller than the other assistant
-            // pages and its bitmap is too. Only the pages with the field are
-            // taller: the rules-off render is an ordinary tall page.
-            let showsTheRulesField = name == "settings-assistant-rewrite-tall.png"
-                || name == "settings-assistant-rewrite-dark-tall.png"
-            let expectedHeight = showsTheRulesField ? 2640 : (isTall ? 2360 : 1200)
+            // 1180 points at the render's two-times scale. The styles card is
+            // the tallest card on the page, and every assistant render is drawn
+            // in a window that holds all of it: a render cut at the fold cannot
+            // show the field the card is about.
+            let expectedHeight = isTall ? 2360 : 1200
             XCTAssertEqual(bitmap.pixelsHigh, expectedHeight, "\(name) height")
         }
 
         // A page with nothing set up is one card: the service, its key and the
-        // status. Model, Answers and Rewrite are settings for an assistant that
-        // does not exist yet, so nothing may be drawn below the Service card.
+        // status. Model and Rewrite are settings for a service that cannot be
+        // used yet, so nothing may be drawn below the Service card.
         let notSetUp = try lastInkRow(in: directory.appendingPathComponent("settings-assistant-no-key-tall.png"))
         XCTAssertLessThan(
             notSetUp,
@@ -184,12 +198,110 @@ final class UIPreviewTests: XCTestCase {
         )
         let sharedKey = try lastInkRow(in: directory.appendingPathComponent("settings-assistant-tall.png"))
         XCTAssertLessThan(sharedKey, 1_000, "a stored speech key is not a set-up assistant")
+        // The reported record: a custom endpoint with no address. Its card names
+        // the service, so it is one card of setup rows and nothing below it.
+        let custom = try lastInkRow(
+            in: directory.appendingPathComponent("settings-assistant-custom-unfinished-tall.png")
+        )
+        XCTAssertLessThan(
+            custom,
+            1_000,
+            "the unfinished custom endpoint drew a ready section below its setup card"
+        )
         let connected = try lastInkRow(in: directory.appendingPathComponent("settings-assistant-connected-tall.png"))
         XCTAssertGreaterThan(
             connected,
-            1_900,
-            "a set-up page draws its Model, Answers and Rewrite sections"
+            1_600,
+            "a set-up page draws its Model and Styles sections"
         )
+
+        // The master switch is the only card on a page with rewriting off.
+        let off = try lastInkRow(in: directory.appendingPathComponent("settings-assistant-off-tall.png"))
+        XCTAssertLessThan(off, 400, "a page with rewriting off drew a card below its switch")
+
+        // Every style draws its own prompt editor under its switch: the agent
+        // prompt one with the rules its template asks for, and the others with
+        // their own instruction.
+        let promptCard = try lastInkRow(
+            in: directory.appendingPathComponent("settings-assistant-rewrite-tall.png")
+        )
+        XCTAssertGreaterThan(
+            promptCard,
+            1_500,
+            "the agent prompt card did not draw its prompt editor"
+        )
+        let conciseCard = try lastInkRow(
+            in: directory.appendingPathComponent("settings-assistant-rewrite-concise-tall.png")
+        )
+        XCTAssertGreaterThan(
+            conciseCard,
+            1_400,
+            "the concise style drew no prompt editor"
+        )
+        let customCard = try lastInkRow(
+            in: directory.appendingPathComponent("settings-assistant-rewrite-custom-tall.png")
+        )
+        XCTAssertGreaterThan(
+            customCard,
+            1_300,
+            "the custom style drew neither its name row nor its instruction field"
+        )
+        // The removed styles are gone from the row, and the card keeps the row
+        // that puts them back.
+        let deletedCard = try lastInkRow(
+            in: directory.appendingPathComponent("settings-assistant-rewrite-deleted-tall.png")
+        )
+        XCTAssertGreaterThan(
+            deletedCard,
+            1_100,
+            "the card with two styles removed drew neither a style nor the restore row"
+        )
+        let emptyCard = try lastInkRow(
+            in: directory.appendingPathComponent("settings-assistant-rewrite-empty-tall.png")
+        )
+        XCTAssertGreaterThan(
+            emptyCard,
+            500,
+            "the card with every style removed drew neither its message nor the restore row"
+        )
+    }
+
+    /// The rewrite card, whose chip row is sized against the face's width.
+    ///
+    /// The chips are the one part of the interface whose width the typeface
+    /// decides: a face a few percent wider pushes the row past the card's edge
+    /// and the last style can only be reached by scrolling. The card is drawn
+    /// through the same offscreen renderer as the island, in both appearances,
+    /// so the row can be looked at rather than inferred from a measurement.
+    func testTheRewriteCardRendersItsChipRow() throws {
+        guard let value = DotMigration.environment("RENDER_UI_DIR"),
+              !value.isEmpty
+        else {
+            throw XCTSkip("Set DOT_RENDER_UI_DIR to render the rewrite card.")
+        }
+
+        let directory = URL(fileURLWithPath: value, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let states: [(state: HUDPreview.State, name: String)] = [
+            (.rewriteLongLabels, "hud-rewrite-chips"),
+            (.rewriteTwoVersions, "hud-rewrite-versions"),
+            (.rewriteRunning, "hud-rewrite-running"),
+        ]
+        for entry in states {
+            for scheme in [ColorScheme.light, ColorScheme.dark] {
+                let suffix = scheme == .dark ? "-dark" : ""
+                let image = try HUDPreview.render(state: entry.state, scheme: scheme)
+                let data = try XCTUnwrap(
+                    image.representation(using: .png, properties: [:]),
+                    "the rewrite card could not be encoded"
+                )
+                try data.write(
+                    to: directory.appendingPathComponent("\(entry.name)\(suffix).png"),
+                    options: .atomic
+                )
+                XCTAssertGreaterThan(data.count, 10_240, "\(entry.name)\(suffix).png is too small")
+            }
+        }
     }
 
     /// The last row of a settings render that carries anything but the page's

@@ -88,17 +88,96 @@ public enum AssistantConnectionEvent: Equatable, Sendable {
 /// assistant up is not offered a rewrite, is not allowed a turn and is not told
 /// that a service is connected, whatever key happens to be in the Keychain.
 public enum AssistantAvailability {
-    /// Whether a turn could be asked of the chosen service.
+    /// Why the assistant can, or cannot, be used.
+    ///
+    /// The cases are in the order a person fixes them: rewriting has to be
+    /// turned on, the service has to have what it needs, and the address it is
+    /// reached at has to be one a request can be built from. A record that says
+    /// it is set up but names no address is not usable, however good the key.
+    public enum Readiness: Equatable, Sendable {
+        /// A turn could be asked of the chosen service.
+        case ready
+        /// The person has not turned the assistant on.
+        case notSetUp
+        /// The service cannot be used without a key, and none is stored.
+        case missingKey(service: String)
+        /// The record names no address and the catalogue row ships none.
+        case missingAddress
+        /// The address was refused by ``EndpointPolicy``.
+        case refusedAddress(EndpointPolicy.Rejection)
+
+        /// Whether a turn could be asked.
+        public var isReady: Bool { self == .ready }
+
+        /// The line that says what to do next, or `nil` when nothing is left.
+        ///
+        /// It is one sentence because it sits under the status row, and it
+        /// never repeats the typed address: an address can carry a query string
+        /// or a credential, and the status row is not the place to print it.
+        public var message: String? {
+            switch self {
+            case .ready:
+                nil
+            case .notSetUp:
+                "Choose a service to turn AI rewrite on."
+            case .missingKey(let service):
+                "Add a key for \(service)."
+            case .missingAddress:
+                "Add the address this service is reached at."
+            case .refusedAddress(let rejection):
+                rejection.safeDescription
+            }
+        }
+    }
+
+    /// Whether a turn could be asked of the chosen service, and why not.
+    ///
+    /// The question is asked of the sanitized record, because that is what
+    /// ``AssistantProviderCatalogue/makeProvider(settings:apiKey:session:temperature:forRewrite:)``
+    /// builds from: an assistant is usable exactly when the provider a turn
+    /// needs can be built without a request being sent. Nothing here touches the
+    /// network, so the menu, the chips and the page answer at once.
     ///
     /// - Parameters:
     ///   - config: the assistant's block of the configuration.
     ///   - hasKey: whether the Keychain holds a key for the chosen service. A
     ///     service that runs on this Mac asks for none, so it passes without.
+    /// - Returns: the first thing that has to change, or ``Readiness/ready``.
+    public static func readiness(config: AssistantConfiguration, hasKey: Bool) -> Readiness {
+        guard config.isSetUp else { return .notSetUp }
+        let settings = config.chat.sanitized()
+        let row = AssistantProviderCatalogue.row(for: settings.resolvedProviderID)
+        // The order mirrors the provider factory: a missing key is named before
+        // the address, because a service that needs one cannot be used at all.
+        guard !row.requiresKey || hasKey else { return .missingKey(service: row.name) }
+        let baseURL: URL?
+        do {
+            baseURL = try AssistantProviderCatalogue.resolvedBaseURL(settings: settings, row: row)
+        } catch let rejection as EndpointPolicy.Rejection {
+            return .refusedAddress(rejection)
+        } catch {
+            // The resolver throws only a rejection; an address it cannot parse
+            // is still an address no request can be built from.
+            return .refusedAddress(.notAnAddress(settings.baseURL ?? ""))
+        }
+        guard let baseURL else { return .missingAddress }
+        // The row's own address is held to the same rule the typed one is: a
+        // default is a shipped value, not a promise that it is reachable.
+        if let rejection = EndpointPolicy.validate(baseURL) {
+            return .refusedAddress(rejection)
+        }
+        return .ready
+    }
+
+    /// Whether a turn could be asked of the chosen service.
+    ///
+    /// - Parameters:
+    ///   - config: the assistant's block of the configuration.
+    ///   - hasKey: whether the Keychain holds a key for the chosen service.
     /// - Returns: whether the person set the assistant up and the service can
     ///   be built from what is stored.
     public static func isUsable(config: AssistantConfiguration, hasKey: Bool) -> Bool {
-        guard config.isSetUp else { return false }
-        return hasKey || !AssistantProviderCatalogue.row(for: config.chat.providerID).requiresKey
+        readiness(config: config, hasKey: hasKey).isReady
     }
 }
 
@@ -195,7 +274,9 @@ public enum AssistantConnectionVerifier {
     /// - Returns: the line the status row shows.
     static func detail(for error: Error) -> String {
         if let rejection = error as? EndpointPolicy.Rejection {
-            return ProviderErrorText.sanitized(rejection.errorDescription)
+            // The rejected address is not repeated: it can carry a query string,
+            // and the status row is the one place it would be shown back.
+            return ProviderErrorText.sanitized(rejection.safeDescription)
                 ?? "That address cannot be used."
         }
         if let failure = error as? ProviderError {

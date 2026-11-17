@@ -9,27 +9,27 @@ public enum HUDMaterial: String, Codable, Sendable, CaseIterable {
     case black
 }
 
-/// How the windows follow the system appearance.
+/// The appearance Dot's windows are drawn in.
 public enum AppearanceMode: String, Codable, Sendable, CaseIterable {
     /// Follow the Mac's current appearance.
     case system
     /// Always use the warm paper palette.
     case light
-    /// Always use the deep ink palette.
+    /// Always use the deep ink palette. The shipped default.
     case dark
 }
 
 /// The visual effect style of incoming audio on the HUD island.
 public enum HUDVisualizer: String, Codable, Sendable, CaseIterable {
-    /// Resting dots that stretch into organic capsules on springs.
+    /// Mirrored bars born at the right edge and scrolling left as they age.
     case stretch
-    /// Discrete precision capsule bars scrolling in phase.
+    /// A coiled tungsten filament that heats with the voice.
     case filament
-    /// Multi-frequency harmonic braided ribbons.
+    /// Four ribbons weaving through each other, their width the recent voice.
     case silk
     /// Real-time dot-matrix spectrogram.
     case matrix
-    /// Perimeter conic glow with clear interior for text.
+    /// Particles on five rings around a lit core, each ring spinning and tilting on its own.
     case haloEdge = "halo-edge"
 
     /// The human-readable name of the visualizer.
@@ -39,18 +39,18 @@ public enum HUDVisualizer: String, Codable, Sendable, CaseIterable {
         case .filament: "Filament"
         case .silk: "Silk"
         case .matrix: "Matrix"
-        case .haloEdge: "Halo Edge"
+        case .haloEdge: "Halo"
         }
     }
 
     /// The short summary of what the visualizer looks like.
     public var detail: String {
         switch self {
-        case .stretch: "Resting dots that stretch into capsules on springs under speech."
-        case .filament: "Discrete precision capsule bars scrolling with sub-pixel phase."
-        case .silk: "Braided multi-frequency harmonic ribbons that breathe with voice."
+        case .stretch: "Mirrored bars born at the right edge, scrolling left and fading as the words age."
+        case .filament: "A coiled tungsten filament that glows from ember red to white hot as you speak."
+        case .silk: "Four ribbons weaving through each other, their width and their travel the recent voice."
         case .matrix: "Scrolling dot-matrix spectrogram with warm amber hotspots."
-        case .haloEdge: "Conic aura circulating the island edge, leaving the center clear."
+        case .haloEdge: "Five rings of particles around a lit core, each spinning and tilting on its own, widening with every syllable."
         }
     }
 }
@@ -403,6 +403,12 @@ public struct DotConfig: Codable, Sendable, Equatable {
     /// What the HUD's card is made of.
     public var hudMaterial: HUDMaterial
     /// How the windows follow the system appearance.
+    ///
+    /// A fresh configuration opens in ``AppearanceMode/dark``. A file written
+    /// before the setting existed keeps the system choice that build followed,
+    /// so upgrading never changes how the windows look. ``AppearanceMode/system``
+    /// and ``AppearanceMode/light`` are the person's own choice, and the file
+    /// records whichever one is in force.
     public var appearance: AppearanceMode
     /// What visualizer the HUD island uses to draw incoming audio.
     public var hudVisualizer: HUDVisualizer
@@ -447,7 +453,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         microphoneDeviceUID: nil,
         logTranscripts: false,
         hudMaterial: .glass,
-        appearance: .system,
+        appearance: .dark,
         hudVisualizer: .stretch,
         recordingMode: .toggle,
         outputGrammarEnabled: false,
@@ -510,7 +516,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         microphoneDeviceUID: String? = nil,
         logTranscripts: Bool = false,
         hudMaterial: HUDMaterial = .glass,
-        appearance: AppearanceMode = .system,
+        appearance: AppearanceMode = .dark,
         hudVisualizer: HUDVisualizer = .stretch,
         recordingMode: RecordingMode = .toggle,
         outputGrammarEnabled: Bool = false,
@@ -670,8 +676,14 @@ extension DotConfig {
         // that does not decode loads as the default for its own field.
         let storedMaterial = (try? container.decodeIfPresent(HUDMaterial.self, forKey: .hudMaterial)) ?? nil
         self.hudMaterial = storedMaterial ?? fallback.hudMaterial
+        // Dark is the choice a fresh install opens on, not a rewrite of the
+        // choice an existing file already made. A file written before the
+        // setting existed has no key, and the build that wrote it followed the
+        // system; reading it as dark would change the person's appearance
+        // without their asking. So the shipped default is dark when there is
+        // no file at all, and the system when a file simply says nothing.
         let storedAppearance = (try? container.decodeIfPresent(AppearanceMode.self, forKey: .appearance)) ?? nil
-        self.appearance = storedAppearance ?? fallback.appearance
+        self.appearance = storedAppearance ?? .system
         let storedVisualizer = (try? container.decodeIfPresent(HUDVisualizer.self, forKey: .hudVisualizer)) ?? nil
         self.hudVisualizer = storedVisualizer ?? fallback.hudVisualizer
         // A file written before the interaction was a setting has no field, and

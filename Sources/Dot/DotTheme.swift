@@ -103,6 +103,23 @@ enum DotTheme {
     /// strength of the pill.
     static let sidebarHoverFill = adaptive(light: ns(0.075, 0.065, 0.085, 0.045), dark: white(0.06))
 
+    // MARK: - Menus
+
+    /// The wash behind the row under the pointer in an open menu.
+    ///
+    /// A menu floats over an unknown desktop, so its rows cannot use the
+    /// sidebar's pill, which is a tint of the window paper. This is the same
+    /// neutral ink tint, stepped for a raised surface: "here" in a tone that
+    /// introduces no colour, so the check — not the wash — says which row is
+    /// chosen.
+    static let menuRowHighlight = adaptive(light: ns(0.075, 0.065, 0.085, 0.08), dark: white(0.10))
+    /// The wash behind a row held by the pointer.
+    ///
+    /// The highlight pushed in, not a second colour: the same ink tint at nearly
+    /// twice the strength, so a press reads as depth rather than as selection,
+    /// and the chosen row's check stays the thing that says "this one".
+    static let menuRowPressed = adaptive(light: ns(0.075, 0.065, 0.085, 0.14), dark: white(0.16))
+
     /// The glow in the top-left corner of the paper.
     static let paperGlow = adaptive(light: white(0.65), dark: white(0.050))
     /// The warm shade at the bottom of the paper.
@@ -218,34 +235,29 @@ enum DotTheme {
 
     /// The face the app's titles are set in.
     ///
-    /// Rounded, because the mark is a circle on a rounded plate and the system's
-    /// default face beside it read as a stock window. A page title is the one
-    /// piece of type on a page that can carry the product's voice.
-    /// The face the app's own name and page titles are set in.
-    ///
-    /// New York, not SF. `design: .rounded` was asked for and silently returned
-    /// plain SF: SF Pro Rounded is an optional download and this Mac does not
-    /// have it, so the titles rendered in the same face as every other word on
-    /// the page. The serif is bundled everywhere and is the one face that makes
-    /// a page title read as a title: it is the app's paper-and-ink voice, and no
-    /// other app on the Mac sets its headings in it.
+    /// Switzer, semibold, at the size the caller asks for. The title used to be
+    /// New York because a serif is the one face that reads as a heading, and
+    /// then the owner asked for one typeface on every surface: a page title in
+    /// a second family is the one place the app would still look like two
+    /// products. The function stays because every page calls it, and only the
+    /// face inside it changed.
     static func displayFont(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .semibold, design: .serif)
+        DotType.font(size, .semibold)
     }
 
-    static let titleFont = displayFont(22)
-    static let sectionFont = Font.system(size: 15, weight: .semibold)
-    static let bodyFont = Font.system(size: 13, weight: .regular)
-    static let smallFont = Font.system(size: 11.5, weight: .regular)
-    static let labelFont = Font.system(size: 10.5, weight: .semibold)
+    static var titleFont: Font { displayFont(22) }
+    static var sectionFont: Font { DotType.font(15, .semibold) }
+    static var bodyFont: Font { DotType.font(13, .regular) }
+    static var smallFont: Font { DotType.font(11.5, .regular) }
+    static var labelFont: Font { DotType.font(10.5, .semibold) }
     /// The name of a setting.
-    static let rowTitleFont = Font.system(size: 12.5, weight: .medium)
+    static var rowTitleFont: Font { DotType.font(12.5, .medium) }
     /// The line under a setting that says what it does. One size everywhere:
     /// the pages used to mix 10.5 and 11, which read as two ranks of the same
     /// thing.
-    static let rowDetailFont = Font.system(size: 11, weight: .regular)
+    static var rowDetailFont: Font { DotType.font(11, .regular) }
     /// The caps label above a field or a card.
-    static let fieldLabelFont = Font.system(size: 9.5, weight: .semibold)
+    static var fieldLabelFont: Font { DotType.font(9.5, .semibold) }
 
     // MARK: - Colour helpers
 
@@ -384,7 +396,7 @@ private struct DotPrimaryButtonBody: View {
     private var scale: CGFloat {
         guard isEnabled, !reducesMotion else { return 1 }
         if configuration.isPressed {
-            return 0.97
+            return DotPressFeedback.pressedScale
         }
         return isHovering ? 1.015 : 1
     }
@@ -395,7 +407,7 @@ private struct DotPrimaryButtonBody: View {
 
     var body: some View {
         configuration.label
-            .font(.system(size: 12.5, weight: .semibold))
+            .font(DotType.font(12.5, .semibold))
             .foregroundStyle(DotTheme.onAction)
             .padding(.horizontal, 18)
             .padding(.vertical, 8)
@@ -436,7 +448,7 @@ private struct DotPrimaryButtonBody: View {
             .scaleEffect(scale)
             .opacity(isEnabled ? 1 : 0.5)
             .animation(
-                reducesMotion ? .easeOut(duration: 0.10) : .spring(response: 0.24, dampingFraction: 0.72),
+                DotPressFeedback.animation(reduceMotion: reducesMotion),
                 value: configuration.isPressed
             )
             .animation(.easeOut(duration: 0.16), value: isHovering)
@@ -467,7 +479,7 @@ private struct DotSecondaryButtonBody: View {
 
     var body: some View {
         configuration.label
-            .font(.system(size: 12.5, weight: .medium))
+            .font(DotType.font(12.5, .medium))
             .foregroundStyle(isEnabled ? DotTheme.ink : DotTheme.ink3)
             .padding(.horizontal, 15)
             .padding(.vertical, 8)
@@ -484,12 +496,14 @@ private struct DotSecondaryButtonBody: View {
                             )
                     )
             )
-            .scaleEffect(
-                configuration.isPressed && isEnabled && !reducesMotion ? 0.97 : 1
-            )
+            .scaleEffect(DotPressFeedback.scale(
+                isPressed: configuration.isPressed,
+                isEnabled: isEnabled,
+                reduceMotion: reducesMotion
+            ))
             .opacity(isEnabled ? 1 : 0.62)
             .animation(
-                reducesMotion ? nil : .spring(response: 0.22, dampingFraction: 0.74),
+                DotPressFeedback.animation(reduceMotion: reducesMotion),
                 value: configuration.isPressed
             )
             .animation(.easeOut(duration: 0.16), value: isHovering)
@@ -499,13 +513,127 @@ private struct DotSecondaryButtonBody: View {
     }
 }
 
+/// The press every control in the app answers with.
+///
+/// One policy in one place: a held button shrinks to 98 per cent over 120
+/// milliseconds on the app's strong ease-out. The values are a value rather than
+/// four lines inside every style, so the answer an ordinary press, a disabled
+/// control and a reduced-motion session get can be read — and tested — without
+/// drawing anything.
+enum DotPressFeedback {
+    /// How far a held control shrinks.
+    static let pressedScale: CGFloat = 0.98
+    /// How opaque a held control becomes when it may not move.
+    static let pressedOpacity: Double = 0.82
+    /// How long the press takes, in seconds.
+    static let duration: Double = 0.12
+    /// The control points of the press curve.
+    ///
+    /// The app's strong ease-out, written once: a stock `easeOut` is too weak to
+    /// carry a press, and a second hand-rolled curve beside this one would make
+    /// two answers to the same question.
+    static let curvePoints = (x1: 0.23, y1: 1.0, x2: 0.32, y2: 1.0)
+
+    /// The curve of the press: the strong ease-out of the app's motion.
+    static var curve: Animation {
+        .timingCurve(
+            curvePoints.x1,
+            curvePoints.y1,
+            curvePoints.x2,
+            curvePoints.y2,
+            duration: duration
+        )
+    }
+
+    /// The scale a control draws at while it is held.
+    ///
+    /// A disabled control does not move: a press is the answer to "I heard
+    /// you", and a control that cannot act has nothing to answer with. A person
+    /// who asked for reduced motion gets the colour answer only, with no
+    /// spatial movement at all.
+    ///
+    /// - Parameters:
+    ///   - isPressed: whether the control is held.
+    ///   - isEnabled: whether the control can act.
+    ///   - reduceMotion: whether the system asked for reduced motion.
+    /// - Returns: the scale to draw the control at.
+    static func scale(isPressed: Bool, isEnabled: Bool, reduceMotion: Bool) -> CGFloat {
+        guard isPressed, isEnabled, !reduceMotion else { return 1 }
+        return pressedScale
+    }
+
+    /// The opacity a control draws at while it is held.
+    ///
+    /// It is the reduced-motion answer: when the scale is stilled, the press is
+    /// carried by the fill alone. With the motion allowed the scale says it, so
+    /// the fill keeps its colour.
+    ///
+    /// - Parameters:
+    ///   - isPressed: whether the control is held.
+    ///   - isEnabled: whether the control can act.
+    ///   - reduceMotion: whether the system asked for reduced motion.
+    /// - Returns: the opacity to draw the control at.
+    static func opacity(isPressed: Bool, isEnabled: Bool, reduceMotion: Bool) -> Double {
+        guard isPressed, isEnabled, reduceMotion else { return 1 }
+        return pressedOpacity
+    }
+
+    /// The animation a press is drawn with.
+    ///
+    /// - Parameter reduceMotion: whether the system asked for reduced motion.
+    /// - Returns: the press curve, or `nil` when nothing may move.
+    static func animation(reduceMotion: Bool) -> Animation? {
+        reduceMotion ? nil : curve
+    }
+}
+
+/// The shared press for a control that draws its own chrome.
+///
+/// It adds the press and nothing else: a row's fill, a chip's capsule and a
+/// tile's border stay exactly as the view drew them, so a control with its own
+/// hover affordance can take the app's press without being re-skinned.
+struct DotPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        DotPressBody(configuration: configuration)
+    }
+}
+
+private struct DotPressBody: View {
+    let configuration: ButtonStyleConfiguration
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var reducesMotion: Bool {
+        reduceMotion || DotMotion.reducesMotion
+    }
+
+    var body: some View {
+        configuration.label
+            .scaleEffect(DotPressFeedback.scale(
+                isPressed: configuration.isPressed,
+                isEnabled: isEnabled,
+                reduceMotion: reducesMotion
+            ))
+            .opacity(DotPressFeedback.opacity(
+                isPressed: configuration.isPressed,
+                isEnabled: isEnabled,
+                reduceMotion: reducesMotion
+            ))
+            .animation(
+                DotPressFeedback.animation(reduceMotion: reducesMotion),
+                value: configuration.isPressed
+            )
+    }
+}
+
 /// A keyboard shortcut on paper.
 struct DotKeycap: View {
     let text: String
 
     var body: some View {
         Text(text)
-            .font(.system(size: 12, weight: .medium, design: .monospaced))
+            .font(DotType.tabularFont(12, .medium))
             .foregroundStyle(DotTheme.ink)
             .padding(.horizontal, 9)
             // The same height as the quiet button beside it: a keycap and a
@@ -533,7 +661,7 @@ struct DotFieldStyle: ViewModifier {
     func body(content: Content) -> some View {
         content
             .textFieldStyle(.plain)
-            .font(.system(size: 12.5))
+            .font(DotType.font(12.5, .regular))
             .foregroundStyle(DotTheme.ink)
             .padding(.horizontal, 9)
             .padding(.vertical, 7)
@@ -548,6 +676,395 @@ struct DotFieldStyle: ViewModifier {
                         lineWidth: focused ? 1.5 : 1
                     )
             )
+    }
+}
+
+/// A multiline text field that sits on the paper like ``DotFieldStyle`` does.
+///
+/// `TextEditor` cannot draw that chrome: it is a scroll view of its own, and a
+/// padding modifier around it moves the scroller inside the border, so the
+/// vertical bar hangs nine points off the field's edge and reads as a second,
+/// detached control. This wraps an `NSScrollView` that spans the whole rounded
+/// box and lets the text view's container inset hold the text away from the
+/// border instead, which leaves the overlay scroller on the box's own edge.
+@MainActor
+struct DotTextEditor: View {
+    @Binding var text: String
+    /// The height of the field, border included.
+    let height: CGFloat
+    /// The accessible name of the field.
+    var accessibilityLabel: String = ""
+    /// The size of the text, in points.
+    var fontSize: CGFloat = 12.5
+
+    /// The radius the field and its focus ring share with ``DotFieldStyle``.
+    static let cornerRadius: CGFloat = 8
+    /// The inset between the border and the first character.
+    ///
+    /// The clip view already holds the text five points clear of the top
+    /// border, so this is the room above the first line and beside the text
+    /// rather than the whole distance to the border. The vertical inset is the
+    /// same length as ``edgeFadeHeight``, so a line at either end of the text
+    /// stands in full below the fade the field draws at that end rather than
+    /// under it.
+    static let textInset = NSSize(width: 9, height: 12)
+    /// The room the clip view keeps clear of the field's top and bottom border.
+    ///
+    /// The text scrolls under the clip view, so a line that overflows the field
+    /// would otherwise be cut by the rounded border itself. Insetting the clip
+    /// view by this much at both ends cuts the overflow five points above the
+    /// bottom border, and because only the clip view moves, the overlay
+    /// scroller still spans the rounded box's own edge.
+    static let verticalClipInset: CGFloat = 5
+    /// The distance the text fades out over at an edge it runs past.
+    ///
+    /// The clip view ends the text on a hard line five points inside the
+    /// border, which reads as a slice through the middle of a line. The clip
+    /// view's own layer takes the ink to nothing over this distance instead, so
+    /// the text dissolves at the edge it continues past and the field ends on a
+    /// line rather than on a cut. The fade is drawn from the clip view's
+    /// position: an edge the text stops at is fully opaque.
+    static let edgeFadeHeight: CGFloat = 12
+
+    @State private var isFocused = false
+
+    var body: some View {
+        DotTextEditorRepresentable(
+            text: $text,
+            fontSize: fontSize,
+            accessibilityLabel: accessibilityLabel,
+            onFocusChange: { isFocused = $0 }
+        )
+        .frame(height: height)
+        .background(
+            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                .fill(isFocused ? DotTheme.fieldFillFocused : DotTheme.fieldFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                .strokeBorder(
+                    isFocused ? DotTheme.focusRing : DotTheme.fieldBorder,
+                    lineWidth: isFocused ? 1.5 : 1
+                )
+        )
+        .clipShape(
+            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+        )
+    }
+
+    /// The scroll view of a laid-out editor, for a test that measures the
+    /// inset the border leaves it.
+    ///
+    /// - Parameter view: the host the editor was drawn in.
+    /// - Returns: the first ``DotTextEditorScrollView`` under the host.
+    static func scrollView(in view: NSView?) -> DotTextEditorScrollView? {
+        guard let view else { return nil }
+        if let scrollView = view as? DotTextEditorScrollView { return scrollView }
+        for sub in view.subviews {
+            if let found = scrollView(in: sub) { return found }
+        }
+        return nil
+    }
+}
+
+/// The scroll view a ``DotTextEditor`` draws.
+///
+/// It is a named type rather than a plain `NSScrollView` so the text editor's
+/// own scroll view can be found in a host without guessing which of the page's
+/// scroll views is the field.
+final class DotTextEditorScrollView: NSScrollView {
+    /// The mask that takes the text to nothing at an edge it runs past.
+    private let edgeFade = CAGradientLayer()
+    /// The observers of the clip view's position and the document's height.
+    ///
+    /// Registered and removed on the main actor only, and the removal in
+    /// `deinit` runs when no other reference to the view exists, so the tokens
+    /// need no isolation of their own.
+    nonisolated(unsafe) private var edgeFadeTokens: [NSObjectProtocol] = []
+
+    /// Insets the clip view, which is what clips overflowing text clear of the
+    /// border.
+    ///
+    /// The scroll view itself still spans the whole rounded box: only the clip
+    /// view is inset, so the overlay scroller stays on the field's own edge and
+    /// the text stops five points short of the bottom border instead of being
+    /// sliced by it. `super.tile()` sets the clip view's frame from the scroll
+    /// view's bounds on every pass, so the inset is applied to that frame
+    /// rather than accumulating on the previous one.
+    ///
+    /// The overlay style is reasserted here because the field's chrome is the
+    /// rounded box itself: a legacy scroller would take a strip out of the text
+    /// rather than sit on the border, and AppKit falls back to the process's
+    /// preferred style as it lays the view out.
+    override func tile() {
+        super.tile()
+        if scrollerStyle != .overlay {
+            scrollerStyle = .overlay
+        }
+        let frame = contentView.frame
+        guard frame.height > DotTextEditor.verticalClipInset * 2 else { return }
+        contentView.frame = frame.insetBy(dx: 0, dy: DotTextEditor.verticalClipInset)
+        refreshEdgeFade()
+    }
+
+    /// Keeps the whole wheel gesture while the text overflows.
+    ///
+    /// The field sits inside the settings page's own scroll view, and at a
+    /// limit AppKit hands the wheel to the next responder, which is that page:
+    /// a wheel over a prompt that had reached its last line scrolled the page
+    /// out from under it. While the text overflows, the field therefore
+    /// consumes the event at every phase, momentum included, and moves its own
+    /// clip view by the delta, so one gesture never leaves the field. A field
+    /// whose text fits has nothing to consume and forwards, and a gesture that
+    /// is mostly horizontal belongs to the page.
+    override func scrollWheel(with event: NSEvent) {
+        let keeps = keepsWheel(event)
+        keptTheLastWheel = keeps
+        guard keeps else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let documentHeight = documentView?.frame.height ?? 0
+        let clipHeight = contentView.bounds.height
+        // A precise device reports points and a wheel that is not precise
+        // reports lines, which the field's own line scroll converts.
+        let delta = event.hasPreciseScrollingDeltas
+            ? event.scrollingDeltaY
+            : event.scrollingDeltaY * verticalLineScroll
+        let origin = contentView.bounds.origin
+        let limit = max(0, documentHeight - clipHeight)
+        let y = min(max(origin.y - delta, 0), limit)
+        guard y != origin.y else { return }
+        contentView.scroll(to: NSPoint(x: origin.x, y: y))
+        reflectScrolledClipView(contentView)
+        flashScrollers()
+        refreshEdgeFade()
+    }
+
+    /// Whether the field keeps this wheel for its own text.
+    ///
+    /// The field keeps every wheel while the text overflows, whatever phase it
+    /// is in, and hands on a wheel it has nothing to scroll with and one that
+    /// is mostly horizontal.
+    func keepsWheel(_ event: NSEvent) -> Bool {
+        let documentHeight = documentView?.frame.height ?? 0
+        let clipHeight = contentView.bounds.height
+        guard documentHeight > clipHeight + 0.5 else { return false }
+        return abs(event.scrollingDeltaX) <= abs(event.scrollingDeltaY)
+    }
+
+    /// Whether the field kept the last wheel it was handed.
+    ///
+    /// A wheel built in a test carries no window, and AppKit chains a wheel to
+    /// the page under the pointer in the window that dispatches it: off screen
+    /// neither the forward nor the chain happens, so nothing outside the field
+    /// can tell a wheel the field kept from one it handed on. The field records
+    /// which it did, and the tests read that beside the page's own offset.
+    private(set) var keptTheLastWheel = false
+
+    /// The layer the mask hangs on is built when the field reaches a window, so
+    /// the fades are read again there as well as in `tile()`.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        observeEdgeFade()
+    }
+
+    /// Watches the two numbers the fades are read from.
+    ///
+    /// The clip view's position says how far each edge is from the end of the
+    /// text and the document's height says whether there is anything past the
+    /// edge to fade at all, so the mask is rebuilt when either of them moves.
+    func observeEdgeFade() {
+        for token in edgeFadeTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
+        edgeFadeTokens.removeAll()
+        contentView.postsBoundsChangedNotifications = true
+        contentView.wantsLayer = true
+        documentView?.postsFrameChangedNotifications = true
+        let names: [(Notification.Name, Any?)] = [
+            (NSView.boundsDidChangeNotification, contentView),
+            (NSView.frameDidChangeNotification, documentView),
+        ]
+        for (name, object) in names {
+            edgeFadeTokens.append(NotificationCenter.default.addObserver(
+                forName: name,
+                object: object,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshEdgeFade() }
+            })
+        }
+        refreshEdgeFade()
+    }
+
+    /// Draws the two edge fades from the clip view's position.
+    ///
+    /// The fade ramps in over the text past the padding its container keeps at
+    /// that end: the padding is not text, so an edge whose padding is all that
+    /// overflows stays fully opaque and the first or last line is drawn whole.
+    /// Each fade is as long as the text still runs past that padding, up to
+    /// ``DotTextEditor/edgeFadeHeight``. The mask is black where the text is
+    /// kept and clear where it is dropped, and its stops are read from the clip
+    /// view's own height, so the fade is the same number of points whatever the
+    /// field's height is.
+    func refreshEdgeFade() {
+        guard let documentView, let layer = contentView.layer else { return }
+        if layer.mask !== edgeFade {
+            layer.mask = edgeFade
+        }
+        let clipHeight = contentView.bounds.height
+        guard clipHeight > 0 else { return }
+        let origin = contentView.bounds.origin.y
+        let limit = max(0, documentView.frame.height - clipHeight)
+        let fade = DotTextEditor.edgeFadeHeight
+        // The text container keeps the same inset at both ends of the text, and
+        // only what lies past it is a line a reader loses.
+        let pad = DotTextEditor.textInset.height
+        let topOverflow = max(0, origin - pad)
+        let bottomOverflow = max(0, limit - origin - pad)
+        let topLength = fade * min(1, topOverflow / fade)
+        let bottomLength = fade * min(1, bottomOverflow / fade)
+        let topStop = min(1, topLength / clipHeight)
+        let bottomStop = min(max(0, 1 - topStop), bottomLength / clipHeight)
+        let solid = CGColor(gray: 0, alpha: 1)
+        let clear = CGColor(gray: 0, alpha: 0)
+        // The first stop is the clip view's top edge and the last is its foot.
+        // Which way the mask's own y axis runs is read from the layer rather
+        // than assumed: a geometry-flipped layer puts its zero at the top and a
+        // plain one at the bottom. The pixel test in `DotTextEditorScrollTests`
+        // measures the ink at both edges of a drawn field, which is what proves
+        // the reading is the way round a reader sees it.
+        let flipped = layer.isGeometryFlipped
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        edgeFade.frame = layer.bounds
+        edgeFade.startPoint = CGPoint(x: 0.5, y: flipped ? 0 : 1)
+        edgeFade.endPoint = CGPoint(x: 0.5, y: flipped ? 1 : 0)
+        edgeFade.locations = [0, NSNumber(value: topStop), NSNumber(value: 1 - bottomStop), 1]
+        edgeFade.colors = [
+            topLength > 0 ? clear : solid,
+            solid,
+            solid,
+            bottomLength > 0 ? clear : solid,
+        ]
+        CATransaction.commit()
+    }
+
+    deinit {
+        for token in edgeFadeTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+}
+
+/// The AppKit editor behind ``DotTextEditor``.
+private struct DotTextEditorRepresentable: NSViewRepresentable {
+    @Binding var text: String
+    let fontSize: CGFloat
+    let accessibilityLabel: String
+    let onFocusChange: (Bool) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> DotTextEditorScrollView {
+        let scrollView = DotTextEditorScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
+        // The field owns the whole gesture: rubber-banding at a limit would
+        // drag the text past the clip and leave it sliced by the border.
+        scrollView.verticalScrollElasticity = .none
+        scrollView.horizontalScrollElasticity = .none
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.wantsLayer = true
+        scrollView.layer?.cornerRadius = DotTextEditor.cornerRadius
+        scrollView.layer?.cornerCurve = .continuous
+        scrollView.layer?.masksToBounds = true
+
+        let textView = NSTextView(frame: .zero)
+        textView.delegate = context.coordinator
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.drawsBackground = false
+        textView.font = DotType.nsFont(fontSize, .regular)
+        textView.textColor = NSColor(DotTheme.ink)
+        textView.insertionPointColor = NSColor(DotTheme.ink)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainerInset = DotTextEditor.textInset
+        // A prompt and a Markdown brief are code, not prose: the smart
+        // substitutions turn `"` into a curly quote and `--` into a dash, and
+        // the model reads a different prompt than the one that was typed.
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.setAccessibilityLabel(accessibilityLabel)
+        textView.string = text
+        scrollView.documentView = textView
+        scrollView.observeEdgeFade()
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: DotTextEditorScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        textView.font = DotType.nsFont(fontSize, .regular)
+        textView.textColor = NSColor(DotTheme.ink)
+        textView.insertionPointColor = NSColor(DotTheme.ink)
+        textView.textContainerInset = DotTextEditor.textInset
+        textView.setAccessibilityLabel(accessibilityLabel)
+        if textView.string != text {
+            let selection = textView.selectedRange()
+            textView.string = text
+            let end = (text as NSString).length
+            textView.setSelectedRange(
+                NSRange(location: min(selection.location, end), length: 0)
+            )
+        }
+        // New text is a new document height, and the fades are read from it.
+        scrollView.refreshEdgeFade()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: DotTextEditorRepresentable
+
+        init(_ parent: DotTextEditorRepresentable) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView,
+                  parent.text != textView.string
+            else { return }
+            parent.text = textView.string
+        }
+
+        func textDidBeginEditing(_ notification: Notification) {
+            parent.onFocusChange(true)
+        }
+
+        /// The ring follows the first responder rather than the notification:
+        /// a window that closes or a panel that opens resigns the responder for
+        /// its own reasons, and a field that lost the ring for that would look
+        /// unfocused while it still holds the selection.
+        func textDidEndEditing(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView,
+                  textView.window?.firstResponder !== textView
+            else { return }
+            parent.onFocusChange(false)
+        }
     }
 }
 
@@ -645,8 +1162,12 @@ private struct DotSwitchTrack: View {
         )
     }
 
-    private var knobSlide: Animation {
-        reduceMotion ? .easeOut(duration: 0.14) : .spring(response: 0.28, dampingFraction: 0.78)
+    /// The knob is placed, not slid, when the motion is reduced: a switch that
+    /// travelled across its track was the one spatial animation a reduced-motion
+    /// session still saw, and the colour of the track already says which state
+    /// the switch is in.
+    private var knobSlide: Animation? {
+        reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.78)
     }
 
     private var trackFade: Animation {

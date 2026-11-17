@@ -29,7 +29,7 @@ final class AssistantConfigurationTests: XCTestCase {
     func testTheShippedDefaults() {
         let assistant = DotConfig.default.assistant
         XCTAssertEqual(assistant.chat.providerID, "openai")
-        XCTAssertEqual(assistant.model, "gpt-4o-mini", "the catalogue's first suggestion")
+        XCTAssertEqual(assistant.model, "", "no hardcoded model suggestion")
         XCTAssertEqual(assistant.voice.providerID, ProviderIdentifier.apple)
         XCTAssertEqual(assistant.voice.speed, 1.0)
         XCTAssertEqual(assistant.connectors, ConnectorSettings.default)
@@ -131,5 +131,60 @@ final class AssistantConfigurationTests: XCTestCase {
     func testAnUnreadableHotkeyKeepsTheDefaultOne() throws {
         let config = try load(#"{"assistantHotkey": {"keyCode": "a"}}"#)
         XCTAssertEqual(config.assistantHotkey, Hotkey.defaultAssistant)
+    }
+
+    // MARK: - A choice kept while the assistant is off
+
+    func testAFileWithoutTheChoiceFlagSaysNothingAboutIt() throws {
+        let config = try load(#"{"assistant": {"chat": {"provider": "custom"}}}"#)
+        XCTAssertNil(
+            config.assistant.serviceChosen,
+            "absent is not false: a file written before the flag keeps its stored service readable"
+        )
+        XCTAssertFalse(config.assistant.isSetUp)
+    }
+
+    func testTheChoiceFlagRoundTripsAndIsWrittenOnlyWhenItExists() throws {
+        var config = DotConfig.default
+        config.assistant.serviceChosen = false
+        let data = try JSONEncoder().encode(config)
+        let restored = try JSONDecoder().decode(DotConfig.self, from: data)
+        XCTAssertEqual(restored, config)
+
+        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let assistant = try XCTUnwrap(payload?["assistant"] as? [String: Any])
+        XCTAssertEqual(assistant["serviceChosen"] as? Bool, false)
+
+        config.assistant.serviceChosen = nil
+        let absent = try JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any]
+        XCTAssertNil((absent?["assistant"] as? [String: Any])?["serviceChosen"])
+    }
+
+    func testABadChoiceFlagIsReadAsAbsentRatherThanFalse() throws {
+        let config = try load(#"{"assistant": {"serviceChosen": "no"}}"#)
+        XCTAssertNil(config.assistant.serviceChosen)
+    }
+
+    func testTurningOffKeepsTheServiceModelAndAddress() throws {
+        // The page writes false and leaves the rest of the record alone. A
+        // file round-tripped after "None" still has everything needed to turn
+        // the same endpoint back on.
+        var config = DotConfig.default
+        config.assistant.chat = AssistantSettings(
+            providerID: "custom",
+            model: "my-model",
+            baseURL: "https://proxy.example.com/v1"
+        )
+        config.assistant.serviceChosen = false
+        config.assistant.isSetUp = false
+        let restored = try JSONDecoder().decode(
+            DotConfig.self,
+            from: JSONEncoder().encode(config)
+        )
+        XCTAssertEqual(restored.assistant.chat.providerID, "custom")
+        XCTAssertEqual(restored.assistant.chat.model, "my-model")
+        XCTAssertEqual(restored.assistant.chat.baseURL, "https://proxy.example.com/v1")
+        XCTAssertEqual(restored.assistant.serviceChosen, false)
+        XCTAssertFalse(restored.assistant.isSetUp)
     }
 }

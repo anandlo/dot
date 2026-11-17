@@ -7,10 +7,29 @@ import SwiftUI
 ///
 /// It never takes focus: it is a borderless, non-activating panel that floats
 /// above every window but below the system alerts.
-final class HUDPanel: NSPanel {
+///
+/// Not final: a test builds one off every display, which is a subclass that
+/// refuses to be pulled onto a screen. The app builds this class itself.
+class HUDPanel: NSPanel {
     var allowsKey = false
     override var canBecomeKey: Bool { allowsKey }
     override var canBecomeMain: Bool { false }
+
+    /// Keeps the frame the HUD asked for.
+    ///
+    /// The panel now reaches the top of the display, because the shape has to be
+    /// drawn under the notch, and AppKit's own constraint would pull a window
+    /// whose title bar would sit behind the menu bar back down the screen. There
+    /// is no title bar here and no click outside the card: the frame is the
+    /// HUD's to place.
+    ///
+    /// - Parameters:
+    ///   - frameRect: the frame the HUD set.
+    ///   - screen: the screen it would be constrained to.
+    /// - Returns: the frame, unchanged.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
 }
 
 /// The hosting view of the island.
@@ -78,6 +97,15 @@ final class HUD {
         }
     }
 
+    /// Called when the transcript card is replaced by another kind of card.
+    ///
+    /// The rewrite layer belongs to the words it was offered for. The runner is
+    /// told so a stream from the old card can never attach its result to the new
+    /// one; the card itself has already dropped the layer.
+    var onTranscriptEnded: (() -> Void)?
+    /// Called when the card is hidden for any reason, including the countdown.
+    var onHide: (() -> Void)?
+
     private let renderLoop = HUDRenderLoop()
     private var renderFallbackTimer: Timer?
     private var lastTick: CFTimeInterval = 0
@@ -99,9 +127,17 @@ final class HUD {
     private var debugPointerOverride: Bool?
     /// When the card was last scrolled, in media time; `nil` when it never was.
     private var lastScrollAt: CFTimeInterval?
+    /// The horizontal swipe over the text body, fed from precise scroll events.
+    private var rewriteSwipe = RewriteSwipeGesture()
+    /// The scroll view the wheel or trackpad gesture belongs to.
+    private var wheelGesture = HUDWheelGesture()
     /// The monitors that see the pointer while another app is frontmost.
     private var pointerMonitor: Any?
     private var scrollMonitor: Any?
+    /// How many times the pointer monitors have been installed. The headless
+    /// test reads it to prove a countdown reset never tears down a live pair;
+    /// the app never asks for it.
+    private(set) var debugPointerTrackingInstallCount = 0
     private var hasLoggedScroll = false
     private var hideTask: Task<Void, Never>?
     private var levelProvider: (() -> Double)?
@@ -124,8 +160,6 @@ final class HUD {
     /// that built a new array every time put two allocations and a concatenation
     /// on every frame of the render loop; this buffer is filled in place.
     private var historyBuffer: [Double] = []
-    /// The bar heights of the visualiser, kept between frames.
-    private var barsBuffer: [Double] = []
     /// How much of the shape has arrived, from `0` to `1`.
     ///
     /// It rises when a recording starts and falls when it ends, so the shape
@@ -133,11 +167,101 @@ final class HUD {
     /// whatever height the last frame of the last take left behind.
     private var reveal: Double = 0
     /// How present the card is, in screen space.
-    private var presenceSpring = Spring(value: 0, target: 0, duration: 0.36, bounce: 0.16)
+    ///
+    /// It is the progress of the emergence: `0` is the notch, `1` is the card at
+    /// rest, and it passes `1` on the way in, which is the overshoot the shape
+    /// spends on the card's own height. The island leaves faster than it arrives:
+    /// the arrival is a pour out of the screen and takes 0.55 s with a little
+    /// overshoot on the settle, and the departure is the same shape going home,
+    /// critically damped and over in 0.36 s.
+    private var emergeSpring = Spring(value: 0, target: 0, duration: 0.55, bounce: 0.12)
+    /// The opacity of a card that arrives with its motion reduced.
+    ///
+    /// Reduced motion keeps the card where it rests and crossfades it instead,
+    /// so the appearance is this straight ramp rather than the spring. It starts
+    /// at `0` and stops on its target, which is what makes the appearance a
+    /// known length of time.
+    private var reduceFade = HUDCrossfade(value: 0, duration: 0.15)
+    /// How far through the card's departure the HUD is.
+    ///
+    /// The card cannot leave the way it arrived until its content has faded: the
+    /// words belong to the surface, not to the shape. The dismissal is carried
+    /// between frames so the two are one movement with one clock, and it is
+    /// what tells the panel when it may be ordered out.
+    private struct Dismissal {
+        /// How long the departure has been running, in seconds.
+        var elapsed: TimeInterval = 0
+        /// Whether the shape has been given its own order to leave.
+        var shapeStarted = false
+    }
+    private var dismissal: Dismissal?
+    /// Where the panel is placed on the display it is on, when it is on one.
+    ///
+    /// It carries the panel's frame, the notch the shape pours out of and the
+    /// distance the card hangs below the top of the panel. Without it the card
+    /// has no shape to pour out of and fades, which is what happens off the
+    /// screens.
+    private var placement: HUDEmergence.Placement?
+    /// The display the panel is placed on, when a test hands one in.
+    private var debugPlacementScreen: HUDEmergence.Screen?
+    /// Whether a test set the motion setting, which the system otherwise owns.
+    private var debugReduceMotionOverride: Bool?
+    /// Whether the card has a notch to pour out of.
+    ///
+    /// It does when the panel is placed on a display whose geometry was read.
+    /// A card with no display behind it — a HUD asked for off the screens, a
+    /// display that could not be read — has no shape to come out of, and fades
+    /// in where it rests, exactly as it did before the emergence existed.
+    private var poursFromTheNotch: Bool { placement != nil }
+    /// Whether the card has been read again since it arrived and began to take
+    /// the mouse. The card ignores every event until the shape is nearly at
+    /// rest, and a pointer that does not move produces no event of its own.
+    private var hasReadPointerSinceArrival = false
+    /// Whether the rail's opening position has been restored for this card.
+    private var railPositionRestored = false
+    /// The position the person last gave the rail during this card.
+    ///
+    /// The card opens the rail on its first style, and the person may move it
+    /// before the appearance has stopped: a wheel, a version's arrow, the row's
+    /// own arrow keys or VoiceOver actions, and the scroll a styled version
+    /// opens on. Whichever of those wrote last is where the rail belongs, so the
+    /// opening correction restores this rather than zero.
+    private var railIntendedOrigin: CGPoint = .zero
+    /// The rail's clip the person's position is read from, and the observation
+    /// that reads it.
+    ///
+    /// The row's scroll view is SwiftUI's: the arrows, the arrow keys, the
+    /// VoiceOver actions and a styled version's scroll all move it from inside
+    /// the row, so the clip's own bounds change is the only report the card gets
+    /// of them. The clip is read again whenever the row is laid out as a new
+    /// view, which is why the observation is kept beside it rather than made
+    /// once.
+    private weak var railOriginClip: NSClipView?
+    private var railOriginToken: NSObjectProtocol?
+    /// Whether every write to the rail's clip is being taken as the person's.
+    ///
+    /// The row's own reveal is an eased scroll of several frames, and its last
+    /// steps are each shorter than the residue's reach. One write that carries
+    /// the rail further than that qualifies the ones after it: they are followed
+    /// until the clip holds still for a frame, so the record lands on where the
+    /// reveal came to rest rather than on the frame that crossed the window.
+    private var railOriginTracks = false
+    /// The clip origin the tracking last read, so a frame without a write ends it.
+    private var railTrackedOrigin: CGPoint?
+    /// The rail the appearance is reading, kept between frames.
+    ///
+    /// The rail is a scroll view inside the card's SwiftUI tree, and finding it
+    /// means walking that tree. The correction reads it on every frame, so the
+    /// one it found is kept until the row is laid out again as a new view.
+    private weak var railScrollView: NSScrollView?
+    /// Whether the card itself is writing the rail, which is not the person.
+    private var isCorrectingRailOrigin = false
+    /// The rail's frame on the previous tick, while its position is restored.
+    private var lastRailFrame: CGRect?
     /// How settled the content of the card is.
     private var contentSpring = Spring(value: 0, target: 0, duration: 0.34, bounce: 0.10)
     private var reduceMotion: Bool {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        debugReduceMotionOverride ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
     /// Creates the HUD.
@@ -189,6 +313,9 @@ final class HUD {
         let container = NSView(frame: NSRect(origin: .zero, size: Self.panelSize))
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.clear.cgColor
+        // The panel is taller than this when it reaches the top of the display,
+        // and the card has to be laid out against the panel it is in.
+        container.autoresizingMask = [.width, .height]
         hostingView.autoresizingMask = [.width, .height]
         container.addSubview(hostingView)
         panel.contentView = container
@@ -202,17 +329,50 @@ final class HUD {
     /// It is rebuilt when the actions change, so the buttons always call the
     /// closures the app last handed over.
     private func makeRootView() -> AnyView {
+        Self.rootView(
+            model: model,
+            actions: actions,
+            animated: !reduceMotion,
+            placement: placement,
+            size: placement?.panelFrame.size ?? Self.panelSize
+        )
+    }
+
+    /// The tree the panel hosts, for one model and one placement.
+    ///
+    /// The card hangs from the top of the panel by the distance the placement
+    /// asks for, which is the margin its shadow needs plus the room the panel
+    /// gained by reaching the top of the display. The panel's own size is given
+    /// so a render can draw the same tree, cropped to what the shape covers,
+    /// without a window.
+    ///
+    /// - Parameters:
+    ///   - model: what the card draws.
+    ///   - actions: what the card's buttons do.
+    ///   - animated: whether the card's shape springs between sizes.
+    ///   - placement: where the panel is and where its notch is, or `nil` when
+    ///     the card has no display to pour out of.
+    ///   - size: the size of the panel.
+    /// - Returns: the tree the panel hosts.
+    static func rootView(
+        model: HUDModel,
+        actions: HUDActions,
+        animated: Bool,
+        placement: HUDEmergence.Placement?,
+        size: CGSize
+    ) -> AnyView {
         AnyView(
             ZStack(alignment: .top) {
                 Color.clear
                 HUDView(
                     model: model,
-                    animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-                    actions: actions
+                    animated: animated,
+                    actions: actions,
+                    emergence: placement?.scene
                 )
-                .padding(.top, Self.shadowPadding)
+                .padding(.top, placement?.cardTopInset ?? shadowPadding)
             }
-            .frame(width: Self.panelSize.width, height: Self.panelSize.height, alignment: .top)
+            .frame(width: size.width, height: size.height, alignment: .top)
         )
     }
 
@@ -373,6 +533,10 @@ final class HUD {
         grammarWasLong: Bool = false
     ) {
         isPreviewingVisualizer = false
+        // A new transcript is a new card, even when the previous card was also a
+        // transcript. The runner is told before the layer is dropped so a
+        // stream from the old take cannot attach its result to these words.
+        onTranscriptEnded?()
         model.clearLiveText()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -492,19 +656,21 @@ final class HUD {
         spectrumSmoothed = .zero
         spectrumClock = 0
         spectrumScale.reset()
-        // Pre-seed the meter with 2 seconds of speech history so scrolling visualizers
-        // (Filament, Matrix) immediately show a full, moving voice trace.
+        // Pre-seed the meter with two seconds of the demonstration, so a
+        // scrolling visualizer immediately shows a full, moving voice trace
+        // instead of filling up from an empty history. The frames are the
+        // script's own, at the moment the preview's clock is about to start, so
+        // the trace opens on the take it goes on to draw rather than on a
+        // second, different voice.
+        let opening = Self.previewPhase(now: now, startedAt: recordingStartedAt)
         var simTime = now - 2.0
         while simTime < now {
-            let voice = SpeechSchedule.level(at: (simTime - (now - 2.0) + 0.6).truncatingRemainder(dividingBy: max(1.0, SpeechSchedule.spoken)))
-            let db = -52.0 + voice * 42.0
-            meter.push(decibels: db, now: simTime)
-            let b0 = min(1.0, max(0.0, voice * (0.45 + 0.55 * abs(sin(simTime * 9.3)))))
-            let b1 = min(1.0, max(0.0, voice * (0.55 + 0.45 * abs(cos(simTime * 6.7)))))
-            let b2 = min(1.0, max(0.0, voice * (0.65 + 0.35 * abs(sin(simTime * 4.9 + 0.8)))))
-            let b3 = min(1.0, max(0.0, voice * (0.58 + 0.42 * abs(cos(simTime * 3.8 + 1.4)))))
-            let b4 = min(1.0, max(0.0, voice * (0.48 + 0.52 * abs(sin(simTime * 2.9 + 2.1)))))
-            advanceSpectrum(target: AudioSpectrumFrame(bands: (b0, b1, b2, b3, b4)), dt: 1.0 / 60.0)
+            let moment = Self.wrapped(opening + (simTime - now), loop: DictationScript.loop)
+            let voice = DictationScript.level(at: moment)
+            // One scale for the seeded frames and the live ones: the shape the
+            // preview opens with is the shape it goes on to draw.
+            meter.push(decibels: Self.previewDecibels(voice), now: simTime)
+            advanceSpectrum(target: DictationScript.bands(at: moment), dt: 1.0 / 60.0)
             simTime += 1.0 / 60.0
         }
         setMode(
@@ -512,7 +678,60 @@ final class HUD {
             size: CGSize(width: HUDState.recordingWidth, height: HUDState.recordingHeight)
         )
         present()
-        scheduleDismiss(in: 2.6)
+        // A still preview is a picture rather than a performance: there is no
+        // movement to finish, so it stays until the person moves on from it.
+        scheduleDismiss(in: reduceMotion ? nil : Self.previewDismissDelay)
+    }
+
+    /// How long the demonstration is shown before the card dismisses itself.
+    ///
+    /// One whole loop of the script, rest included. The preview and its
+    /// dismissal are the same measurement, so a longer demonstration cannot be
+    /// cut off half way through.
+    static let previewDismissDelay: TimeInterval = DictationScript.loop
+
+    /// Where inside the loop the demonstration starts.
+    ///
+    /// The script opens with a second of room before the first syllable, and the
+    /// card is at its most legible when the voice begins a moment after the card
+    /// has arrived, so the clock starts four tenths of a second in: on the breath
+    /// before the first word, with the seeded history behind it already speaking.
+    static let previewOffset: Double = 0.4
+
+    /// The moment of the demonstration a clock reading sits at.
+    ///
+    /// - Parameters:
+    ///   - now: the clock's reading, in seconds.
+    ///   - startedAt: the moment the preview started.
+    /// - Returns: the position in the loop, in seconds.
+    static func previewPhase(now: TimeInterval, startedAt: TimeInterval) -> Double {
+        let elapsed = max(0, now - startedAt) + previewOffset
+        return elapsed.truncatingRemainder(dividingBy: DictationScript.loop)
+    }
+
+    /// A moment of the demonstration, brought back inside its loop.
+    ///
+    /// The preview's clock runs past the end of the loop while its dismissal is
+    /// pending, and the history it seeds reaches back before the loop began;
+    /// both are the same take seen from a different point in it.
+    ///
+    /// - Parameters:
+    ///   - time: the moment, in seconds, possibly negative or past the loop.
+    ///   - loop: the length of the loop, in seconds.
+    /// - Returns: the same moment, from `0` up to `loop`.
+    static func wrapped(_ time: Double, loop: Double) -> Double {
+        guard loop > 0 else { return 0 }
+        let wrapped = time.truncatingRemainder(dividingBy: loop)
+        return wrapped < 0 ? wrapped + loop : wrapped
+    }
+
+    /// The decibels a simulated level is pushed into the meter at.
+    ///
+    /// A voice that peaks at `1` is pushed at `-8 dBFS` and a silent moment at
+    /// `-58`, which is the same scale a microphone is drawn on: the meter's
+    /// window is what turns it into the shape the card shows.
+    private static func previewDecibels(_ level: Double) -> Double {
+        -58 + min(1, max(0, level)) * 50
     }
 
     /// Tells the launch card which service dictation goes to, and a masked hint
@@ -606,6 +825,9 @@ final class HUD {
         dwellClock = nil
         stopPointerTracking()
         panel.ignoresMouseEvents = true
+        // The layer cannot outlive the surface that showed it. This also stops
+        // a stream that would otherwise finish into a card nobody can see.
+        onHide?()
         guard model.isVisible else { return }
         if case .ready = model.mode {
             Log.shared.info("hud.ready.hidden")
@@ -613,21 +835,45 @@ final class HUD {
         model.isVisible = false
 
         if reduceMotion {
-            presenceSpring.snap(to: 0)
             contentSpring.snap(to: 0)
-            model.presence = 0
             model.content = 0
+            reduceFade.to(0)
+            dismissal = poursFromTheNotch ? Dismissal(elapsed: 0, shapeStarted: true) : nil
+        } else if poursFromTheNotch {
+            contentSpring.to(target: 0, duration: 0.12, bounce: 0)
+            dismissal = Dismissal(elapsed: 0, shapeStarted: false)
         } else {
-            presenceSpring.to(target: 0, duration: 0.22, bounce: 0)
+            // A card with no shape to go back into fades out where it is, which
+            // is the appearance it has always had.
+            dismissal = nil
+            emergeSpring.to(target: 0, duration: 0.22, bounce: 0)
         }
 
+        // The panel may not be ordered out until the shape has gone back into
+        // the notch: the window is the only thing that can draw it. The frames
+        // decide that, on the same clock they always spend, and the task below
+        // is what keeps a stalled loop from leaving an invisible window behind:
+        // it gives up on the frames after the escape the departure is allowed.
         hideTask?.cancel()
-        hideTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(self?.reduceMotion == true ? 60 : 320))
-            guard let self, !self.model.isVisible else { return }
-            self.panel.orderOut(nil)
-            self.stopRendering()
+        let escape: Int
+        if poursFromTheNotch {
+            escape = 1050
+        } else {
+            escape = reduceMotion ? 60 : 320
         }
+        hideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(escape))
+            guard let self, !self.model.isVisible else { return }
+            self.dismissal = nil
+            self.finishHiding()
+        }
+    }
+
+    /// Orders the panel out once the card has left it.
+    private func finishHiding() {
+        guard !model.isVisible else { return }
+        panel.orderOut(nil)
+        stopRendering()
     }
 
     /// Whether the card is on screen.
@@ -648,12 +894,116 @@ final class HUD {
     /// render loop.
     var debugPresence: Double { model.presence }
 
+    /// How far the shape has come out of the notch, overshoot included. The
+    /// headless test reads it to time the emergence; the app never does.
+    var debugEmergence: Double { model.emergence }
+
     /// How settled the content is. The headless test reads it through the real
     /// render loop.
     var debugContent: Double { model.content }
 
+    /// Whether the springs that move the card's appearance are at rest.
+    ///
+    /// The card arrives by changing its shape and by scaling and offsetting
+    /// itself, and those are these springs' values: SwiftUI hands them to the
+    /// views it hosts as frame transforms, and AppKit re-derives a hosted scroll
+    /// view's clip geometry under each one. A test that reads a hosted view's
+    /// scroll position waits for this rather than for a duration, because the
+    /// render loop advances the springs once per frame and a busy machine
+    /// delivers fewer frames.
+    var debugAppearanceAtRest: Bool {
+        contentSpring.isResting && (reduceMotion ? reduceFade.isResting : emergeSpring.isResting)
+    }
+
+    /// Whether the record is still following writes to the rail's clip.
+    ///
+    /// The headless test reads it to know that a reveal has stopped arriving,
+    /// which is a state of the card rather than a duration; the app never does.
+    var debugRailFollowsWrites: Bool { railOriginTracks }
+
+    /// Whether the opening correction has been decided for this card.
+    ///
+    /// The headless test reads it to know which frame's clip origin is the last
+    /// one the correction could still have read; the app never does.
+    var debugRailPositionRestored: Bool { railPositionRestored }
+
+    /// The position the person last gave the rail, as the opening correction reads it.
+    ///
+    /// The headless test reads it to prove the card took the scroll the row ran
+    /// for itself as the person's; the app never does.
+    var debugRailIntendedOrigin: CGPoint { railIntendedOrigin }
+
+    /// Moves the card's appearance by a known amount of time.
+    ///
+    /// The appearance runs on the frames the render loop delivers and spends
+    /// whatever time passed between two of them, which is a property of the
+    /// machine rather than of the card. The headless test therefore moves this
+    /// clock itself, through the same advance the frame loop calls; the app
+    /// never does.
+    ///
+    /// - Parameter seconds: the time to move forward, in seconds.
+    func debugAdvanceAppearance(by seconds: TimeInterval) {
+        guard seconds > 0 else { return }
+        advanceAppearance(by: seconds)
+    }
+
+    /// Places the panel on a display that exists only for the test.
+    ///
+    /// The shape's geometry is read from the display, so the pointer's rules and
+    /// the card's rest rectangle can only be proved against one. A display that
+    /// is not the person's is the only one a test may place a window on, and
+    /// this one is never ordered front. The app never calls this.
+    ///
+    /// The panel is ordered out before it is placed: the display does not exist,
+    /// so the frame it describes is a place on the person's screen, and a window
+    /// ordered front there would be drawn on it.
+    ///
+    /// - Parameter screen: the display to place the panel on.
+    func debugPlace(on screen: HUDEmergence.Screen) {
+        panel.orderOut(nil)
+        debugPlacementScreen = screen
+        placePanel()
+    }
+
+    /// The card's rectangle on the screen, as the pointer tests it.
+    var debugCardFrame: CGRect { cardFrame }
+
+    /// Reads the pointer at a point on the screen, as the monitors do. The
+    /// headless test uses it because it cannot move the real pointer; the app
+    /// never does.
+    ///
+    /// - Parameter point: where the pointer is, in screen coordinates.
+    func debugUpdatePointer(at point: CGPoint) {
+        updatePointer(at: point)
+    }
+
+    /// Sets the appearance the pointer's rules read. The headless test uses it
+    /// to hold a card at a moment of its emergence; the app never does.
+    ///
+    /// - Parameter value: how far the shape has come out of the notch.
+    func debugSetEmergence(_ value: Double) {
+        model.emergence = value
+        model.presence = min(max(value, 0), 1)
+    }
+
+    /// Sets the motion setting. The headless test uses it because the system's
+    /// own preference is not the test's to change; the app never does.
+    ///
+    /// - Parameter value: the setting, or `nil` to read the system's again.
+    func debugSetReduceMotion(_ value: Bool?) {
+        debugReduceMotionOverride = value
+        hostingView?.rootView = makeRootView()
+    }
+
     /// Whether AppKit considers the panel visible.
     var debugPanelVisible: Bool { panel.isVisible }
+
+    /// The panel the island is drawn in.
+    ///
+    /// The headless test reads its frame to place an event in the card, and its
+    /// key state to prove that a scroll takes no focus; the app never asks for
+    /// it.
+    var debugPanel: HUDPanel { panel }
 
     /// How many frames the render loop has delivered. The headless test uses
     /// it to prove the loop ran, not only the visibility fallback.
@@ -686,6 +1036,63 @@ final class HUD {
         isPointerInside = inside
     }
 
+    /// The view the island is drawn in.
+    ///
+    /// The headless test walks it to find the card's scroll views, which are
+    /// SwiftUI's; the app never asks for it.
+    var debugRootView: NSView { hostingView }
+
+    /// Whether the pointer monitors are installed. The headless test reads it
+    /// to prove that a countdown reset leaves them alone; the app never asks
+    /// for it.
+    var debugPointerTrackingInstalled: Bool {
+        pointerMonitor != nil && scrollMonitor != nil
+    }
+
+    /// Applies one scroll at a point, as a background pointer monitor would.
+    ///
+    /// The headless test cannot make another application the frontmost one, so
+    /// it cannot produce the event the background island receives; it hands the
+    /// event here instead, at the point it would have come from. The event goes
+    /// through the same path the monitors use, with `delivered` false; the app
+    /// never calls this.
+    ///
+    /// - Parameters:
+    ///   - event: the wheel to apply.
+    ///   - screenPoint: where the pointer was when the event was produced.
+    /// - Returns: whether the card would swallow the event. A background event
+    ///   is never swallowed, so this is informational here.
+    @discardableResult
+    func debugHandleScrollEvent(_ event: NSEvent, at screenPoint: CGPoint) -> Bool {
+        guard event.type == .scrollWheel else { return false }
+        return pointerEvent(
+            HUDPointerEvent(event),
+            at: screenPoint,
+            delivered: false
+        )
+    }
+
+    /// Delivers one scroll to the card as the local monitor would.
+    ///
+    /// A delivered wheel is the one AppKit also hands to the card's own views.
+    /// A rail-owned gesture is applied here and swallowed, whichever axis it
+    /// owns, so AppKit never applies the same event again. The app never calls
+    /// this.
+    ///
+    /// - Parameters:
+    ///   - event: the wheel AppKit delivered.
+    ///   - screenPoint: where the pointer was when it was produced.
+    /// - Returns: whether the event is swallowed by the card.
+    @discardableResult
+    func debugDeliverWheel(_ event: NSEvent, at screenPoint: CGPoint) -> Bool {
+        guard event.type == .scrollWheel else { return false }
+        return pointerEvent(
+            HUDPointerEvent(event),
+            at: screenPoint,
+            delivered: true
+        )
+    }
+
     /// Moves the transcript's countdown by a known amount of time.
     ///
     /// The countdown runs on the frames the render loop delivers and spends
@@ -705,6 +1112,7 @@ final class HUD {
     private func present() {
         hideTask?.cancel()
         hideTask = nil
+        dismissal = nil
         dismissTimer?.invalidate()
         dismissTimer = nil
         // Each card gets its own countdown: the dwell of the transcript that was
@@ -730,6 +1138,11 @@ final class HUD {
         presentedAt = now
         hasRenderedSincePresent = false
         hasReportedFirstTick = false
+        railPositionRestored = false
+        railIntendedOrigin = .zero
+        railOriginTracks = false
+        railTrackedOrigin = nil
+        hasReadPointerSinceArrival = false
         startRendering()
         scheduleRenderFallback()
         // The card is on screen, so the pointer's position decides whether it
@@ -739,12 +1152,15 @@ final class HUD {
         updatePointer(at: NSEvent.mouseLocation)
 
         if reduceMotion {
-            presenceSpring.snap(to: 1)
             contentSpring.snap(to: 1)
-            model.presence = 1
             model.content = 1
+            reduceFade.to(1)
         } else {
-            presenceSpring.to(target: 1, duration: 0.36, bounce: 0.16)
+            if poursFromTheNotch {
+                emergeSpring.to(target: 1, duration: 0.55, bounce: 0.12)
+            } else {
+                emergeSpring.to(target: 1, duration: 0.36, bounce: 0.16)
+            }
             if contentSpring.target < 1 {
                 contentSpring.to(target: 1, duration: 0.34, bounce: 0.10)
             }
@@ -769,7 +1185,11 @@ final class HUD {
 
     // MARK: - Dwell
 
-    /// Starts the countdown of the transcript.
+    /// Resets the transcript's countdown.
+    ///
+    /// A reset gives the card a fresh clock, not a fresh pair of monitors: the
+    /// monitors belong to the card's presentation, so a phase that changes
+    /// while a wheel gesture is in flight does not lose the gesture.
     private func startDwelling(duration: Double? = nil) {
         dismissTimer?.invalidate()
         dismissTimer = nil
@@ -800,11 +1220,14 @@ final class HUD {
             // leave the countdown suspended for good.
             updatePointer(at: NSEvent.mouseLocation)
         }
-        let interacting = model.isEditingTranscript || panel.isKeyWindow || HUDDwell.isInteracting(
-            pointerInside: isPointerInside,
-            lastScroll: lastScrollAt,
-            now: now
-        )
+        let interacting = model.isEditingTranscript
+            || panel.isKeyWindow
+            || model.rewrite?.isStreaming == true
+            || HUDDwell.isInteracting(
+                pointerInside: isPointerInside,
+                lastScroll: lastScrollAt,
+                now: now
+            )
         let expired = clock.advance(to: now, interacting: interacting)
         dwellClock = clock
         guard expired, !interacting else { return }
@@ -823,9 +1246,15 @@ final class HUD {
     /// user is dictating into another app — so the card's own mouse-moved
     /// events do not arrive. The global monitor sees the pointer wherever it is,
     /// including over the frontmost application, and the local monitor sees it
-    /// when Dot is the active app. Neither monitor swallows an event: both
-    /// return nothing and the wheel goes on to the scroll view.
+    /// when Dot is the active app. Both observe the event; the local monitor
+    /// swallows a delivered wheel that belongs to the style rail, because the
+    /// card applies that gesture itself.
     private func startPointerTracking() {
+        // The monitors live as long as the card does. A countdown reset — the
+        // phase of a rewrite changing, a note arriving, a version completing —
+        // restarts the clock, never the monitors: removing and reinstalling a
+        // global monitor on every token would lose the gesture in flight.
+        guard !debugPointerTrackingInstalled else { return }
         stopPointerTracking()
         let mask: NSEvent.EventTypeMask = [
             .mouseMoved,
@@ -835,19 +1264,35 @@ final class HUD {
             .otherMouseDown,
         ]
         pointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
-            // The monitor's thread is the event's, not necessarily the main
-            // one: the read happens on the main actor, one turn later, which is
-            // soon enough for a countdown measured in seconds.
+            // The values are snapshotted before the asynchronous handoff to the
+            // main actor, so the location and the deltas are the ones the event
+            // carried and a later pointer move cannot change where it was
+            // produced.
+            let point = HUD.screenPoint(of: event)
+            let pointer = HUDPointerEvent(event)
             Task { @MainActor [weak self] in
-                self?.pointerEvent(event)
+                _ = self?.pointerEvent(pointer, at: point, delivered: false)
             }
         }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
-            Task { @MainActor [weak self] in
-                self?.pointerEvent(event)
+            let point = HUD.screenPoint(of: event)
+            let pointer = HUDPointerEvent(event)
+            let windowNumber = event.windowNumber
+            guard let self else { return event }
+            // Local monitors are always called on the main thread, before the
+            // event is dispatched. The card is observed synchronously there, so
+            // the event-time location is the one the callback was given, and a
+            // swallowed event is stopped before any view applies it.
+            let swallow = MainActor.assumeIsolated {
+                self.pointerEvent(
+                    pointer,
+                    at: point,
+                    delivered: windowNumber == self.panel.windowNumber
+                )
             }
-            return event
+            return swallow ? nil : event
         }
+        debugPointerTrackingInstallCount += 1
         if pointerMonitor == nil {
             // A monitor that cannot be installed is not fatal: the card still
             // dismisses itself, it only stops waiting while it is read.
@@ -866,14 +1311,44 @@ final class HUD {
         scrollMonitor = nil
         isPointerInside = false
         lastScrollAt = nil
+        wheelGesture.cancel()
+        rewriteSwipe.cancel()
+    }
+
+    /// Where a pointer event was produced, in screen coordinates.
+    ///
+    /// An event attached to a window carries its point in that window's
+    /// coordinates; a monitor event from another application has no window and
+    /// carries the screen point already. Reading this here, before any
+    /// asynchronous handoff, is what keeps the gesture's beginning where the
+    /// person made it.
+    ///
+    /// - Parameter event: the pointer event.
+    /// - Returns: the event-time location, in screen coordinates.
+    static func screenPoint(of event: NSEvent) -> CGPoint {
+        guard let window = event.window else { return event.locationInWindow }
+        return window.convertPoint(toScreen: event.locationInWindow)
     }
 
     /// Reads one of the events the monitors watch.
-    private func pointerEvent(_ event: NSEvent) {
+    ///
+    /// - Parameters:
+    ///   - event: the event copied off its `NSEvent`.
+    ///   - point: where the event was produced, in screen coordinates.
+    ///   - delivered: whether AppKit delivered the event to the panel, which
+    ///     means the card's own views also see it.
+    /// - Returns: whether the card swallowed the event. A delivered wheel
+    ///   owned by the style rail is swallowed: the card applies it itself so the
+    ///   row receives the gesture exactly once.
+    @discardableResult
+    private func pointerEvent(
+        _ event: HUDPointerEvent,
+        at point: CGPoint,
+        delivered: Bool
+    ) -> Bool {
         let now = CACurrentMediaTime()
-        let screenPoint = NSEvent.mouseLocation
-        updatePointer(at: screenPoint)
-        if event.type == .leftMouseDown || event.type == .rightMouseDown || event.type == .otherMouseDown {
+        updatePointer(at: point)
+        if event.kind == .click {
             if !isPointerInside {
                 if model.isEditingTranscript || panel.isKeyWindow {
                     endInlineEditing()
@@ -884,35 +1359,455 @@ final class HUD {
                     dwellClock = clock
                 }
             }
-            return
+            return false
         }
-        guard event.type == .scrollWheel else { return }
-        guard isPointerInside else { return }
+        guard event.kind == .wheel else { return false }
+        // A gesture the card already owns keeps its events when the pointer
+        // leaves the card, and momentum in particular keeps arriving after the
+        // fingers are gone: the owner, not the pointer, decides.
+        guard isPointerInside || wheelGesture.isTracking else {
+            rewriteSwipe.cancel()
+            return false
+        }
         lastScrollAt = now
-        guard !hasLoggedScroll else { return }
+        let swallow = scrollEvent(event, at: point, delivered: delivered)
+        guard !hasLoggedScroll else { return swallow }
         hasLoggedScroll = true
         Log.shared.info("hud.transcript.scrolled", [
             "inside": .bool(isPointerInside),
             "key_window": .bool(panel.isKeyWindow),
             "app_active": .bool(NSApp.isActive),
         ])
+        return swallow
+    }
+
+    /// Routes one wheel event to the scroll view its gesture belongs to.
+    ///
+    /// The owner and the axis are decided once, on the event that starts the
+    /// gesture, and every later event of it — including momentum, whose
+    /// location follows the pointer — keeps that owner. A gesture that begins
+    /// over the style chips belongs to the rail and to nothing else: it never
+    /// pages the versions and never moves the transcript's body.
+    ///
+    /// A rail-owned gesture is applied here and, when AppKit delivered it,
+    /// swallowed, whatever its axis: the card owns the row's travel and the
+    /// native scroll view must not apply it a second time. A gesture over the
+    /// body or the version paging keeps its existing path.
+    ///
+    /// - Parameters:
+    ///   - event: the wheel.
+    ///   - screenPoint: where the event was produced, in screen coordinates.
+    ///   - delivered: whether AppKit delivered it to the panel.
+    /// - Returns: whether the card swallows the event.
+    @discardableResult
+    private func scrollEvent(
+        _ event: HUDPointerEvent,
+        at screenPoint: CGPoint,
+        delivered: Bool
+    ) -> Bool {
+        let cardFrame = self.cardFrame
+        let railFrame = Self.rewriteChipRowFrame(cardFrame: cardFrame, card: model.rewrite)
+        let bodyFrame = Self.transcriptBodyFrame(cardFrame: cardFrame, card: model.rewrite)
+        let rail = Self.chipRowScrollView(in: hostingView)
+        let body = Self.transcriptScrollView(in: hostingView)
+
+        let phase = event.phase
+        let momentum = event.momentumPhase
+
+        // A legacy wheel — no phases at all — is one self-contained step, the
+        // way one mouse notch is. There is no gesture to carry between events.
+        if phase.isEmpty, momentum.isEmpty {
+            wheelGesture.cancel()
+            let owner = wheelOwner(at: screenPoint, railFrame: railFrame, bodyFrame: bodyFrame)
+            return applyWheel(
+                owner: owner,
+                axis: HUDWheelAxis.beginning(deltaX: event.deltaX, deltaY: event.deltaY),
+                event: event,
+                at: screenPoint,
+                delivered: delivered,
+                rail: rail,
+                body: body
+            )
+        }
+
+        let isMomentum = !momentum.isEmpty
+        // Momentum belongs to the gesture that flicked it. An orphan tail — the
+        // card appeared after the fingers lifted, or the owner was cancelled —
+        // is not allowed to latch the rail from wherever the pointer drifted.
+        if isMomentum, !wheelGesture.isTracking { return false }
+
+        let beginsNewGesture = phase.contains(.began)
+            || phase.contains(.mayBegin)
+            || !wheelGesture.isTracking
+        if beginsNewGesture {
+            let owner = wheelOwner(at: screenPoint, railFrame: railFrame, bodyFrame: bodyFrame)
+            wheelGesture.begin(
+                owner: owner,
+                axis: HUDWheelAxis.beginning(deltaX: event.deltaX, deltaY: event.deltaY)
+            )
+        }
+
+        let swallow = applyWheel(
+            owner: wheelGesture.owner,
+            axis: wheelGesture.latchAxis(deltaX: event.deltaX, deltaY: event.deltaY),
+            event: event,
+            at: screenPoint,
+            delivered: delivered,
+            rail: rail,
+            body: body
+        )
+
+        if momentum.contains(.cancelled) || momentum.contains(.ended) {
+            wheelGesture.cancel()
+        } else if phase.contains(.cancelled), momentum.isEmpty {
+            wheelGesture.cancel()
+        }
+        return swallow
+    }
+
+    /// Which scroll view a gesture beginning at this point belongs to.
+    ///
+    /// - Returns: the rail, the transcript body, or the version paging when the
+    ///   gesture began on neither.
+    private func wheelOwner(
+        at screenPoint: CGPoint,
+        railFrame: CGRect,
+        bodyFrame: CGRect
+    ) -> HUDWheelOwner {
+        if railFrame.contains(screenPoint) { return .rail }
+        if bodyFrame.contains(screenPoint) { return .body }
+        return .versions
+    }
+
+    /// Applies one wheel event to the owner the gesture latched.
+    ///
+    /// - Returns: whether the event is swallowed by the card.
+    private func applyWheel(
+        owner: HUDWheelOwner,
+        axis: HUDWheelAxis?,
+        event: HUDPointerEvent,
+        at screenPoint: CGPoint,
+        delivered: Bool,
+        rail: NSScrollView?,
+        body: NSScrollView?
+    ) -> Bool {
+        switch owner {
+        case .rail:
+            rewriteSwipe.cancel()
+            // A rail-owned gesture is applied by the card on every path and
+            // swallowed when AppKit delivered it. Leaving a delivered event to
+            // the native scroll view would make the applier depend on where
+            // AppKit latched the gesture; the card already knows the owner, so
+            // it applies the same travel once and the native view never sees
+            // it. Background events were never delivered, so there is nothing
+            // to swallow. A stationary beginning has no axis yet and nothing
+            // to apply, but it still belongs to the rail and is swallowed.
+            // A non-precise wheel reports lines, not points. The scroll view's
+            // own line height is what AppKit would multiply the delta by, so
+            // the card uses the same setting to keep one notch the same travel
+            // on both appliers.
+            if let axis, let rail {
+                let scale = event.isPrecise ? 1 : rail.horizontalLineScroll
+                if Self.scrollRail(
+                    scrollView: rail,
+                    step: axis.step(deltaX: event.deltaX, deltaY: event.deltaY) * scale
+                ) {
+                    // A wheel that moved the rail is the person's position,
+                    // however small: the opening correction puts the rail back
+                    // on this rather than on its first style.
+                    railIntendedOrigin = rail.contentView.bounds.origin
+                }
+            }
+            return delivered
+        case .body:
+            // A delivered vertical wheel is the native scroll view's; only the
+            // background one has to be applied here. The horizontal swipe that
+            // pages the versions stays with `handleRewriteSwipe`.
+            if !delivered,
+               abs(event.deltaY) > abs(event.deltaX),
+               let body {
+                let scale = event.isPrecise ? 1 : body.verticalLineScroll
+                _ = Self.scrollVertical(scrollView: body, deltaY: event.deltaY * scale)
+            }
+            handleRewriteSwipe(event, at: screenPoint)
+            return false
+        case .versions:
+            handleRewriteSwipe(event, at: screenPoint)
+            return false
+        case .none:
+            return false
+        }
+    }
+
+    /// Turns a precise horizontal trackpad swipe over the text body into one
+    /// previous/next move.
+    ///
+    /// The event is observed, not swallowed: the vertical scroll view keeps its
+    /// wheel, and the rail is a separate owner, so its wheel is never taken.
+    /// A mostly vertical gesture cancels the swipe, and momentum after the
+    /// fingers lift is ignored.
+    private func handleRewriteSwipe(_ event: HUDPointerEvent, at screenPoint: CGPoint) {
+        guard let card = model.rewrite,
+              !card.isBlocked,
+              !model.isEditingTranscript,
+              event.isPrecise,
+              event.momentumPhase.isEmpty
+        else {
+            rewriteSwipe.cancel()
+            return
+        }
+        let cardFrame = self.cardFrame
+        let body = Self.rewriteBodyFrame(cardFrame: cardFrame, card: card)
+        guard body.contains(screenPoint) else {
+            rewriteSwipe.cancel()
+            return
+        }
+        let phase = event.phase
+        if phase.contains(.cancelled) {
+            rewriteSwipe.cancel()
+            return
+        }
+        if phase.contains(.began) || phase.contains(.mayBegin) {
+            rewriteSwipe.begin()
+        }
+        // `scrollingDeltaX/Y` carry the person's natural-scrolling setting:
+        // AppKit inverts them for it and says so on the event. The gesture is
+        // defined in finger deltas, so the inversion is undone once, for both
+        // axes, and the classifier sees one convention on every Mac: the same
+        // swipe asks for the same version whatever the preference.
+        let deltas = RewriteSwipeGesture.fingerDeltas(
+            rawHorizontal: event.deltaX,
+            rawVertical: event.deltaY,
+            directionInverted: event.isDirectionInvertedFromDevice
+        )
+        if let direction = rewriteSwipe.add(horizontal: deltas.horizontal, vertical: deltas.vertical) {
+            move(to: direction)
+        } else if phase.contains(.ended), let direction = rewriteSwipe.end() {
+            move(to: direction)
+        }
+    }
+
+    private func move(to direction: RewriteSwipeGesture.Direction) {
+        switch direction {
+        case .previous:
+            actions.previousVersion?()
+        case .next:
+            actions.nextVersion?()
+        }
+        Log.shared.info("hud.rewrite.swiped", ["direction": .string("\(direction)")])
+    }
+
+    /// The part of the card a horizontal swipe may page: the text body, not the
+    /// header and not the version row.
+    static func rewriteBodyFrame(cardFrame: CGRect, card: RewriteCard) -> CGRect {
+        let extra = rewriteExtraHeight(card)
+        let bodyHeight = max(0, cardFrame.height - HUDTheme.headerHeight - 1 - extra)
+        return CGRect(
+            x: cardFrame.minX,
+            y: cardFrame.minY + extra,
+            width: cardFrame.width,
+            height: bodyHeight
+        )
+    }
+
+    /// The part of the card the text of a body scrolled vertically lives in.
+    ///
+    /// A plain transcript is the card under the header and its hairline; a
+    /// versioned one gives the rewrite layer the bottom of the card, so the
+    /// body ends where the layer begins.
+    ///
+    /// - Parameters:
+    ///   - cardFrame: the card's rectangle, in screen coordinates.
+    ///   - card: the rewrite layer, or `nil` for a plain transcript.
+    /// - Returns: the body's rectangle, in the same coordinates.
+    static func transcriptBodyFrame(cardFrame: CGRect, card: RewriteCard?) -> CGRect {
+        guard let card else {
+            return CGRect(
+                x: cardFrame.minX,
+                y: cardFrame.minY,
+                width: cardFrame.width,
+                height: max(0, cardFrame.height - HUDTheme.headerHeight - 1)
+            )
+        }
+        return rewriteBodyFrame(cardFrame: cardFrame, card: card)
+    }
+
+    // MARK: - The rail and the wheel
+
+    /// The tallest a horizontal rail's scroll view can be, in points.
+    ///
+    /// The chip row is one 24 point line. The transcript body is the card's
+    /// other scroll view, and it is told apart by the room it has to scroll —
+    /// the rail never has any vertically — and by its height, which is the
+    /// body's rather than one line of chips.
+    static let maximumRailHeight: CGFloat = 36
+
+    /// The band of the card the style chips occupy.
+    ///
+    /// The layer under the body is drawn from the bottom of the card up: the
+    /// card's vertical padding, then the chip row, then the gap above it. The
+    /// row is therefore always the same 24 points above the card's bottom edge,
+    /// whether or not a note line sits under the body, and the version arrows at
+    /// both ends are left out of the band so a scroll over one of them stays a
+    /// click's business.
+    ///
+    /// - Parameters:
+    ///   - cardFrame: the card's rectangle, in screen coordinates.
+    ///   - card: the rewrite layer the card is showing, if any.
+    /// - Returns: the rail's rectangle, or ``CGRect/zero`` when the card draws
+    ///   no chips.
+    static func rewriteChipRowFrame(cardFrame: CGRect, card: RewriteCard?) -> CGRect {
+        guard let card, card.showsChips else { return .zero }
+        let leading = HUDTheme.padding + HUDRewriteLayout.versionArrowWidth
+        let showsRerun = card.selectedVersion.styleID != nil
+            && !card.isStreaming
+            && !card.isBlocked
+        let trailing = leading
+            + (showsRerun ? HUDRewriteLayout.chipGap + HUDRewriteLayout.versionArrowWidth : 0)
+        let width = cardFrame.width - leading - trailing
+        guard width > 0, cardFrame.height > 0 else { return .zero }
+        return CGRect(
+            x: cardFrame.minX + leading,
+            y: cardFrame.minY + HUDState.verticalPadding,
+            width: width,
+            height: HUDRewriteLayout.chipHeight
+        )
+    }
+
+    /// Every scroll view under a view, deepest last.
+    ///
+    /// - Parameter root: the view to walk.
+    /// - Returns: the scroll views in the subtree, in subview order.
+    static func scrollViews(in root: NSView) -> [NSScrollView] {
+        var found: [NSScrollView] = []
+        if let scrollView = root as? NSScrollView { found.append(scrollView) }
+        for subview in root.subviews {
+            found.append(contentsOf: scrollViews(in: subview))
+        }
+        return found
+    }
+
+    /// The scroll view of the style chips.
+    ///
+    /// The rail is the one horizontal scroll view on the card: it is one chip
+    /// tall, it has more content than its viewport when the styles outgrow the
+    /// card, and it never scrolls vertically. The transcript body is the other
+    /// way round — never this short, and the only one with a taller document
+    /// than its viewport.
+    ///
+    /// - Parameter root: the view the card is drawn in.
+    /// - Returns: the rail's scroll view, or `nil` when the card draws none.
+    static func chipRowScrollView(in root: NSView?) -> NSScrollView? {
+        guard let root else { return nil }
+        var short: NSScrollView?
+        var wide: NSScrollView?
+        for scrollView in scrollViews(in: root) {
+            let clip = scrollView.contentView
+            let document = scrollView.documentView
+            let documentWidth = document?.frame.width ?? 0
+            let documentHeight = document?.frame.height ?? 0
+            // A view whose document is taller than its viewport is the body,
+            // never the rail: the rail is one line and cannot scroll that way.
+            guard documentHeight <= clip.bounds.height + 0.5 else { continue }
+            let hasHorizontalRoom = documentWidth > clip.bounds.width + 0.5
+            if scrollView.frame.height <= maximumRailHeight {
+                if hasHorizontalRoom { return scrollView }
+                if short == nil { short = scrollView }
+            } else if hasHorizontalRoom, wide == nil {
+                wide = scrollView
+            }
+        }
+        return short ?? wide
+    }
+
+    /// The scroll view of the transcript body, when it has more than it shows.
+    ///
+    /// - Parameter root: the view the card is drawn in.
+    /// - Returns: the tallest scroll view with a document taller than its
+    ///   viewport, or `nil` when the body fits.
+    static func transcriptScrollView(in root: NSView?) -> NSScrollView? {
+        guard let root else { return nil }
+        var best: NSScrollView?
+        for scrollView in scrollViews(in: root) {
+            let clip = scrollView.contentView
+            let documentHeight = scrollView.documentView?.frame.height ?? 0
+            guard documentHeight > clip.bounds.height + 0.5 else { continue }
+            guard scrollView.frame.height > maximumRailHeight else { continue }
+            if let current = best, current.contentView.bounds.height >= clip.bounds.height {
+                continue
+            }
+            best = scrollView
+        }
+        return best
+    }
+
+    /// Moves the rail by one gesture's travel.
+    ///
+    /// The travel has already been read from the axis the gesture latched, and
+    /// it already carries the person's natural-scrolling setting: a negative
+    /// horizontal delta means the fingers went left, which reveals what is on
+    /// the right, so the clip's origin increases. One step is the travel
+    /// subtracted from the current origin, held between the two ends of the
+    /// content. The rail never bounces: the end of the content is where the
+    /// gesture stops.
+    ///
+    /// - Parameters:
+    ///   - scrollView: the rail.
+    ///   - step: the travel in points, with any line delta already converted.
+    /// - Returns: whether the rail moved.
+    @discardableResult
+    static func scrollRail(scrollView: NSScrollView, step: CGFloat) -> Bool {
+        guard step != 0 else { return false }
+        let clip = scrollView.contentView
+        let documentWidth = scrollView.documentView?.frame.width ?? 0
+        let maximum = max(0, documentWidth - clip.bounds.width)
+        guard maximum > 0 else { return false }
+        let x = min(max(clip.bounds.origin.x - step, 0), maximum)
+        guard x != clip.bounds.origin.x else { return false }
+        clip.scroll(to: NSPoint(x: x, y: 0))
+        scrollView.reflectScrolledClipView(clip)
+        return true
+    }
+
+    /// Moves a vertical scroll view by a wheel's vertical delta.
+    ///
+    /// The body's document is flipped, so its origin is zero at the top: a
+    /// positive `scrollingDeltaY` — the wheel rolled up, or two fingers pushed
+    /// down the trackpad — goes back towards the first word, which is the origin
+    /// decreasing.
+    ///
+    /// - Parameters:
+    ///   - scrollView: the transcript body.
+    ///   - deltaY: the vertical travel in points, with any line delta already
+    ///     converted.
+    /// - Returns: whether the body moved.
+    @discardableResult
+    static func scrollVertical(scrollView: NSScrollView, deltaY: CGFloat) -> Bool {
+        let clip = scrollView.contentView
+        let documentHeight = scrollView.documentView?.frame.height ?? 0
+        let maximum = max(0, documentHeight - clip.bounds.height)
+        guard maximum > 0, deltaY != 0 else { return false }
+        let y = min(max(clip.bounds.origin.y - deltaY, 0), maximum)
+        guard y != clip.bounds.origin.y else { return false }
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+        scrollView.reflectScrolledClipView(clip)
+        return true
     }
 
     /// Records whether the pointer is over the card.
     ///
     /// The card is the only part of the panel that is drawn: the rest is the
     /// margin its shadow needs, and a pointer there is not reading anything.
+    /// The card does not take the mouse until it has arrived either: while the
+    /// shape is still coming out of the notch there is no card to click, and the
+    /// strip the panel covers above it belongs to whatever is under it.
     private func updatePointer(at screenPoint: CGPoint) {
-        let card = HUDPlacement.cardFrame(
-            panelFrame: panel.frame,
-            cardSize: model.cardSize,
-            topInset: Self.shadowPadding
-        )
+        let card = cardFrame
         let inside = card.contains(screenPoint)
-        // The panel takes the mouse only over the card. A click anywhere else in
-        // the panel's rectangle belongs to whatever is under it, and this is what
-        // hands it back.
-        panel.ignoresMouseEvents = !inside
+        // The panel takes the mouse only over the card, and only once the card
+        // is there. A click anywhere else in the panel's rectangle belongs to
+        // whatever is under it, and this is what hands it back.
+        panel.ignoresMouseEvents = !(inside && model.presence >= 0.98)
         let detectedHover = inside ? hoveredAction(at: screenPoint, in: card) : nil
         if model.hoveredAction != detectedHover {
             model.hoveredAction = detectedHover
@@ -1033,12 +1928,20 @@ final class HUD {
 
     private func applyRenderFallback() {
         renderFallbackTimer = nil
-        guard model.isVisible, (!hasRenderedSincePresent || model.presence < 0.5) else { return }
+        // The island is invisible only while the shape has not left the notch,
+        // which is the first few frames of the emergence. A card that is half
+        // way out of the screen is drawn where the person is looking, so it is
+        // not this watchdog's business: what it may not leave behind is a card
+        // that was never drawn at all.
+        guard model.isVisible, (!hasRenderedSincePresent || model.presence < 0.05) else { return }
         let elapsed = (CACurrentMediaTime() - presentedAt) * 1000
-        presenceSpring.to(target: 1)
-        presenceSpring.snap(to: 1)
+        emergeSpring.to(target: 1)
+        emergeSpring.snap(to: 1)
+        reduceFade.to(1)
+        reduceFade.snap(to: 1)
         contentSpring.to(target: 1)
         contentSpring.snap(to: 1)
+        model.emergence = 1
         model.presence = 1
         model.content = 1
         hasRenderedSincePresent = true
@@ -1077,25 +1980,20 @@ final class HUD {
         let dt = min(max(now - lastTick, 0), 0.1)
         lastTick = now
 
-        presenceSpring.advance(dt)
-        contentSpring.advance(dt)
-        model.presence = min(max(presenceSpring.value, 0), 1)
-        model.content = min(max(contentSpring.value, 0), 1)
+        advanceAppearance(by: dt)
+        restoreTheRailsOpeningPosition()
 
         if case .recording = model.mode {
             if isPreviewingVisualizer {
-                let previewTime = (now - recordingStartedAt + 0.6).truncatingRemainder(
-                    dividingBy: max(1.0, SpeechSchedule.spoken)
-                )
-                let voice = SpeechSchedule.level(at: previewTime)
-                meter.push(decibels: -58.0 + voice * 50.0, now: now)
+                let previewTime = Self.previewPhase(now: now, startedAt: recordingStartedAt)
+                let voice = DictationScript.level(at: previewTime)
+                meter.push(decibels: Self.previewDecibels(voice), now: now)
                 model.level = meter.envelope
-                let b0 = min(1.0, max(0.0, voice * (0.45 + 0.55 * abs(sin(now * 9.3)))))
-                let b1 = min(1.0, max(0.0, voice * (0.55 + 0.45 * abs(cos(now * 6.7)))))
-                let b2 = min(1.0, max(0.0, voice * (0.65 + 0.35 * abs(sin(now * 4.9 + 0.8)))))
-                let b3 = min(1.0, max(0.0, voice * (0.58 + 0.42 * abs(cos(now * 3.8 + 1.4)))))
-                let b4 = min(1.0, max(0.0, voice * (0.48 + 0.52 * abs(sin(now * 2.9 + 2.1)))))
-                advanceSpectrum(target: AudioSpectrumFrame(bands: (b0, b1, b2, b3, b4)), dt: dt)
+                // The bands are the script's own, blended by which syllable is
+                // sounding: the top row lifts as a word with an `s` in it passes.
+                // They used to be the level multiplied by four sine waves, which
+                // moved four times faster than the voice and read as a machine.
+                advanceSpectrum(target: DictationScript.bands(at: previewTime), dt: dt)
                 updateRecording(elapsed: HUDClock.string(for: now - recordingStartedAt + 2))
             } else {
                 // The recorder reports the RMS of the last block of audio; the
@@ -1133,18 +2031,274 @@ final class HUD {
         model.phase = meter.phase
         model.ceiling = meter.ceiling
         model.time = reduceMotion ? 1.8 : now
-        VisualizerBars.stretch(
-            into: &barsBuffer,
-            history: historyBuffer,
-            spectrum: spectrumRing,
-            reveal: model.reveal
-        )
-        model.bars = barsBuffer
         model.pulse = reduceMotion ? 0 : now.truncatingRemainder(dividingBy: 1.1) / 1.1
         model.shimmer = reduceMotion ? 0 : now.truncatingRemainder(dividingBy: 1.4) / 1.4
         updateDwell(now: now)
         hasRenderedSincePresent = true
         debugTickCount += 1
+    }
+
+    /// Reads the pointer once the shape has arrived.
+    ///
+    /// The panel takes the mouse only over the card and only once it is there,
+    /// and a pointer that does not move produces no event: without this read, a
+    /// card that arrived under a still pointer would ignore the first click on
+    /// it.
+    private func refreshThePointerAfterArrival() {
+        guard debugPointerOverride == nil, !offscreen else { return }
+        updatePointer(at: NSEvent.mouseLocation)
+    }
+
+    /// Moves the card's appearance forward by `dt` seconds.
+    ///
+    /// It is the one place the appearance advances, so the frame loop and a test
+    /// that moves the clock itself cannot disagree about what a second of the
+    /// card's life is. The springs and the departure are the whole of it: the
+    /// shape's progress is the spring's value, `presence` is that value clamped,
+    /// and the dismissal is a shape that leaves after the content has gone.
+    ///
+    /// - Parameter dt: the time that passed, in seconds.
+    private func advanceAppearance(by dt: Double) {
+        if reduceMotion {
+            reduceFade.advance(dt)
+            emergeSpring.snap(to: reduceFade.value)
+            model.emergence = reduceFade.value
+            model.presence = reduceFade.value
+        } else {
+            emergeSpring.advance(dt)
+            model.emergence = emergeSpring.value
+            model.presence = min(max(emergeSpring.value, 0), 1)
+        }
+        contentSpring.advance(dt)
+        model.content = min(max(contentSpring.value, 0), 1)
+
+        if model.presence >= 0.98, !hasReadPointerSinceArrival {
+            hasReadPointerSinceArrival = true
+            refreshThePointerAfterArrival()
+        }
+
+        guard var dismissal else { return }
+        dismissal.elapsed += dt
+        if !dismissal.shapeStarted,
+           reduceMotion || model.content < 0.05 || dismissal.elapsed >= 0.12 {
+            dismissal.shapeStarted = true
+            if !reduceMotion {
+                emergeSpring.to(target: 0, duration: 0.36, bounce: 0)
+            }
+        }
+        let left = reduceMotion ? model.presence <= 0.001 : emergeSpring.value <= 0.001
+        if dismissal.shapeStarted, left || dismissal.elapsed >= 1 {
+            self.dismissal = nil
+            finishHiding()
+            return
+        }
+        self.dismissal = dismissal
+    }
+
+    /// How far the card's appearance can leave the rail from where it belongs, in points.
+    ///
+    /// SwiftUI hands the card's appearance scale and offset to the scroll view
+    /// it hosts as a frame transform, and AppKit answers each one by
+    /// re-deriving the rail's clip bounds, which it leaves inside its content.
+    /// The residue is bounded in points, not in device pixels: it measured 2.0
+    /// points on the hosted 1x runner and 2.0 points here on a 2 px/pt display,
+    /// which is four device pixels there. Half a point of headroom over that
+    /// measured maximum is the window, and the same window holds at every
+    /// scale, so a display that puts more pixels in a point cannot shorten it.
+    static let railResidueWindow: CGFloat = 2.5
+
+    /// Where the opening correction puts the rail, or `nil` when it leaves it.
+    ///
+    /// The correction only touches the appearance's own residue. A rail whose
+    /// clip sits inside the residue window of the position the person last gave
+    /// it is holding that residue over the position, and is put back on it. A
+    /// rail further than the window from that position was put there by
+    /// something else and is left alone, and one already on it has nothing to
+    /// correct.
+    ///
+    /// - Parameters:
+    ///   - origin: where the rail's clip is now.
+    ///   - intended: the position the person last wrote, or `.zero` when they
+    ///     wrote none.
+    ///   - window: the residue's reach, in points, from ``railResidueWindow``.
+    ///   - scrollRange: how far the rail's document travels on each axis.
+    /// - Returns: the origin to scroll to, held inside the document, or `nil`
+    ///   to leave the rail where it is.
+    static func railOpeningOrigin(
+        origin: CGPoint,
+        intended: CGPoint,
+        window: CGFloat,
+        scrollRange: CGSize
+    ) -> CGPoint? {
+        guard origin != intended,
+              abs(origin.x - intended.x) <= window,
+              abs(origin.y - intended.y) <= window
+        else { return nil }
+        return CGPoint(
+            x: min(max(intended.x, 0), max(0, scrollRange.width)),
+            y: min(max(intended.y, 0), max(0, scrollRange.height))
+        )
+    }
+
+    /// Puts the style rail back on the position the person gave it once the card has arrived.
+    ///
+    /// SwiftUI hands the card's appearance scale and offset to the scroll view
+    /// it hosts as a frame transform, and AppKit answers each one by
+    /// re-deriving the rail's clip bounds: the clip is left a couple of points
+    /// inside its content, a residue that depends on the frames the appearance
+    /// happened to take. Nothing else writes it back, so the card restores it
+    /// itself once per appearance.
+    ///
+    /// What it restores is the position the person last wrote, not zero. Every
+    /// way of reaching a position is the person's, whether it is the wheel, the
+    /// versions' arrows, the row's arrow keys, its VoiceOver actions or the
+    /// scroll a styled version opens on, and each of them records what it
+    /// wrote. A card with a style selected therefore needs no rule of its own:
+    /// the row opens on that style, which is one of the positions the person's
+    /// own reveal wrote.
+    private func restoreTheRailsOpeningPosition() {
+        guard let rail = cardRail() else { return }
+        observeTheRailsOrigin(of: rail)
+        trackTheRailsOriginToRest(rail)
+        guard !railPositionRestored, debugAppearanceAtRest else { return }
+        // The rail's frame changes while the card's own size springs to the
+        // layer's height, and a correction made during that would be answered by
+        // the transform that is still arriving. One quiet frame decides it.
+        guard rail.frame == lastRailFrame else {
+            lastRailFrame = rail.frame
+            return
+        }
+        railPositionRestored = true
+        lastRailFrame = nil
+        let clip = rail.contentView
+        let document = rail.documentView?.frame.size ?? .zero
+        let scrollRange = CGSize(
+            width: document.width - clip.bounds.width,
+            height: document.height - clip.bounds.height
+        )
+        guard let origin = Self.railOpeningOrigin(
+            origin: clip.bounds.origin,
+            intended: railIntendedOrigin,
+            window: Self.railResidueWindow,
+            scrollRange: scrollRange
+        ) else { return }
+        isCorrectingRailOrigin = true
+        clip.scroll(to: origin)
+        rail.reflectScrolledClipView(clip)
+        isCorrectingRailOrigin = false
+    }
+
+    /// The card's style rail, as the appearance correction reads it.
+    ///
+    /// The row is laid out again as a new view when a card arrives, which gives
+    /// it a new scroll view. One that is no longer in the card's tree is looked
+    /// for again.
+    ///
+    /// - Returns: the rail, or `nil` while the card draws none.
+    private func cardRail() -> NSScrollView? {
+        if let railScrollView, railScrollView.isDescendant(of: hostingView) {
+            return railScrollView
+        }
+        let rail = Self.chipRowScrollView(in: hostingView)
+        railScrollView = rail
+        return rail
+    }
+
+    /// Reads the rail's position from the clip the row scrolls, while the card is up.
+    ///
+    /// The row's scroll view is SwiftUI's, so the card never sees the call that
+    /// moves it: the versions' arrows, the row's arrow keys, its VoiceOver
+    /// actions and a styled version's scroll all write the clip from inside the
+    /// row, and the clip's own bounds change is the only report of them. The
+    /// appearance writes the clip the same way, so a write is taken as the
+    /// person's only when it carries the rail further than the residue can
+    /// reach: the appearance leaves a couple of device pixels, and every one of
+    /// those actions centres a chip, which travels tens of points.
+    ///
+    /// The row is laid out again as a new view when a version arrives, which
+    /// gives it a new clip to scroll, and the reveal that follows is one jump
+    /// on the turn the new row appears. A reveal over a rail whose clip the
+    /// observation kept is read here; one that lands on a clipped row before the
+    /// next frame is not, and it does not need reading: a reveal that far from
+    /// the residue is outside the correction's window and is left alone.
+    ///
+    /// - Parameter rail: the card's rail, as the appearance correction reads it.
+    private func observeTheRailsOrigin(of rail: NSScrollView) {
+        let clip = rail.contentView
+        if clip === railOriginClip, railOriginToken != nil { return }
+        if let railOriginToken {
+            NotificationCenter.default.removeObserver(railOriginToken)
+        }
+        railOriginClip = clip
+        clip.postsBoundsChangedNotifications = true
+        railOriginToken = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clip,
+            queue: .main
+        ) { [weak self, weak rail] _ in
+            MainActor.assumeIsolated {
+                guard let self, let rail else { return }
+                self.recordTheRailsOrigin(rail)
+            }
+        }
+    }
+
+    /// Whether a write to the rail's clip is a position the person chose.
+    ///
+    /// The appearance's residue moves the rail by at most the window on either
+    /// axis, so a write that carries it further on either one is a position of
+    /// its own. The rail scrolls sideways only and its clip's height never
+    /// moves, so the answer is the larger of the two axes' travel: a write that
+    /// moves the rail across counts even though nothing else moved.
+    ///
+    /// - Parameters:
+    ///   - origin: where the clip was written to.
+    ///   - intended: the position the person last wrote, or `.zero` when they
+    ///     wrote none.
+    ///   - window: the residue's reach, in points, from ``railResidueWindow``.
+    /// - Returns: whether the write is the person's position.
+    static func railWriteIsPersons(origin: CGPoint, intended: CGPoint, window: CGFloat) -> Bool {
+        max(abs(origin.x - intended.x), abs(origin.y - intended.y)) > window
+    }
+
+    /// Keeps the rail's position from a write that is the person's.
+    ///
+    /// A write further than the residue reaches qualifies, and every write after
+    /// it is kept too, at any distance, until the clip holds still for a frame:
+    /// the row's reveal arrives in steps and its last ones are short. The record
+    /// keeps following the rail after the opening correction has been decided,
+    /// because a person who reaches a style then has still moved the rail.
+    ///
+    /// - Parameter rail: the card's rail.
+    private func recordTheRailsOrigin(_ rail: NSScrollView) {
+        guard !isCorrectingRailOrigin else { return }
+        let origin = rail.contentView.bounds.origin
+        guard railOriginTracks || Self.railWriteIsPersons(
+            origin: origin,
+            intended: railIntendedOrigin,
+            window: Self.railResidueWindow
+        ) else { return }
+        railIntendedOrigin = origin
+        if !railOriginTracks {
+            railOriginTracks = true
+            railTrackedOrigin = nil
+        }
+    }
+
+    /// Ends the following once a frame passes without a write to the clip.
+    ///
+    /// The origin is read once per frame and held beside the frame before it: a
+    /// frame that wrote the clip moved it, and a frame that did not left it where
+    /// the last write put it.
+    ///
+    /// - Parameter rail: the card's rail.
+    private func trackTheRailsOriginToRest(_ rail: NSScrollView) {
+        guard railOriginTracks else { return }
+        let origin = rail.contentView.bounds.origin
+        if let previous = railTrackedOrigin, previous == origin {
+            railOriginTracks = false
+        }
+        railTrackedOrigin = origin
     }
 
     private func advanceSpectrum(target: AudioSpectrumFrame, dt: Double) {
@@ -1178,6 +2332,8 @@ final class HUD {
     /// it does not restart anything.
     private func setMode(_ mode: HUDMode, size: CGSize) {
         let changed = !Self.sameKind(mode, model.mode)
+        var wasTranscript = false
+        if case .transcript = model.mode { wasTranscript = true }
         model.mode = mode
         model.cardSize = size
         if changed {
@@ -1195,6 +2351,11 @@ final class HUD {
             model.assistantAllow = nil
             model.assistantCancel = nil
             panel.allowsKey = false
+            if wasTranscript {
+                if case .transcript = mode {} else {
+                    onTranscriptEnded?()
+                }
+            }
         }
         guard changed else { return }
         contentSpring.snap(to: 0)
@@ -1230,10 +2391,27 @@ final class HUD {
     ///
     /// The screen under the pointer wins, because that is the display the person
     /// is looking at; `NSScreen.main` is next and the first screen is the last
-    /// resort. `HUDPlacement` clamps the frame, so the panel cannot be placed
-    /// outside every screen even when a display is unplugged between two
-    /// presentations.
+    /// resort. The panel now spans from the top edge of that display down, so the
+    /// shape has the whole of the menu bar's strip to be drawn in; the card's
+    /// rest rectangle is the one it always had, which
+    /// ``HUDEmergence/placement(screen:panelSize:topInset:shadowPadding:)``
+    /// guarantees by giving the card the room the panel gained as its inset.
+    /// A display that cannot be read leaves the card with no notch to pour out
+    /// of, and it fades.
     private func placePanel() {
+        if let debugPlacementScreen {
+            apply(
+                HUDEmergence.placement(
+                    screen: debugPlacementScreen,
+                    panelSize: Self.panelSize,
+                    topInset: Self.topInset,
+                    shadowPadding: Self.shadowPadding
+                ),
+                index: 0,
+                screens: 1
+            )
+            return
+        }
         if offscreen {
             panel.setFrame(
                 NSRect(
@@ -1244,6 +2422,7 @@ final class HUD {
                 ),
                 display: false
             )
+            placement = nil
             return
         }
 
@@ -1260,27 +2439,101 @@ final class HUD {
         screens.indices.contains(index)
         else { return }
 
-        let screen = screens[index]
-        let frame = HUDPlacement.frame(
-            visibleFrame: screen.visibleFrame,
-            panelSize: Self.panelSize,
-            topInset: Self.topInset
+        apply(
+            HUDEmergence.placement(
+                screen: Self.geometry(of: screens[index]),
+                panelSize: Self.panelSize,
+                topInset: Self.topInset,
+                shadowPadding: Self.shadowPadding
+            ),
+            index: index,
+            screens: screens.count
         )
-        panel.setFrame(frame, display: false)
+    }
 
-        let visible = screen.visibleFrame
+    /// The near geometry of a display, as the emergence reads it.
+    ///
+    /// - Parameter screen: the display.
+    /// - Returns: its frame, its usable frame, the depth of its notch and the
+    ///   two areas beside it.
+    static func geometry(of screen: NSScreen) -> HUDEmergence.Screen {
+        HUDEmergence.Screen(
+            frame: screen.frame,
+            visibleFrame: screen.visibleFrame,
+            safeTop: screen.safeAreaInsets.top,
+            leftArea: screen.auxiliaryTopLeftArea,
+            rightArea: screen.auxiliaryTopRightArea
+        )
+    }
+
+    /// Places the panel for one display and tells the card where its notch is.
+    ///
+    /// The frame is read back after it is set: AppKit constrains a window to keep
+    /// part of it on a screen, and a frame that reached the top edge of the
+    /// display must not be pulled back under the menu bar. ``HUDPanel`` answers
+    /// that constraint with the frame it was given, and the read back is what
+    /// proves the panel really is where the shape is drawn.
+    ///
+    /// - Parameters:
+    ///   - placement: where the panel is and where its notch is.
+    ///   - index: the display's index, for the log.
+    ///   - screens: how many displays there are, for the log.
+    private func apply(_ placement: HUDEmergence.Placement, index: Int, screens: Int) {
+        panel.setFrame(placement.panelFrame, display: false)
+        let accepted = panel.frame
+        let constrained = abs(accepted.origin.y - placement.panelFrame.origin.y) > 0.5
+            || abs(accepted.height - placement.panelFrame.height) > 0.5
+        if constrained {
+            Log.shared.warn("hud.placed.constrained", [
+                "asked_y": .double(placement.panelFrame.origin.y),
+                "asked_height": .double(placement.panelFrame.height),
+                "granted_y": .double(accepted.origin.y),
+                "granted_height": .double(accepted.height),
+            ])
+        }
+
+        let changed = self.placement != placement
+        self.placement = placement
+        // The notch is part of the tree the card draws, so the panel's content is
+        // rebuilt when the display it is on changes. A presentation that lands on
+        // the same display rebuilds nothing: the card's scroll views keep their
+        // positions.
+        if changed {
+            hostingView?.rootView = makeRootView()
+        }
+
+        let visible = placement.screen.visibleFrame
         Log.shared.info("hud.placed", [
             "screen_index": .int(index),
-            "screens": .int(screens.count),
-            "x": .double(frame.origin.x),
-            "y": .double(frame.origin.y),
-            "width": .double(frame.width),
-            "height": .double(frame.height),
+            "screens": .int(screens),
+            "x": .double(placement.panelFrame.origin.x),
+            "y": .double(placement.panelFrame.origin.y),
+            "width": .double(placement.panelFrame.width),
+            "height": .double(placement.panelFrame.height),
             "visible_x": .double(visible.origin.x),
             "visible_y": .double(visible.origin.y),
             "visible_width": .double(visible.width),
             "visible_height": .double(visible.height),
+            "card_top_inset": .double(placement.cardTopInset),
+            "notch_x": .double(placement.source.rect.origin.x),
+            "notch_width": .double(placement.source.rect.width),
+            "notch_height": .double(placement.source.rect.height),
+            "constrained": .bool(constrained),
         ])
+    }
+
+    /// The card's rectangle on the screen, in screen coordinates.
+    ///
+    /// The panel reaches the display's top edge, so the card hangs by the
+    /// placement's inset rather than by the shadow margin alone. Every reader of
+    /// the card's place on the screen — the pointer, the wheel, the swipe — reads
+    /// it here, so none of them can disagree with what is drawn.
+    private var cardFrame: CGRect {
+        HUDPlacement.cardFrame(
+            panelFrame: panel.frame,
+            cardSize: model.cardSize,
+            topInset: placement?.cardTopInset ?? Self.shadowPadding
+        )
     }
 
     private func observeScreens() {
@@ -1369,14 +2622,36 @@ final class HUD {
     ///
     /// - Parameter card: the layer, or `nil` when the take carries no rewrite.
     func setRewrite(_ card: RewriteCard?) {
+        let previous = model.rewrite
+        // The arc that says a style is running leaves over 140 ms rather than in
+        // the frame the phase changed, so the end is dated here, where every way
+        // a run can end passes through exactly once.
+        if card?.isStreaming == true {
+            model.rewriteEnding = nil
+        } else if previous?.isStreaming == true, let styleID = previous?.activeStyleID {
+            model.rewriteEnding = RewriteEnding(styleID: styleID, at: CACurrentMediaTime())
+        }
         model.rewrite = card
         guard case .transcript(let text, _, _, _) = model.mode else { return }
         model.cardSize = Self.transcriptSize(text: text, rewrite: card)
-        guard card != nil else { return }
-        // A card with something to do on it stays long enough to read and to
-        // choose, however short the configured dwell is.
+        guard let card else {
+            // The rail is gone with the layer, so a gesture that belonged to it
+            // cannot carry into whatever the card shows next.
+            wheelGesture.cancel()
+            rewriteSwipe.cancel()
+            return
+        }
+        // A card that holds versions stays for a minute from the latest
+        // interaction, so there is time to read, compare, copy and paste. The
+        // countdown is suspended while the pointer is over it or a request is
+        // streaming; it is a clock, not a window that never closes.
         let target = max(dwellSeconds, HUDDwell.rewriteSeconds)
-        if dwellClock == nil || (dwellClock?.duration ?? 0) < target {
+        let changed = previous == nil
+            || previous?.versions.count != card.versions.count
+            || previous?.selectedVersionID != card.selectedVersionID
+            || previous?.phase != card.phase
+            || previous?.note != card.note
+        if dwellClock == nil || (dwellClock?.duration ?? 0) < target || changed {
             startDwelling(duration: target)
         }
     }
@@ -1408,17 +2683,46 @@ final class HUD {
                 height: HUDTheme.headerHeight + 1 + body
             )
         }
-        let bodyText = rewrite.showsRewrite ? rewrite.rewrite : text
-        var contentHeight = transcriptContentHeight(text: bodyText.isEmpty ? text : bodyText)
-        if rewrite.dimsOriginal {
-            contentHeight += CGFloat(HUDRewriteLayout.dimmedOriginalLines)
-                * HUDRewriteLayout.dimmedLineHeight
-                + HUDRewriteLayout.dimmedGap
+        let extra = rewriteExtraHeight(rewrite)
+        let contentHeight: CGFloat
+        if rewrite.isStreaming {
+            // The body is measured from the words that were there before the
+            // request. A draft that arrives one token at a time may not resize
+            // the card: the number is the same for the first token and the
+            // hundredth, and the draft scrolls in the room the status block and
+            // the summary leave.
+            contentHeight = HUDRewriteLayout.streamingContentHeight(
+                originalContentHeight: transcriptContentHeight(
+                    text: rewrite.original.isEmpty ? text : rewrite.original
+                )
+            )
+        } else {
+            let bodyText = rewrite.bodyText
+            contentHeight = transcriptContentHeight(text: bodyText.isEmpty ? text : bodyText)
         }
-        let body = HUDTranscript.bodyHeight(contentHeight: contentHeight)
+        // A failure is reported on the card that is already open: its note
+        // takes its line out of the body's viewport instead of growing the
+        // card, so the chips cannot be pushed past the bottom edge in the frame
+        // the failure arrives. Every other note grows the card as it always has.
+        let noteReserve = rewrite.phase == .failed && rewrite.note != nil
+            ? HUDRewriteLayout.extraHeight(
+                showsChips: rewrite.showsChips,
+                showsActions: false,
+                noteLines: 1
+            ) - HUDRewriteLayout.extraHeight(
+                showsChips: rewrite.showsChips,
+                showsActions: false,
+                noteLines: 0
+            )
+            : 0
+        // One budget for the header, the body and every row under it.
+        let body = min(
+            HUDTranscript.bodyHeight(contentHeight: contentHeight),
+            HUDRewriteLayout.maximumBodyHeight(extraHeight: extra - noteReserve)
+        ) - noteReserve
         return CGSize(
             width: HUDState.transcriptWidth,
-            height: HUDTheme.headerHeight + 1 + body + rewriteExtraHeight(rewrite)
+            height: HUDTheme.headerHeight + 1 + max(0, body) + extra
         )
     }
 
@@ -1445,7 +2749,7 @@ final class HUD {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = HUDTheme.transcriptLineSpacing
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 15, weight: .regular),
+            .font: DotType.nsFont(15, .regular),
             .paragraphStyle: paragraph,
         ]
         let rect = (text as NSString).boundingRect(
@@ -1465,7 +2769,7 @@ final class HUD {
     ///     the text out of the card instead of sitting beside it.
     static func messageWidth(text: String, actionTitle: String? = nil) -> CGFloat {
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+            .font: DotType.nsFont(13, .medium),
         ]
         let textWidth = (text as NSString).size(withAttributes: attributes).width
         let actionWidth = actionTitle.map { HUDView.messageActionWidth(title: $0) } ?? 0
@@ -1532,7 +2836,7 @@ final class HUD {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 2
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 14, weight: .regular),
+            .font: DotType.nsFont(14, .regular),
             .paragraphStyle: paragraph,
         ]
         let rect = (summary as NSString).boundingRect(

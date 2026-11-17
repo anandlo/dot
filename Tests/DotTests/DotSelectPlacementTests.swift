@@ -87,14 +87,60 @@ final class DotSelectPlacementTests: XCTestCase {
         XCTAssertEqual(DotSelectPlacement.maxWidth, 360)
     }
 
-    func testTheHeightStopsAtTheCapAndThenScrolls() {
+    /// A list taller than the cap stops on whole rows and the title line of the
+    /// next one: a card cut at its last whole row reads as the end of the list,
+    /// and a card cut through the middle of the next row's letters reads as a
+    /// drawing mistake. The hint is the height of that row's title line, so the
+    /// word is legible and nothing below it is drawn.
+    func testTheHeightStopsOnWholeRowsAndTheNextRowsTitle() {
         let size = DotSelectPlacement.size(
             triggerWidth: 220,
             widestRow: 100,
             rowHeights: Array(repeating: 28, count: 20)
         )
-        XCTAssertEqual(size.height, DotSelectPlacement.maxHeight)
+        let whole = 10 * DotSelectPlacement.rowHeight
+        let expected = whole + DotSelectPlacement.hint + 2 * DotSelectPlacement.inset
+        XCTAssertEqual(size.height, expected)
+        XCTAssertEqual(size.height, 310)
+        XCTAssertLessThanOrEqual(size.height, DotSelectPlacement.maxHeight)
+        XCTAssertEqual(DotSelectPlacement.hint, 22, "the hint is one title line, not half a row")
         XCTAssertEqual(DotSelectPlacement.maxHeight, 320)
+    }
+
+    /// The cap holds with the mixed rows a settings page produces: a title-only
+    /// row is 28 points, a row with a subtitle 40, and the card never grows past
+    /// its maximum whatever the mix.
+    func testTheCapHoldsForMixedRows() {
+        let mixes: [[CGFloat]] = [
+            Array(repeating: 28, count: 20),
+            Array(repeating: 40, count: 20),
+            (0..<20).map { $0.isMultiple(of: 3) ? 40 : 28 },
+            [40, 28, 28, 40, 40, 28, 40, 28, 28, 40, 40, 28, 28, 40, 28, 40, 28, 28, 40, 40],
+        ]
+        for rows in mixes {
+            let size = DotSelectPlacement.size(triggerWidth: 220, widestRow: 100, rowHeights: rows)
+            XCTAssertLessThanOrEqual(size.height, DotSelectPlacement.maxHeight, "a \(rows.count) row list is too tall")
+            XCTAssertGreaterThan(size.height, 2 * DotSelectPlacement.inset + DotSelectPlacement.hint)
+            let whole = size.height - DotSelectPlacement.hint - 2 * DotSelectPlacement.inset
+            XCTAssertEqual(whole, whole.rounded(), "the card stops on a whole row")
+        }
+    }
+
+    /// The next row is cut below its title and above its detail, so the title is
+    /// whole and the detail line is absent rather than sliced.
+    func testTheHintCoversATitleLineAndNoMore() {
+        XCTAssertEqual(DotSelectPlacement.hint, 22, "the title line, and not the detail line under it")
+        XCTAssertLessThan(DotSelectPlacement.hint, DotSelectPlacement.rowHeight)
+        XCTAssertGreaterThan(DotSelectPlacement.hint, DotSelectPlacement.rowHeight / 2)
+    }
+
+    /// A list that fits is exactly its rows and the inset, with no hint.
+    func testAShortListShowsNoHalfRow() {
+        let rowHeights: [CGFloat] = [28, 40, 28]
+        XCTAssertEqual(
+            DotSelectPlacement.size(triggerWidth: 220, widestRow: 100, rowHeights: rowHeights).height,
+            96 + 2 * DotSelectPlacement.inset
+        )
     }
 
     func testTheHeightIsTheRowsPlusTheInset() {

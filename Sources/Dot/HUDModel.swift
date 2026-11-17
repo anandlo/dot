@@ -23,6 +23,14 @@ final class HUDModel: ObservableObject {
     /// How present the card is: `0` is gone, `1` is settled. The spring in
     /// the HUD moves it, so a frame is never a jump.
     @Published var presence: Double = 0
+    /// How far the shape has come out of the notch, from `0` to `1` and past it
+    /// while the spring overshoots.
+    ///
+    /// ``presence`` is this value clamped, and is what every other reader of the
+    /// card takes. The shape itself reads this one, because the overshoot is
+    /// spent on the card's own height: the settle reads as liquid without the
+    /// card ever passing its rest rectangle.
+    @Published var emergence: Double = 0
     /// How settled the content is: `0` is fresh, `1` is shown. Every state
     /// change restarts it, which is what makes the card's content arrive
     /// rather than appear.
@@ -36,12 +44,6 @@ final class HUDModel: ObservableObject {
     /// never normalises the heights: a bar's height is always the absolute level
     /// on the dBFS scale, and only the warmth of the colour knows about it.
     @Published var ceiling: Double = 1
-    /// The height of every bar of the visualiser, from `0` to `1`, left to right.
-    ///
-    /// It is computed once per tick by ``VisualizerBars`` into a buffer the HUD
-    /// keeps, so the canvas draws measurements instead of a single level
-    /// repeated across the card.
-    @Published var bars: [Double] = []
     /// How much of the shape has arrived, from `0` to `1`.
     @Published var reveal: Double = 0
     /// The half height of every column of the waveform, in points.
@@ -107,6 +109,16 @@ final class HUDModel: ObservableObject {
     /// it, so a chip can never act on words that are no longer on screen.
     @Published var rewrite: RewriteCard?
 
+    /// The run that has just stopped: the style it was and the moment it ended.
+    ///
+    /// The chip's arc arrives with the click, because it is drawn from the phase.
+    /// This is what lets it leave over ``HUDRewriteActivity/endFadeDuration``
+    /// instead of vanishing in the frame the phase changed, and it names the
+    /// style so exactly one chip fades: the one the person clicked. It is written
+    /// where the card's phase is mirrored into the model, so every way a run can
+    /// end — completion, cancel, failure, a new take — records it once.
+    @Published var rewriteEnding: RewriteEnding?
+
     /// What the confirmation card's allow button does.
     ///
     /// The closures live on the model because the card that draws the buttons
@@ -159,4 +171,16 @@ final class HUDModel: ObservableObject {
             break
         }
     }
+}
+
+/// A rewrite run that is leaving the card.
+///
+/// It is a value rather than two optional fields on the model so a chip cannot
+/// read one of them from the run that just started and the other from the one
+/// that just ended.
+struct RewriteEnding: Equatable, Sendable {
+    /// The id of the style that was running.
+    let styleID: String
+    /// When it stopped, on the card's clock.
+    let at: Double
 }

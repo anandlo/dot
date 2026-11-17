@@ -16,6 +16,18 @@ struct HUDActions {
     var copy: (() -> Void)? = nil
     /// Pastes the transcript again.
     var paste: (() -> Void)? = nil
+    /// Copies one reviewed version, named at the moment of the click.
+    var copyVersion: ((String) -> Void)? = nil
+    /// Writes one reviewed version where the transcript was, or copies it.
+    var pasteVersion: ((String) -> Void)? = nil
+    /// Selects the original version.
+    var selectOriginal: (() -> Void)? = nil
+    /// Selects the version before the current one.
+    var previousVersion: (() -> Void)? = nil
+    /// Selects the version after the current one.
+    var nextVersion: (() -> Void)? = nil
+    /// Runs the selected version's style again, appending a version.
+    var rerunRewrite: (() -> Void)? = nil
     /// Opens the history window.
     var history: (() -> Void)? = nil
     /// Opens the settings window.
@@ -32,7 +44,8 @@ struct HUDActions {
     var rewrite: ((RewriteStyle) -> Void)? = nil
     /// Stops the rewrite that is running.
     var cancelRewrite: (() -> Void)? = nil
-    /// Puts the original back where the rewrite went.
+    /// Legacy anchored undo. Kept for the dead internal path; a cursor paste
+    /// never sets `canUndo`, so the button is not drawn.
     var undoRewrite: (() -> Void)? = nil
     /// Applies a rewrite the check refused.
     var applyRewriteAnyway: (() -> Void)? = nil
@@ -56,8 +69,34 @@ struct HUDView: View {
     /// What the island's buttons do. An action without a closure is not
     /// drawn; the app wires History, the preview leaves it out.
     var actions = HUDActions()
+    /// Whether the person asked for reduced motion, as the environment says.
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    /// A value the documentation renders can set without a system preference.
+    var reduceMotionOverride: Bool? = nil
+    /// How far the halo's ring ink is mixed toward the card's ink on the glass
+    /// material.
+    ///
+    /// It is handed to the card's waveform unchanged, so a render of the real
+    /// card can be taken at every rung of the ladder the ring's brightness is
+    /// chosen from. The app passes nothing and the waveform's own default holds,
+    /// see ``HUDWaveform/Halo/glassRingLift``.
+    var glassRingLift: Double = HUDWaveform.Halo.glassRingLift
+    /// How much more opaque the halo's ring ink is drawn on the glass material.
+    ///
+    /// It is handed to the card's waveform unchanged, for the reason
+    /// ``glassRingLift`` is, see ``HUDWaveform/Halo/glassRingInkGain``.
+    var glassRingInkGain: Double = HUDWaveform.Halo.glassRingInkGain
+    /// Where the shape pours out of the notch, or `nil` for a card that simply
+    /// appears where it rests.
+    ///
+    /// The HUD hands this in whenever it knows the display it is on, and the card
+    /// then arrives by pouring out of that display's notch rather than by fading.
+    /// A card with no display behind it — a still, a documentation render, the
+    /// HUD a headless test keeps off the screens — keeps the fade.
+    var emergence: HUDEmergence.Scene? = nil
 
-    @Environment(\.accessibilityReduceMotion) var reduceMotion
+    /// The motion setting the card obeys.
+    var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: HUDTheme.cornerRadius, style: .continuous)
@@ -67,38 +106,154 @@ struct HUDView: View {
         animated && !reduceMotion
     }
 
+    /// The shadow the card casts, chosen by the fill it is drawn on.
+    ///
+    /// Liquid Glass has its own edge and sits lighter on the desktop than the
+    /// filled shape it replaces, so the glass card casts a shorter, softer
+    /// shadow than the opaque one. The Black card and every Mac without Liquid
+    /// Glass keep the shadow they had. A shape that is still fused to the notch
+    /// casts what is left of it: the shadow belongs to the card, and while the
+    /// black is still pouring out of the screen there is no card to cast one.
+    ///
+    /// - Parameter mix: how much of the card's own surface has replaced the
+    ///   black, from `0` to `1`.
+    /// - Returns: the colour, the radius and the vertical offset of the shadow.
+    private func shadow(_ mix: Double = 1) -> (color: Color, radius: CGFloat, y: CGFloat) {
+        guard showsShadow else { return (.clear, 0, 0) }
+        let alpha: Double
+        let radius: CGFloat
+        let offset: CGFloat
+        if HUDSurface.drawsSystemGlass(model.material) {
+            alpha = 0.30
+            radius = 18
+            offset = 8
+        } else {
+            alpha = 0.55
+            radius = 22
+            offset = 10
+        }
+        return (Color.black.opacity(alpha * min(max(mix, 0), 1)), radius, offset)
+    }
+
     var body: some View {
-        content
+        if let emergence {
+            pouring(emergence)
+        } else {
+            fading
+        }
+    }
+
+    /// The card that arrives by fading, drawn where it rests.
+    ///
+    /// This is the appearance of a card with no display to pour out of: a still,
+    /// a documentation render, and the HUD the headless test keeps off the
+    /// screens.
+    private var fading: some View {
+        let shade = shadow()
+        return content
             .opacity(model.content)
             .scaleEffect(0.99 + 0.01 * model.content)
             .offset(y: (1 - model.content) * 6)
             .frame(width: model.cardSize.width, height: model.cardSize.height)
             .background(HUDSurface(material: model.material))
             .clipShape(shape)
-            .overlay {
-                if model.visualizer == .haloEdge, case .recording = model.mode {
-                    HaloEdgeBorder(time: model.time, pulse: model.pulse, level: model.level)
-                }
-            }
-            .overlay(alignment: .topTrailing) {
-                if let hovered = model.hoveredAction {
-                    HUDActionTooltip(action: hovered, material: model.material)
-                        .offset(x: tooltipOffsetX(for: hovered), y: -25)
-                        .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
-                }
-            }
+            .overlay(alignment: .topTrailing) { tooltip }
             .compositingGroup()
-            .shadow(
-                color: showsShadow ? Color.black.opacity(0.55) : .clear,
-                radius: showsShadow ? 22 : 0,
-                x: 0,
-                y: showsShadow ? 10 : 0
-            )
+            .shadow(color: shade.color, radius: shade.radius, x: 0, y: shade.y)
             .opacity(model.presence)
             .scaleEffect(0.94 + 0.06 * model.presence)
             .offset(y: (1 - model.presence) * -10)
             .blur(radius: (1 - model.presence) * 7)
             .animation(animation(.shape), value: model.cardSize)
+    }
+
+    /// The card that pours out of the notch and back into it.
+    ///
+    /// Three layers, all driven by the same progress. The first is the shape
+    /// itself, the notch's black carried down the screen as one piece: the card's
+    /// own rectangle and the neck that still joins it to the notch are subpaths
+    /// of one path and one fill. The second is the card's material, held to that
+    /// rectangle. The third is the card's content, laid out at the size the card
+    /// rests at and clipped to the card's own shape, which never changes: the
+    /// words belong to the card and not to the shape, they are not drawn at all
+    /// until the shape has all but arrived, and a clip that moved with the shape
+    /// would drag the scroll view it hosts out of its position by a point or two.
+    /// As the shape nears its rest the black gives way to the material, which is
+    /// what turns a hole in the screen into a surface; at rest the black is gone
+    /// and the card is the card it always was.
+    ///
+    /// - Parameter scene: where the notch is and where the card's rest
+    ///   rectangle begins.
+    /// - Returns: the card, drawn at this moment of the emergence.
+    private func pouring(_ scene: HUDEmergence.Scene) -> some View {
+        let rest = HUDEmergence.Rest(
+            rect: CGRect(origin: .zero, size: model.cardSize),
+            cornerRadius: HUDTheme.cornerRadius
+        )
+        let source = scene.source(inCardOf: model.cardSize)
+        let progress = HUDEmergence.progress(model.emergence, reduceMotion: reduceMotion)
+        let piece = HUDEmergence.shape(progress: progress, source: source, rest: rest)
+        let shade = shadow(piece.mix)
+        return ZStack(alignment: .topLeading) {
+            HUDEmergence.path(piece)
+                .fill(Color(red: 0, green: 0, blue: 0))
+                .opacity(1 - piece.mix)
+
+            HUDSurface(material: model.material)
+                .opacity(piece.mix)
+                .frame(width: piece.card.width, height: piece.card.height)
+                .clipShape(clip(piece, rest: rest))
+                .offset(x: piece.card.minX, y: piece.card.minY)
+
+            content
+                .opacity(HUDEmergence.contentOpacity(
+                    content: model.content,
+                    progress: progress
+                ))
+                .scaleEffect(0.99 + 0.01 * model.content)
+                .offset(y: (1 - model.content) * 6)
+                .frame(width: model.cardSize.width, height: model.cardSize.height)
+                .clipShape(shape)
+                .overlay(alignment: .topTrailing) { tooltip }
+        }
+        .frame(
+            width: model.cardSize.width,
+            height: model.cardSize.height,
+            alignment: .topLeading
+        )
+        .compositingGroup()
+        .shadow(color: shade.color, radius: shade.radius, x: 0, y: shade.y)
+        .animation(animation(.shape), value: model.cardSize)
+    }
+
+    /// The clip of the card's material while the card is emerging.
+    ///
+    /// At rest it is the card's own shape, the continuous rounded rectangle the
+    /// card has always been, so the last frame of the emergence is the card the
+    /// product draws and nothing else. While the shape is travelling it is the
+    /// shape's own rectangle, with the radius that rectangle can hold.
+    ///
+    /// - Parameters:
+    ///   - piece: the shape at this moment.
+    ///   - rest: the card at rest.
+    /// - Returns: the shape the material is clipped to.
+    private func clip(_ piece: HUDEmergence.Shape, rest: HUDEmergence.Rest) -> AnyShape {
+        guard !piece.isRest(rest) else { return AnyShape(shape) }
+        return AnyShape(Path(roundedRect: piece.card, cornerRadius: piece.cornerRadius))
+    }
+
+    /// The tooltip of the button under the pointer, when there is one.
+    @ViewBuilder
+    private var tooltip: some View {
+        if let hovered = model.hoveredAction {
+            HUDActionTooltip(
+                action: hovered,
+                material: model.material,
+                versioned: model.rewrite != nil
+            )
+                .offset(x: tooltipOffsetX(for: hovered), y: -25)
+                .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
+        }
     }
 
     private func animation(_ kind: Kind) -> Animation? {
@@ -155,7 +310,7 @@ struct HUDView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
                 Image(systemName: "sparkle")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(DotType.font(11, .semibold))
                     .foregroundStyle(HUDTheme.live)
                     .opacity(0.55 + 0.45 * model.pulse)
                     .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
@@ -171,7 +326,7 @@ struct HUDView: View {
 
                 Text(elapsed)
                     .font(HUDTheme.clockFont)
-                    .foregroundStyle(HUDTheme.ink2)
+                    .foregroundStyle(HUDTheme.clockInk(model.material))
 
                 Color.clear.frame(width: 14)
 
@@ -185,8 +340,10 @@ struct HUDView: View {
                     level: model.level,
                     pulse: model.pulse,
                     ceiling: model.ceiling,
-                    bars: model.bars,
-                    reveal: model.reveal
+                    reveal: model.reveal,
+                    material: model.material,
+                    glassRingLift: glassRingLift,
+                    glassRingInkGain: glassRingInkGain
                 )
                 .frame(maxWidth: .infinity)
                 .frame(height: HUDTheme.waveformHeight)
@@ -204,7 +361,7 @@ struct HUDView: View {
     private func assistantLine(text: String, color: Color) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "sparkle")
-                .font(.system(size: 11, weight: .semibold))
+                .font(DotType.font(11, .semibold))
                 .foregroundStyle(HUDTheme.live)
 
             Text(text)
@@ -240,7 +397,7 @@ struct HUDView: View {
 
                 if state == .speaking {
                     Image(systemName: "speaker.wave.2")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(DotType.font(11, .semibold))
                         .foregroundStyle(HUDTheme.live)
                         .opacity(0.55 + 0.45 * abs(sin(model.time * .pi * 1.6)))
                 }
@@ -296,7 +453,7 @@ struct HUDView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: request.connectorID.symbol)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(DotType.font(14, .semibold))
                     .foregroundStyle(HUDTheme.ink2)
 
                 Text(request.connectorName.uppercased())
@@ -312,7 +469,7 @@ struct HUDView: View {
             Color.clear.frame(height: HUDConfirmLayout.rowGap)
 
             Text(request.summary)
-                .font(.system(size: 14, weight: .regular))
+                .font(DotType.font(14, .regular))
                 .foregroundStyle(HUDTheme.ink)
                 .lineLimit(HUDConfirmLayout.maximumSummaryLines)
                 .lineSpacing(2)
@@ -363,7 +520,7 @@ struct HUDView: View {
 
                 Text(elapsed)
                     .font(HUDTheme.clockFont)
-                    .foregroundStyle(HUDTheme.ink2)
+                    .foregroundStyle(HUDTheme.clockInk(model.material))
 
                 Color.clear.frame(width: 14)
 
@@ -377,8 +534,10 @@ struct HUDView: View {
                     level: model.level,
                     pulse: model.pulse,
                     ceiling: model.ceiling,
-                    bars: model.bars,
-                    reveal: model.reveal
+                    reveal: model.reveal,
+                    material: model.material,
+                    glassRingLift: glassRingLift,
+                    glassRingInkGain: glassRingInkGain
                 )
                 .frame(maxWidth: .infinity)
                 .frame(height: HUDTheme.waveformHeight)
@@ -478,38 +637,101 @@ struct HUDView: View {
         destination: String?
     ) -> some View {
         let card = model.rewrite
+        let rewriting = card?.activeStyleTitle
+        // The arc outlives the phase by the 140 ms the card gives it to leave.
+        // The header holds its in-progress face for those frames, because a
+        // delivery mark drawn over a ring that is still on screen would name
+        // the end while the card is still showing the work.
+        let teardownFade = model.rewriteEnding.map { ending in
+            HUDRewriteActivity.arcFade(
+                isRunning: false,
+                endedAt: ending.at,
+                time: model.time,
+                reduceMotion: reduceMotion
+            )
+        } ?? 0
+        let announcing = rewriting != nil || teardownFade > 0
+        let failed = card?.phase == .failed
         return VStack(spacing: 0) {
             HStack(spacing: 10) {
+                // While a style runs the badge is the work: a ring drawn from the
+                // same arc, the same clock and the same angle as the chip that
+                // was clicked, with no fill and no glyph. The check mark belongs
+                // to a delivery that has already happened, and drawing it over a
+                // request that is still arriving claims an answer.
                 ZStack {
-                    Circle()
-                        .fill(delivery.color.opacity(0.14))
+                    if announcing {
+                        RewriteArcRing(
+                            shape: Circle(),
+                            head: reduceMotion
+                                ? HUDRewriteActivity.reducedMotionHeadDegrees
+                                : HUDRewriteActivity.arcHeadAngle(
+                                    time: model.time,
+                                    reduceMotion: false
+                                ),
+                            trail: HUDRewriteActivity.arcTrail(reduceMotion: reduceMotion),
+                            fade: rewriting != nil ? 1 : teardownFade,
+                            showsGlow: false
+                        )
                         .frame(width: HUDTheme.badgeSize, height: HUDTheme.badgeSize)
-                    Image(systemName: delivery.glyph)
-                        .font(.system(size: 10.5, weight: .bold))
-                        .foregroundStyle(delivery.color)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(Text(Self.rewritingAccessibilityLabel(
+                            ringStyleTitle(card: card, running: rewriting)
+                        )))
+                    } else if failed {
+                        // A failure is not a delivery that happened and not a
+                        // finished version to check: it is the request's own
+                        // verdict, and it takes the badge until the card is
+                        // closed or another style is asked for.
+                        Circle()
+                            .fill(HUDTheme.live.opacity(0.14))
+                            .frame(width: HUDTheme.badgeSize, height: HUDTheme.badgeSize)
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(DotType.font(10.5, .bold))
+                            .foregroundStyle(HUDTheme.live)
+                    } else {
+                        Circle()
+                            .fill(delivery.color.opacity(0.14))
+                            .frame(width: HUDTheme.badgeSize, height: HUDTheme.badgeSize)
+                        Image(systemName: delivery.glyph)
+                            .font(DotType.font(10.5, .bold))
+                            .foregroundStyle(HUDTheme.statusInk(
+                                delivery.color,
+                                material: model.material
+                            ))
+                    }
                 }
 
                 // The application the words went into, when there is one. The
                 // title is already cut to the room the header has, so a long
                 // name can never push the clock or the buttons out of the card.
-                Text(headerTitle(for: card, delivery: delivery, destination: destination))
-                    .font(HUDTheme.labelFont)
-                    .tracking(HUDTheme.labelTracking)
-                    .foregroundStyle(delivery.color)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: headerTitleCap(for: card), alignment: .leading)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .accessibilityLabel(Text(
-                        headerAccessibilityLabel(
-                            for: card,
-                            delivery: delivery,
-                            destination: destination
-                        )
-                    ))
+                // Nothing is drawn in its slot while a style runs: the ring says
+                // what the header used to have to spell out, and the caps row
+                // that repeated it was a label over a control that already says
+                // it.
+                if !announcing {
+                    Text(headerTitle(for: card, delivery: delivery, destination: destination))
+                        .font(HUDTheme.labelFont)
+                        .tracking(HUDTheme.labelTracking)
+                        .foregroundStyle(HUDTheme.statusInk(
+                            failed ? HUDTheme.live : delivery.color,
+                            material: model.material
+                        ))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: headerTitleCap(for: card), alignment: .leading)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .accessibilityLabel(Text(
+                            headerAccessibilityLabel(
+                                for: card,
+                                delivery: delivery,
+                                destination: destination
+                            )
+                        ))
+                }
 
-                if let card, case .applied = card.phase {
-                    RewriteFaithfulBadge(warning: card.warning)
+                if let card, !announcing, Self.showsCheckBadge(card) {
+                    RewriteCheckBadge(warning: card.warning)
                 }
 
                 // The surface the words were written for, named on the card.
@@ -525,9 +747,11 @@ struct HUDView: View {
 
                 Spacer(minLength: 8)
 
+                // The clock is read at a glance against the card's dark
+                // material.
                 Text(elapsed)
                     .font(HUDTheme.clockFont)
-                    .foregroundStyle(HUDTheme.ink2)
+                    .foregroundStyle(HUDTheme.clockInk(model.material))
                     .fixedSize()
 
                 if card?.canUndo == true {
@@ -537,7 +761,21 @@ struct HUDView: View {
                     .accessibilityLabel("Undo the rewrite")
                 }
 
-                controlsSection([.copy, .paste, .history, .settings, .close])
+                // Stop is the header's own icon button, the same size and the
+                // same press as Copy or Close, in the card's amber: the request
+                // can be ended where the work is announced, without moving the
+                // pointer to a line under the body.
+                if let card, card.isStreaming, actions.cancelRewrite != nil {
+                    HUDActionButton(action: .stopRewrite) {
+                        actions.cancelRewrite?()
+                    }
+                }
+
+                controlsSection(
+                    [.copy, .paste, .history, .settings, .close],
+                    versioned: card != nil,
+                    deliveryEnabled: card?.canDeliverSelected ?? true
+                )
             }
             .padding(.horizontal, HUDTheme.padding)
             .frame(height: HUDTheme.headerHeight)
@@ -546,12 +784,14 @@ struct HUDView: View {
                 .fill(HUDTheme.hairline)
                 .frame(height: 1)
 
-            if let card, card.showsRewrite {
+            if let card, showsDraftBody(card) {
                 rewriteBody(card)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .frame(height: transcriptBodyHeight(card))
+                    .transition(.identity)
             } else {
                 transcriptBody(text, height: bodyHeight(for: card))
+                    .transition(.identity)
             }
 
             if let card {
@@ -559,6 +799,7 @@ struct HUDView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .transaction { $0.animation = nil }
     }
 
     private func headerTitle(
@@ -568,6 +809,27 @@ struct HUDView: View {
     ) -> String {
         guard let card else { return HUDHeader.title(delivery: delivery, destination: destination) }
         return HUDHeader.title(for: card, delivery: delivery, destination: destination)
+    }
+
+    /// What VoiceOver reads for the ring of a running rewrite.
+    ///
+    /// The header draws no title while a style runs, so the ring carries the
+    /// sentence the caps row used to: the style is named, and the person is told
+    /// the work is under way without a second line under the body saying it.
+    static func rewritingAccessibilityLabel(_ style: String?) -> String {
+        guard let style else { return "Rewriting" }
+        return "Rewriting as \(style)"
+    }
+
+    /// The style the header's ring names while a run is ending.
+    ///
+    /// The ending records the style's id rather than its title, so the title is
+    /// looked up in the card the failure or completion left behind. A style
+    /// that is no longer offered leaves the sentence without a name.
+    private func ringStyleTitle(card: RewriteCard?, running: String?) -> String? {
+        if let running { return running }
+        guard let card, let ending = model.rewriteEnding else { return nil }
+        return card.choices.first { $0.id == ending.styleID }?.title
     }
 
     private func headerAccessibilityLabel(
@@ -581,15 +843,47 @@ struct HUDView: View {
         return HUDHeader.accessibilityLabel(for: card, delivery: delivery, destination: destination)
     }
 
-    /// The room the title has once the badge and the Undo capsule are drawn.
+    /// Whether the mechanical check badge is drawn.
+    ///
+    /// It appears for a completed model version, not while the draft is still
+    /// arriving and not for the original. The word is "Checked" or "Review",
+    /// never "Faithful": the check is a short list of mechanical rules, not a
+    /// proof that the meaning survived.
+    ///
+    /// It is not drawn while the header is acknowledging that same version's
+    /// delivery. "COPIED" beside "Review" reads as a contradiction — one says
+    /// the version left the card, the other asks whether it was safe to use —
+    /// and the acknowledgement is the newer and more specific fact. The warning
+    /// is not discarded: it stays on the version, the badge returns as soon as
+    /// the selection moves, and a delivery recorded for another version changes
+    /// nothing here.
+    static func showsCheckBadge(_ card: RewriteCard) -> Bool {
+        guard !card.isStreaming, !card.isBlocked, !card.selectedVersion.isOriginal else {
+            return false
+        }
+        switch card.phase {
+        case .applied(let versionID), .copied(let versionID):
+            return card.selectedVersionID != versionID
+        case .failed:
+            // The header names the failure itself; a check badge beside it
+            // would be a second verdict on a version the failure never
+            // produced.
+            return false
+        case .offered, .rewriting, .blocked:
+            return true
+        }
+    }
+
+    /// The room the title has once the badge is drawn, and once the legacy
+    /// Undo capsule is drawn when a card still carries one.
     private func headerTitleCap(for card: RewriteCard?) -> CGFloat {
         var cap = HUDHeader.maximumTitleWidth
         guard let card else { return cap }
-        if case .applied = card.phase {
-            cap -= 70
+        if Self.showsCheckBadge(card) {
+            cap -= 72
         }
         if card.canUndo {
-            cap -= 58
+            cap -= 54
         }
         return max(120, cap)
     }
@@ -636,6 +930,24 @@ struct HUDView: View {
         max(0, model.cardSize.height - HUDTheme.headerHeight - 1)
     }
 
+    /// Whether the body is the draft's view rather than the transcript's.
+    ///
+    /// A request that has not sent its first token has no words of its own: the
+    /// body is still the version the person was reading. Drawing it with the
+    /// view that drew it before the click keeps the words exactly where they
+    /// were — the transcript view and the draft view are two different layouts,
+    /// so switching at the click would move the paragraph for the second before
+    /// the service answers. A selected rewrite keeps the draft's view even
+    /// before the first token, because the words on the card are then the
+    /// version's and not the transcript's.
+    ///
+    /// - Parameter card: the layer the card is drawing.
+    /// - Returns: whether ``rewriteBody(_:)`` draws the body.
+    private func showsDraftBody(_ card: RewriteCard) -> Bool {
+        guard card.showsRewrite else { return false }
+        return !(card.isStreaming && card.draft.isEmpty && card.selectedVersion.isOriginal)
+    }
+
     /// The height of the body once the rewrite layer has taken its rows.
     private func transcriptBodyHeight(_ card: RewriteCard) -> CGFloat {
         max(
@@ -659,7 +971,7 @@ struct HUDView: View {
     private func message(text: String, symbol: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: symbol)
-                .font(.system(size: 15, weight: .semibold))
+                .font(DotType.font(15, .semibold))
                 .foregroundStyle(symbol.contains("exclamation") || symbol.contains("xmark")
                     ? HUDTheme.live
                     : HUDTheme.accent)
@@ -688,9 +1000,7 @@ struct HUDView: View {
     /// the view out, so both read the measurement from here and cannot disagree
     /// about where the button is.
     static func messageActionWidth(title: String) -> CGFloat {
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(
-            ofSize: 11.5, weight: .medium
-        )]
+        let attributes: [NSAttributedString.Key: Any] = [.font: DotType.nsFont(11.5, .medium)]
         let text = (title as NSString).size(withAttributes: attributes).width
         return ceil(text) + HUDTheme.messageActionHPadding * 2 + HUDTheme.messageActionGap
     }
@@ -722,7 +1032,7 @@ struct HUDView: View {
                 // used to print an unexplained fragment of the secret.
                 if isHostLabel {
                     Text(model.activeService)
-                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                        .font(DotType.tabularFont(11.5, .medium))
                         .foregroundStyle(HUDTheme.accent)
                         .lineLimit(1)
                 } else {
@@ -735,7 +1045,7 @@ struct HUDView: View {
 
                 if !model.activeKeyHint.isEmpty {
                     Text("Key \(model.activeKeyHint)")
-                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                        .font(DotType.tabularFont(11.5, .medium))
                         .foregroundStyle(HUDTheme.ink2)
                         .lineLimit(1)
                 }
@@ -784,20 +1094,30 @@ struct HUDView: View {
     /// is worse than a button that is not there. The divider follows the
     /// buttons, so an empty card has no dangling hairline either.
     @ViewBuilder
-    private func controlsSection(_ items: [HUDAction]) -> some View {
-        let available = HUDAction.available(items, in: actions)
+    private func controlsSection(
+        _ items: [HUDAction],
+        versioned: Bool = false,
+        deliveryEnabled: Bool = true
+    ) -> some View {
+        let available = HUDAction.available(items, in: actions, versioned: versioned)
         if !available.isEmpty {
             divider
-            controls(available)
+            controls(available, versioned: versioned, deliveryEnabled: deliveryEnabled)
         }
     }
 
-    private func controls(_ items: [HUDAction]) -> some View {
+    private func controls(
+        _ items: [HUDAction],
+        versioned: Bool = false,
+        deliveryEnabled: Bool = true
+    ) -> some View {
         HStack(spacing: 4) {
             ForEach(items, id: \.self) { action in
                 HUDActionButton(
                     action: action,
                     isHovered: model.hoveredAction == action,
+                    versioned: versioned,
+                    isEnabled: deliveryEnabled || !action.deliversVersion,
                     onHoverChange: { inside in
                         if inside {
                             model.hoveredAction = action
@@ -806,20 +1126,25 @@ struct HUDView: View {
                         }
                     }
                 ) {
-                    perform(action)
+                    perform(action, versioned: versioned)
                 }
             }
         }
     }
 
     private func activeControlItems() -> [HUDAction] {
+        let versioned = model.rewrite != nil
         switch model.mode {
         case .recording, .assistantRecording:
             return HUDAction.available([.stop, .cancel], in: actions)
         case .working:
             return HUDAction.available([.cancel], in: actions)
         case .transcript:
-            return HUDAction.available([.copy, .paste, .history, .settings, .close], in: actions)
+            return HUDAction.available(
+                [.copy, .paste, .history, .settings, .close],
+                in: actions,
+                versioned: versioned
+            )
         case .message:
             return HUDAction.available([.close], in: actions)
         case .ready:
@@ -840,12 +1165,25 @@ struct HUDView: View {
         return -(HUDTheme.padding + CGFloat(trailingIndex) * step * 0.65)
     }
 
-    private func perform(_ action: HUDAction) {
+    private func perform(_ action: HUDAction, versioned: Bool = false) {
         switch action {
         case .stop: actions.stop?()
+        case .stopRewrite: actions.cancelRewrite?()
         case .cancel: actions.cancel?()
-        case .copy: actions.copy?()
-        case .paste: actions.paste?()
+        case .copy:
+            if versioned, let text = model.rewrite?.selectedVersion.text,
+               model.rewrite?.canDeliverSelected == true {
+                actions.copyVersion?(text)
+            } else {
+                actions.copy?()
+            }
+        case .paste:
+            if versioned, let text = model.rewrite?.selectedVersion.text,
+               model.rewrite?.canDeliverSelected == true {
+                actions.pasteVersion?(text)
+            } else {
+                actions.paste?()
+            }
         case .history: actions.history?()
         case .settings: actions.settings?()
         case .close: actions.close?()
@@ -899,6 +1237,7 @@ struct HUDMessageAction {
 /// One icon of the card.
 enum HUDAction: Hashable {
     case stop
+    case stopRewrite
     case cancel
     case copy
     case paste
@@ -910,18 +1249,24 @@ enum HUDAction: Hashable {
     ///
     /// The card never draws a button whose action is missing: the transcript
     /// header shows Copy, Paste, Settings and Close, but no History until the
-    /// History window exists.
-    static func available(_ items: [HUDAction], in actions: HUDActions) -> [HUDAction] {
-        items.filter { $0.isAvailable(in: actions) }
+    /// History window exists. A card with versions uses the version-aware Copy
+    /// and Paste closures instead of the transcript ones.
+    static func available(
+        _ items: [HUDAction],
+        in actions: HUDActions,
+        versioned: Bool = false
+    ) -> [HUDAction] {
+        items.filter { $0.isAvailable(in: actions, versioned: versioned) }
     }
 
     /// Whether the app handed the card a closure for this action.
-    func isAvailable(in actions: HUDActions) -> Bool {
+    func isAvailable(in actions: HUDActions, versioned: Bool = false) -> Bool {
         switch self {
         case .stop: actions.stop != nil
+        case .stopRewrite: actions.cancelRewrite != nil
         case .cancel: actions.cancel != nil
-        case .copy: actions.copy != nil
-        case .paste: actions.paste != nil
+        case .copy: versioned ? actions.copyVersion != nil : actions.copy != nil
+        case .paste: versioned ? actions.pasteVersion != nil : actions.paste != nil
         case .history: actions.history != nil
         case .settings: actions.settings != nil
         case .close: actions.close != nil
@@ -931,7 +1276,7 @@ enum HUDAction: Hashable {
     /// The SF Symbol of the action.
     var symbol: String {
         switch self {
-        case .stop: "stop.fill"
+        case .stop, .stopRewrite: "stop.fill"
         case .cancel, .close: "xmark"
         case .copy: "doc.on.doc"
         case .paste: "doc.on.clipboard"
@@ -941,12 +1286,13 @@ enum HUDAction: Hashable {
     }
 
     /// The accessible name of the button.
-    var label: String {
+    func label(versioned: Bool = false) -> String {
         switch self {
         case .stop: "Stop recording"
+        case .stopRewrite: "Stop rewriting"
         case .cancel: "Cancel recording"
-        case .copy: "Copy transcript"
-        case .paste: "Paste again"
+        case .copy: versioned ? "Copy selected version" : "Copy transcript"
+        case .paste: versioned ? "Paste selected version at cursor" : "Paste again"
         case .history: "History"
         case .settings: "Settings"
         case .close: "Close"
@@ -954,22 +1300,38 @@ enum HUDAction: Hashable {
     }
 
     /// The tooltip of the button.
-    var help: String {
+    func help(versioned: Bool = false) -> String {
         switch self {
         case .stop: "Stop and transcribe"
+        case .stopRewrite: "Stop the rewrite and go back to the transcript"
         case .cancel: "Cancel without transcribing"
-        case .copy: "Copy transcript"
-        case .paste: "Paste the transcript again"
+        case .copy: versioned ? "Copy the version on screen" : "Copy transcript"
+        case .paste: versioned ? "Paste the version at the cursor" : "Paste the transcript again"
         case .history: "Open history"
         case .settings: "Open settings"
         case .close: "Dismiss"
         }
     }
 
+    /// Whether the button delivers a version rather than acting on the card.
+    var deliversVersion: Bool {
+        self == .copy || self == .paste
+    }
+
+    /// The colour the icon is drawn in when the pointer is elsewhere.
+    ///
+    /// Every button of the card is quiet until it is reached, except the one
+    /// that ends a request that is running: that one is the card's amber at rest,
+    /// because it is the only control on the surface that answers something in
+    /// flight.
+    var restingColor: Color {
+        self == .stopRewrite ? HUDTheme.live : HUDTheme.ink3
+    }
+
     /// The colour the icon takes under the pointer.
     var hoverColor: Color {
         switch self {
-        case .stop: HUDTheme.live
+        case .stop, .stopRewrite: HUDTheme.live
         case .cancel, .close: HUDTheme.ink
         case .copy, .paste, .history, .settings: HUDTheme.accent
         }
@@ -1023,9 +1385,14 @@ private struct HUDMessageActionButton: View {
 /// It is deliberately not a stock bordered button: the card is one dark
 /// surface, and a system bezel would cut a second shape out of it. The button
 /// gains contrast, not a bezel, when the pointer is over it.
-private struct HUDActionButton: View {
+///
+/// The Settings material tile draws the recording card's row itself, so the
+/// buttons it shows are these buttons rather than a likeness of them.
+struct HUDActionButton: View {
     let action: HUDAction
     var isHovered: Bool = false
+    var versioned: Bool = false
+    var isEnabled: Bool = true
     var onHoverChange: ((Bool) -> Void)? = nil
     let perform: () -> Void
 
@@ -1033,14 +1400,14 @@ private struct HUDActionButton: View {
     @State private var hovering = false
 
     private var activeHover: Bool {
-        hovering || isHovered
+        isEnabled && (hovering || isHovered)
     }
 
     var body: some View {
         Button(action: perform) {
             Image(systemName: action.symbol)
                 .font(HUDTheme.actionFont)
-                .foregroundStyle(activeHover ? action.hoverColor : HUDTheme.ink3)
+                .foregroundStyle(activeHover ? action.hoverColor : action.restingColor)
                 .frame(width: HUDTheme.actionSize, height: HUDTheme.actionSize)
                 .background(
                     Circle()
@@ -1054,33 +1421,37 @@ private struct HUDActionButton: View {
                         )
                 )
                 .contentShape(Circle())
+                .opacity(isEnabled ? 1 : 0.45)
                 .animation(
                     reduceMotion ? nil : .easeOut(duration: 0.14),
                     value: activeHover
                 )
         }
         .buttonStyle(HUDActionButtonStyle(reduceMotion: reduceMotion))
+        .disabled(!isEnabled)
         .onHover { inside in
             hovering = inside
             onHoverChange?(inside)
         }
-        .accessibilityLabel(Text(action.label))
-        .accessibilityHint(Text(action.help))
+        .accessibilityLabel(Text(action.label(versioned: versioned)))
+        .accessibilityHint(Text(action.help(versioned: versioned)))
     }
 }
 
 /// A themed floating tooltip pill that sits cleanly above the HUD island's top edge
 /// when hovering over an action button, never overlapping the transcript text.
-private struct HUDActionTooltip: View {    let action: HUDAction
+private struct HUDActionTooltip: View {
+    let action: HUDAction
     var material: HUDMaterial = .glass
+    var versioned: Bool = false
 
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: action.symbol)
-                .font(.system(size: 9.5, weight: .semibold))
+                .font(DotType.font(9.5, .semibold))
                 .foregroundStyle(action.hoverColor)
-            Text(action.help)
-                .font(.system(size: 11, weight: .medium))
+            Text(action.help(versioned: versioned))
+                .font(DotType.font(11, .medium))
                 .foregroundStyle(HUDTheme.ink)
                 .lineLimit(1)
         }
@@ -1120,16 +1491,41 @@ private struct HUDActionTooltip: View {    let action: HUDAction
     }
 }
 
-/// The press state: a small scale, never a second surface.
+/// The press state, in the app's one policy: a 2 per cent shrink on the strong
+/// ease-out, and the fill's own dim when the motion is reduced.
 private struct HUDActionButtonStyle: ButtonStyle {
     let reduceMotion: Bool
 
     func makeBody(configuration: Configuration) -> some View {
+        HUDActionButtonBody(configuration: configuration, reduceMotion: reduceMotion)
+    }
+}
+
+private struct HUDActionButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let reduceMotion: Bool
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+
+    private var reducesMotion: Bool {
+        reduceMotion || systemReduceMotion || DotMotion.reducesMotion
+    }
+
+    var body: some View {
         configuration.label
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.9 : 1)
-            .opacity(configuration.isPressed ? 0.72 : 1)
+            .scaleEffect(DotPressFeedback.scale(
+                isPressed: configuration.isPressed,
+                isEnabled: isEnabled,
+                reduceMotion: reducesMotion
+            ))
+            .opacity(DotPressFeedback.opacity(
+                isPressed: configuration.isPressed,
+                isEnabled: isEnabled,
+                reduceMotion: reducesMotion
+            ))
             .animation(
-                reduceMotion ? nil : .easeOut(duration: 0.12),
+                DotPressFeedback.animation(reduceMotion: reducesMotion),
                 value: configuration.isPressed
             )
     }
@@ -1269,7 +1665,7 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
         textView.isSelectable = true
         textView.drawsBackground = false
         textView.backgroundColor = .clear
-        textView.font = NSFont.systemFont(ofSize: 15, weight: .regular)
+        textView.font = DotType.nsFont(15, .regular)
         textView.textColor = NSColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1.0)
         textView.insertionPointColor = NSColor(red: 0.96, green: 0.62, blue: 0.14, alpha: 1.0)
         textView.textContainerInset = NSSize(
@@ -1286,7 +1682,7 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
         paragraph.lineSpacing = HUDTheme.transcriptLineSpacing
         textView.defaultParagraphStyle = paragraph
         textView.typingAttributes = [
-            .font: NSFont.systemFont(ofSize: 15, weight: .regular),
+            .font: DotType.nsFont(15, .regular),
             .foregroundColor: NSColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1.0),
             .paragraphStyle: paragraph,
         ]
@@ -1372,7 +1768,7 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = HUDTheme.transcriptLineSpacing
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 15, weight: .regular),
+                .font: DotType.nsFont(15, .regular),
                 .foregroundColor: NSColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1.0),
                 .paragraphStyle: paragraph,
             ]
@@ -1498,8 +1894,29 @@ private struct HUDConfirmButtonStyle: ButtonStyle {
     var isDestructive: Bool
 
     func makeBody(configuration: Configuration) -> some View {
+        HUDConfirmButtonBody(
+            configuration: configuration,
+            isPrimary: isPrimary,
+            isDestructive: isDestructive
+        )
+    }
+}
+
+private struct HUDConfirmButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let isPrimary: Bool
+    let isDestructive: Bool
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var reducesMotion: Bool {
+        reduceMotion || DotMotion.reducesMotion
+    }
+
+    var body: some View {
         configuration.label
-            .font(.system(size: 12, weight: .medium))
+            .font(DotType.font(12, .medium))
             .foregroundStyle(foreground)
             .padding(.horizontal, 14)
             .frame(height: HUDConfirmLayout.buttonHeight)
@@ -1509,7 +1926,20 @@ private struct HUDConfirmButtonStyle: ButtonStyle {
                     Capsule(style: .circular).strokeBorder(HUDTheme.actionBorderHover, lineWidth: 1)
                 }
             }
-            .opacity(configuration.isPressed ? 0.82 : 1)
+            .scaleEffect(DotPressFeedback.scale(
+                isPressed: configuration.isPressed,
+                isEnabled: isEnabled,
+                reduceMotion: reducesMotion
+            ))
+            .opacity(DotPressFeedback.opacity(
+                isPressed: configuration.isPressed,
+                isEnabled: isEnabled,
+                reduceMotion: reducesMotion
+            ))
+            .animation(
+                DotPressFeedback.animation(reduceMotion: reducesMotion),
+                value: configuration.isPressed
+            )
             .contentShape(Capsule(style: .circular))
     }
 

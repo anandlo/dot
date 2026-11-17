@@ -12,11 +12,13 @@ final class RewriteOfferTests: XCTestCase {
 
     /// An assistant the person set up, on the row the test asks about.
     private func setUpAssistant(
-        providerID: String = AssistantSettings.defaultProviderID
+        providerID: String = AssistantSettings.defaultProviderID,
+        baseURL: String? = nil
     ) -> AssistantConfiguration {
         var configuration = AssistantConfiguration.default
         configuration.isSetUp = true
         configuration.chat.providerID = providerID
+        configuration.chat.baseURL = baseURL
         return configuration
     }
 
@@ -51,7 +53,68 @@ final class RewriteOfferTests: XCTestCase {
 
     func testAnUnknownServiceIsTreatedAsACustomEndpoint() {
         // A custom row needs no key, which is what a hand-filled endpoint is.
-        XCTAssertTrue(offers(assistant: setUpAssistant(providerID: "my-endpoint"), hasKey: false))
+        // It still needs an address: a row with no address reaches no service.
+        XCTAssertTrue(offers(
+            assistant: setUpAssistant(providerID: "my-endpoint", baseURL: "https://proxy.example.com/v1"),
+            hasKey: false
+        ))
+        XCTAssertFalse(
+            offers(assistant: setUpAssistant(providerID: "my-endpoint"), hasKey: false),
+            "a custom endpoint with no address was offered"
+        )
+    }
+
+    /// The report's state: a custom endpoint, set up on paper, no address.
+    ///
+    /// The chips used to be offered here and every rewrite then failed while
+    /// the provider was built. The offer and the status row now ask one rule.
+    func testACustomEndpointWithNoAddressOffersNoChips() {
+        let assistant = setUpAssistant(providerID: "custom")
+        XCTAssertFalse(offers(assistant: assistant, hasKey: false))
+        XCTAssertEqual(
+            AssistantAvailability.readiness(config: assistant, hasKey: false),
+            .missingAddress
+        )
+    }
+
+    /// The page's explanatory line and the card's offer are one answer.
+    ///
+    /// Every case of the readiness rule is checked against the offer: a record
+    /// the page calls ready must offer the chips, and a record it explains must
+    /// not. A second opinion in either place would fail this table.
+    func testTheOfferAgreesWithTheSettingsExplanation() {
+        let states: [(name: String, assistant: AssistantConfiguration, hasKey: Bool)] = [
+            ("fresh install", AssistantConfiguration.default, true),
+            ("custom without an address", setUpAssistant(providerID: "custom"), false),
+            ("custom at a loopback address",
+             setUpAssistant(providerID: "custom", baseURL: "http://127.0.0.1:8080/v1"), false),
+            ("custom at a remote http address",
+             setUpAssistant(providerID: "custom", baseURL: "http://api.example.com/v1"), false),
+            ("custom at an https address",
+             setUpAssistant(providerID: "custom", baseURL: "https://proxy.example.com/v1"), false),
+            ("ollama at its shipped address", setUpAssistant(providerID: "ollama"), false),
+            ("a keyed service with its key", setUpAssistant(providerID: "openai"), true),
+            ("a keyed service without its key", setUpAssistant(providerID: "openai"), false),
+            ("a record that names no service",
+             setUpAssistant(providerID: "  "), true),
+        ]
+        for state in states {
+            let readiness = AssistantAvailability.readiness(
+                config: state.assistant,
+                hasKey: state.hasKey
+            )
+            let offered = offers(assistant: state.assistant, hasKey: state.hasKey)
+            XCTAssertEqual(
+                offered,
+                readiness.isReady,
+                "\(state.name): the card and the page disagree"
+            )
+            XCTAssertEqual(
+                readiness.message == nil,
+                readiness.isReady,
+                "\(state.name): a ready record may not explain a problem"
+            )
+        }
     }
 
     func testASpeechKeyAloneOffersNoChips() {
@@ -83,7 +146,7 @@ final class RewriteOfferTests: XCTestCase {
 
     func testOnlyTheStylesThatAreOnAreOffered() {
         let rewrite = RewriteConfiguration(styles: [.concise, .formal])
-        XCTAssertEqual(rewrite.choices.map(\.title), ["Concise", "Formal"])
+        XCTAssertEqual(rewrite.choices.map(\.title), ["Concise", "Professional"])
         XCTAssertTrue(offers(rewrite: rewrite))
     }
 

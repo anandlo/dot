@@ -180,10 +180,6 @@ private final class Film {
     /// is what `HUD.tick` does when the card is no longer recording.
     private var level: Double = 0
 
-    /// The bar heights of the visualiser, kept between frames the way `HUD`
-    /// keeps them.
-    private var bars: [Double] = []
-
     /// Whether the second press has happened, and whether the words have landed.
     private var didPress = false
     private var didLand = false
@@ -298,13 +294,6 @@ private final class Film {
         model.history = history
         model.phase = meter.phase
         model.reveal = didPress ? 0 : min(1, max(0, (time - DemoRender.arrival) / 0.12))
-        VisualizerBars.stretch(
-            into: &bars,
-            history: history,
-            spectrum: [],
-            reveal: model.reveal
-        )
-        model.bars = bars
         model.mode = mode(at: time)
     }
 

@@ -88,8 +88,9 @@ struct SettingsView: View {
     /// - Parameters:
     ///   - config: The configuration every control reads and writes.
     ///   - providers: The providers the menu currently knows about.
-    ///   - tab: The page to open: 0 General, 1 Provider, 2 Shortcuts,
-    ///     3 Appearance, 4 About, 5 Assistant, 6 Voices, 7 Connectors.
+    ///   - tab: The page to open: 0 General, 1 Speech to text, 2 Shortcuts,
+    ///     3 Appearance, 4 About, 5 AI rewrite. The retired 6 and 7 open AI
+    ///     rewrite as well, so a caller that still names them is not stranded.
     ///   - onChange: Called once for every real configuration change.
     ///   - onSetAPIKey: Writes a key and returns an error, or `nil`.
     ///   - onDeleteAPIKey: Deletes a key and returns an error, or `nil`.
@@ -120,7 +121,7 @@ struct SettingsView: View {
         _config = config
         self.providers = providers
         self.requestedTab = tab
-        _selected = State(initialValue: Page(rawValue: tab) ?? .general)
+        _selected = State(initialValue: (Page(rawValue: tab) ?? .general).resolved)
         self.onChange = onChange
         self.onSetAPIKey = onSetAPIKey
         self.onDeleteAPIKey = onDeleteAPIKey
@@ -160,7 +161,7 @@ struct SettingsView: View {
             }
         }
         .onChange(of: requestedTab) { _, value in
-            guard let page = Page(rawValue: value), page != selected else { return }
+            guard let page = Page(rawValue: value)?.resolved, page != selected else { return }
             select(page)
         }
         .onAppear {
@@ -197,14 +198,14 @@ struct SettingsView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Settings")
-                .font(.system(size: 12, weight: .semibold))
+                .font(DotType.font(12, .semibold))
                 .foregroundStyle(DotTheme.ink3)
                 .padding(.leading, 22)
                 .padding(.top, 40)
                 .padding(.bottom, 8)
 
             VStack(spacing: 3) {
-                ForEach(Page.allCases) { page in
+                ForEach(Page.sidebarPages) { page in
                     sidebarItem(page)
                 }
             }
@@ -236,11 +237,11 @@ struct SettingsView: View {
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: page.symbol)
-                    .font(.system(size: 11.5, weight: .semibold))
+                    .font(DotType.font(11.5, .semibold))
                     .foregroundStyle(isSelected ? DotTheme.sidebarSelectedIcon : DotTheme.ink3)
                     .frame(width: 16)
                 Text(page.title)
-                    .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
+                    .font(DotType.font(12.5, isSelected ? .semibold : .medium))
                     .foregroundStyle(isSelected ? DotTheme.sidebarSelectedText : DotTheme.ink2)
                 Spacer(minLength: 0)
             }
@@ -257,9 +258,9 @@ struct SettingsView: View {
             }
             .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DotPressStyle())
         .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.14)) {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
                 if hovering {
                     hoveredPage = page
                 } else if hoveredPage == page {
@@ -349,25 +350,23 @@ struct SettingsView: View {
             shortcutsPage
         case .appearance:
             appearancePage
-        case .assistant:
-            AssistantPage(
-                config: $config,
-                onChange: settingsChanged,
-                onSetKey: onSetAPIKey,
-                onDeleteKey: onDeleteAPIKey
-            )
-        case .voices:
-            VoicesPage(
-                config: $config,
-                onChange: settingsChanged,
-                onSetKey: onSetAPIKey,
-                onDeleteKey: onDeleteAPIKey
-            )
-        case .connectors:
-            ConnectorsPage(config: $config, onChange: settingsChanged)
+        // The retired Voices and Connectors pages keep their enum cases and tab
+        // numbers, so an old configuration still resolves them; neither page is
+        // drawn, and both tabs open AI rewrite.
+        case .assistant, .voices, .connectors:
+            assistantPage
         case .about:
             aboutPage
         }
+    }
+
+    private var assistantPage: some View {
+        AssistantPage(
+            config: $config,
+            onChange: settingsChanged,
+            onSetKey: onSetAPIKey,
+            onDeleteKey: onDeleteAPIKey
+        )
     }
 
     /// Writes a change back to the caller and makes this view a participant in
@@ -633,9 +632,9 @@ struct SettingsView: View {
         Button(action: addAppStyle) {
             HStack(spacing: 6) {
                 Image(systemName: "plus")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(DotType.font(10, .semibold))
                 Text("Add app…")
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(DotType.font(12.5, .medium))
             }
             .foregroundStyle(DotTheme.ink2)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -643,7 +642,7 @@ struct SettingsView: View {
             .frame(minHeight: 40, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DotPressStyle())
         .help("Choose an app to style")
     }
 
@@ -735,7 +734,7 @@ struct SettingsView: View {
                 .frame(width: 155)
 
                 Text(dwellText)
-                    .font(.system(size: 12))
+                    .font(DotType.font(12, .regular))
                     .foregroundStyle(DotTheme.ink2)
                     .frame(width: 44, alignment: .trailing)
             }
@@ -824,12 +823,12 @@ struct SettingsView: View {
                             deleteKey(for: selectedPreset)
                         } label: {
                             Image(systemName: "trash")
-                                .font(.system(size: 12, weight: .medium))
+                                .font(DotType.font(12, .medium))
                                 .foregroundStyle(DotTheme.coral)
                                 .frame(width: 26, height: 26)
                                 .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(DotPressStyle())
                         .help("Delete the stored key")
                         .accessibilityLabel("Delete the stored key from the Keychain")
                     }
@@ -853,7 +852,7 @@ struct SettingsView: View {
                 .fill(isServiceConnected ? DotTheme.switchOn : DotTheme.ink3)
                 .frame(width: 6, height: 6)
             Text(isServiceConnected ? "Connected" : "Not connected")
-                .font(.system(size: 11.5))
+                .font(DotType.font(11.5, .regular))
                 .foregroundStyle(isServiceConnected ? DotTheme.ink2 : DotTheme.ink3)
         }
         .accessibilityElement(children: .combine)
@@ -1012,12 +1011,12 @@ struct SettingsView: View {
                                     refreshModels()
                                 } label: {
                                     Image(systemName: "arrow.clockwise")
-                                        .font(.system(size: 10, weight: .semibold))
+                                        .font(DotType.font(10, .semibold))
                                         .foregroundStyle(DotTheme.ink2)
                                         .frame(width: 20, height: 20)
                                         .contentShape(Rectangle())
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(DotPressStyle())
                                 .help("Load the model list from the service")
                                 .accessibilityLabel("Load the model list from the service")
                             }
@@ -1077,7 +1076,7 @@ struct SettingsView: View {
         SettingsDivider()
         SettingsRow("Endpoint", subtitle: "Built from the region and the mode") {
             Text(config.settings(for: ProviderIdentifier.azure).baseURL ?? baseURLPlaceholder)
-                .font(.system(size: 11, design: .monospaced))
+                .font(DotType.tabularFont(11, .regular))
                 .foregroundStyle(DotTheme.ink2)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -1956,37 +1955,64 @@ struct SettingsView: View {
 
     // MARK: - Shortcuts
 
+    /// One key the Shortcuts page offers.
+    ///
+    /// The list is the page's whole content, so a row cannot appear on the page
+    /// without being here. The assistant's key is not one of them: nothing in
+    /// this product starts a spoken assistant. Its recorded shortcut stays in
+    /// the configuration and in the app's hotkey table, so the runtime can
+    /// decide what to do with it and nothing has to be re-recorded later.
+    enum ShortcutRow: String, CaseIterable, Identifiable {
+        case record = "Start and stop recording"
+        case paste = "Paste last transcript"
+        case palette = "Open dictation palette"
+
+        var id: String { rawValue }
+        var title: String { rawValue }
+
+        /// The sentence the row's recorder button speaks.
+        var hint: String {
+            switch self {
+            case .record: "Starts and stops a recording. Escape cancels."
+            case .paste: "Opens the recorder for the paste shortcut."
+            case .palette: "Opens the recorder for the palette shortcut."
+            }
+        }
+    }
+
     private var shortcutsPage: some View {
         VStack(alignment: .leading, spacing: 22) {
             SettingsSection("Global shortcuts") {
-                shortcutRow(
-                    title: "Start and stop recording",
-                    keycap: config.hotkey.keycapLabel,
-                    action: onChangeShortcut,
-                    hint: "Starts and stops a recording. Escape cancels."
-                )
-                SettingsDivider()
-                shortcutRow(
-                    title: "Paste last transcript",
-                    keycap: config.pasteHotkey.keycapLabel,
-                    action: onChangePasteShortcut,
-                    hint: "Opens the recorder for the paste shortcut."
-                )
-                SettingsDivider()
-                shortcutRow(
-                    title: "Open dictation palette",
-                    keycap: config.paletteHotkey.keycapLabel,
-                    action: onChangePaletteShortcut,
-                    hint: "Opens the recorder for the palette shortcut."
-                )
-                SettingsDivider()
-                shortcutRow(
-                    title: "Ask the assistant",
-                    keycap: config.assistantHotkey.keycapLabel,
-                    action: onChangeAssistantShortcut,
-                    hint: "Opens the recorder for the assistant shortcut."
-                )
+                ForEach(Array(ShortcutRow.allCases.enumerated()), id: \.offset) { entry in
+                    if entry.offset > 0 {
+                        SettingsDivider()
+                    }
+                    shortcutRow(
+                        title: entry.element.title,
+                        keycap: keycap(for: entry.element),
+                        action: action(for: entry.element),
+                        hint: entry.element.hint
+                    )
+                }
             }
+        }
+    }
+
+    /// The recorded key one shortcut row shows.
+    private func keycap(for row: ShortcutRow) -> String {
+        switch row {
+        case .record: config.hotkey.keycapLabel
+        case .paste: config.pasteHotkey.keycapLabel
+        case .palette: config.paletteHotkey.keycapLabel
+        }
+    }
+
+    /// The recorder one shortcut row opens.
+    private func action(for row: ShortcutRow) -> () -> Void {
+        switch row {
+        case .record: onChangeShortcut
+        case .paste: onChangePasteShortcut
+        case .palette: onChangePaletteShortcut
         }
     }
 
@@ -2027,7 +2053,7 @@ struct SettingsView: View {
                 AppearanceSwatch(mode: mode)
                 HStack(alignment: .top, spacing: 8) {
                     Text(appearanceName(mode))
-                        .font(.system(size: 12.5, weight: .semibold))
+                        .font(DotType.font(12.5, .semibold))
                         .foregroundStyle(DotTheme.ink)
                     Spacer(minLength: 2)
                     selectionIndicator(isSelected)
@@ -2039,7 +2065,7 @@ struct SettingsView: View {
             .overlay(tileBorder(isSelected))
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DotPressStyle())
         .accessibilityLabel("\(appearanceName(mode)) window appearance")
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
         .accessibilityHint(appearanceHint(mode))
@@ -2086,9 +2112,10 @@ struct SettingsView: View {
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 HUDSwatch(material: material)
+                    .frame(maxWidth: .infinity, alignment: .center)
                 HStack(alignment: .top, spacing: 8) {
                     Text(name)
-                        .font(.system(size: 12.5, weight: .semibold))
+                        .font(DotType.font(12.5, .semibold))
                         .foregroundStyle(DotTheme.ink)
                     Spacer(minLength: 2)
                     selectionIndicator(isSelected)
@@ -2100,7 +2127,7 @@ struct SettingsView: View {
             .overlay(tileBorder(isSelected))
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DotPressStyle())
         .accessibilityLabel("\(name) recording card material")
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
         .accessibilityHint("Uses the \(name.lowercased()) material for the recording card.")
@@ -2136,10 +2163,13 @@ struct SettingsView: View {
             onChange()
         } label: {
             VStack(alignment: .leading, spacing: 8) {
-                VisualizerSwatch(visualizer: visualizer)
+                VisualizerSwatch(
+                    visualizer: visualizer,
+                    isAnimating: isSelected && !reduceMotion
+                )
                 HStack(alignment: .top, spacing: 8) {
                     Text(visualizer.title)
-                        .font(.system(size: 12.5, weight: .semibold))
+                        .font(DotType.font(12.5, .semibold))
                         .foregroundStyle(DotTheme.ink)
                     Spacer(minLength: 2)
                     selectionIndicator(isSelected)
@@ -2151,7 +2181,7 @@ struct SettingsView: View {
             .overlay(tileBorder(isSelected))
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DotPressStyle())
         .accessibilityLabel("\(visualizer.title) waveform")
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
         .accessibilityHint(visualizer.detail)
@@ -2228,12 +2258,15 @@ struct SettingsView: View {
                 )
             if selected {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 8, weight: .bold))
+                    .font(DotType.font(8, .bold))
                     .foregroundStyle(DotTheme.onSelection)
             }
         }
         .frame(width: 16, height: 16)
-        .animation(.spring(response: 0.26, dampingFraction: 0.75), value: selected)
+        .animation(
+            reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.75),
+            value: selected
+        )
         .accessibilityHidden(true)
     }
 
@@ -2369,28 +2402,61 @@ struct SettingsView: View {
     /// One page of the window.
     ///
     /// The raw value is the tab number a caller passes to `show(tab:)`, which
-    /// the menu also uses to open the About page. The cases are declared in
-    /// sidebar order while the numbers stay put, so a page added in the middle
-    /// of the list does not move the page a caller already names.
-    private enum Page: Int, CaseIterable, Identifiable {
+    /// the menu also uses to open the About page. The offered cases are declared
+    /// in sidebar order while the numbers stay put, so a page added in the middle
+    /// of the list does not move the page a caller already names. The type is
+    /// internal so a test can ask which pages the sidebar offers and where a
+    /// retired tab lands.
+    enum Page: Int, CaseIterable, Identifiable {
         case general = 0
         case provider = 1
         case shortcuts = 2
         case appearance = 3
         case assistant = 5
+        // Retired from the sidebar. The cases and their tab numbers stay: the
+        // stored configuration of both pages is still in the file, and a caller
+        // that names tab 6 or 7 has to land somewhere that exists.
         case voices = 6
         case connectors = 7
         case about = 4
 
         var id: Int { rawValue }
 
+        /// The pages the sidebar draws, in the order it draws them.
+        static var sidebarPages: [Page] {
+            allCases.filter(\.isShownInSidebar)
+        }
+
+        /// Whether the sidebar offers this page.
+        var isShownInSidebar: Bool {
+            switch self {
+            case .general, .provider, .shortcuts, .appearance, .assistant, .about:
+                true
+            case .voices, .connectors:
+                false
+            }
+        }
+
+        /// The page a tab number opens.
+        ///
+        /// Voices and Connectors are routed to AI rewrite rather than exposed:
+        /// the product has two settings, speech to text and AI rewrite, and an
+        /// old caller naming one of the retired tabs must not open a page the
+        /// sidebar no longer offers.
+        var resolved: Page {
+            switch self {
+            case .voices, .connectors: .assistant
+            case .general, .provider, .shortcuts, .appearance, .assistant, .about: self
+            }
+        }
+
         var title: String {
             switch self {
             case .general: "General"
-            case .provider: "Provider"
+            case .provider: "Speech to text"
             case .shortcuts: "Shortcuts"
             case .appearance: "Appearance"
-            case .assistant: "Assistant"
+            case .assistant: "AI rewrite"
             case .voices: "Voices"
             case .connectors: "Connectors"
             case .about: "About"
@@ -2438,41 +2504,6 @@ struct SettingsView: View {
     private struct TestResult {
         let text: String
         let ok: Bool
-    }
-}
-
-/// A miniature waveform for HUD appearance swatches: discrete porcelain filament bars
-/// with dynamic voice cadence and warm glowing amber accents.
-private struct HUDSwatchWaveform: View {
-    /// The colour of the bars. A frosted swatch is light, so the same warm
-    /// white that reads on the black swatch disappears on it.
-    var tint: Color = HUDTheme.accent
-    var peak: Color = HUDTheme.live
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<26, id: \.self) { i in
-                let norm = Double(i) / 25.0
-                let envelope = sin(.pi * norm)
-                let harmonic1 = sin(norm * .pi * 3.2 + 0.4) * 0.4 + 0.6
-                let harmonic2 = cos(norm * .pi * 5.5 + 0.2) * 0.25 + 0.75
-                let h = max(2.8, CGFloat(envelope * harmonic1 * harmonic2) * 23.0)
-                let isPeak = h > 13.0
-
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: isPeak
-                                ? [peak.opacity(0.95), tint]
-                                : [tint.opacity(0.85), tint.opacity(0.45)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .frame(width: 2.2, height: h)
-                    .shadow(color: isPeak ? peak.opacity(0.35) : .clear, radius: 2)
-            }
-        }
     }
 }
 
@@ -2597,119 +2628,192 @@ private struct DotModernSlider: View {
     }
 }
 
-/// A miniature HUD used by the appearance cards.
-private struct HUDSwatch: View {
+/// A miniature of the real recording card, for the material cards.
+///
+/// The tile is the card itself at sixty-two per cent, not an illustration of it:
+/// the same fill, the same live dot, label, clock, waveform, divider and
+/// buttons, laid out at the card's own 316 by 54 points and scaled into a 196 by
+/// 34 frame. A redrawn miniature is a second card that drifts from the first the
+/// moment either one is touched; this one cannot drift, because every part of it
+/// is the part the island draws.
+///
+/// A Settings page has no desktop behind it, so the Glass tile carries a fixed
+/// backdrop of its own and draws its own glass over it: on macOS 26 and later
+/// the system's Liquid Glass, which samples the window behind it and has no
+/// switch to turn sampling off, and before that the surface's own tint and
+/// specular with the behind-window sampler turned off. The Black tile is the
+/// same card in its opaque material.
+struct HUDSwatch: View {
     let material: HUDMaterial
+
+    /// The size the card is laid out at, in points, before it is scaled.
+    static let cardSize = CGSize(
+        width: HUDState.recordingWidth,
+        height: HUDState.recordingHeight
+    )
+    /// How much of the card the tile shows.
+    private static let scale: CGFloat = 0.62
+    /// The frame the scaled card sits in, in points.
+    static let tileSize = CGSize(width: 196, height: 34)
+    /// The radius the tile's backdrop is clipped to.
+    private static let backdropRadius: CGFloat = 10
+    /// The radius of the tile's own glass, a half point inside the backdrop.
+    private static let glassRadius: CGFloat = 10.5
+
+    /// The level the live dot and the centre of the card are drawn at.
+    private static let level: Double = 0.55
 
     var body: some View {
         ZStack {
             if material == .glass {
-                // Glass is shown as glass on the product's own paper, not as a
-                // grey block: a blue-grey wash behind the swatch made the tile
-                // the one cold surface in a warm window, and the frost it was
-                // meant to describe disappeared into it.
-                ZStack {
-                    LinearGradient(
-                        colors: [DotTheme.paperTint, DotTheme.paperDeep],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-
-                    HStack(spacing: 0) {
-                        Capsule()
-                            .fill(DotTheme.amber.opacity(0.55))
-                            .frame(width: 96, height: 40)
-                            .blur(radius: 16)
-                        Capsule()
-                            .fill(DotTheme.accent.opacity(0.30))
-                            .frame(width: 70, height: 34)
-                            .blur(radius: 14)
-                    }
-                    .opacity(0.8)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(.ultraThinMaterial)
-
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            stops: [
-                                .init(color: Color.white.opacity(0.34), location: 0),
-                                .init(color: Color.white.opacity(0.06), location: 0.34),
-                                .init(color: Color.clear, location: 0.72),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
+                backdrop
+                if #available(macOS 26.0, *) {
+                    Color.clear
+                        .frame(width: Self.tileSize.width, height: Self.tileSize.height)
+                        .glassEffect(
+                            HUDTheme.glass,
+                            in: RoundedRectangle(cornerRadius: Self.glassRadius, style: .continuous)
                         )
-                    )
-            } else {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.07, green: 0.07, blue: 0.08),
-                                Color(red: 0.025, green: 0.025, blue: 0.03),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-            }
-
-            // The bars are drawn on both materials; on the frosted one they
-            // take the ink of the paper, because the warm white that reads on
-            // black is invisible on a light pane.
-            HUDSwatchWaveform(
-                tint: material == .glass ? DotTheme.ink2 : HUDTheme.accent,
-                peak: material == .glass ? DotTheme.amber : HUDTheme.live
-            )
-            .frame(width: 132, height: 26)
-
-            HStack {
-                Spacer()
-                VStack {
-                    Circle()
-                        .fill(DotTheme.amber)
-                        .frame(width: 6, height: 6)
-                        .shadow(color: DotTheme.amber.opacity(0.6), radius: 3)
-                    Spacer()
+                    // The same scrim the card draws over its material, so the
+                    // tile is the card's own two layers and the ink on it reads
+                    // at the contrast the card was measured at.
+                    RoundedRectangle(cornerRadius: Self.glassRadius, style: .continuous)
+                        .fill(Color.black.opacity(HUDTheme.glassScrimOpacity))
                 }
             }
-            .padding(10)
+
+            content
+                .frame(width: Self.cardSize.width, height: Self.cardSize.height)
+                .scaleEffect(Self.scale, anchor: .center)
         }
-        .frame(height: 66)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(border, lineWidth: material == .glass ? 1.25 : 1)
-        )
+        .frame(width: Self.tileSize.width, height: Self.tileSize.height)
+        .clipShape(RoundedRectangle(
+            cornerRadius: HUDTheme.cornerRadius * Self.scale,
+            style: .continuous
+        ))
         .accessibilityHidden(true)
     }
 
-    private var border: LinearGradient {
-        switch material {
-        case .glass:
+    /// The desktop the Glass tile stands in for.
+    ///
+    /// A page is opaque, so the tile carries a still desktop of its own: one
+    /// neutral gradient for the room and two lights for something to refract.
+    /// It is drawn rather than sampled, so the tile looks the same on every Mac
+    /// and in every appearance.
+    private var backdrop: some View {
+        ZStack {
             LinearGradient(
                 colors: [
-                    Color.white.opacity(0.45),
-                    Color.white.opacity(0.18),
-                    Color.white.opacity(0.08),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        case .black:
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(0.09),
-                    Color.white.opacity(0.02),
+                    Color(red: 0.30, green: 0.34, blue: 0.42),
+                    Color(red: 0.14, green: 0.16, blue: 0.22),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
+            RadialGradient(
+                colors: [
+                    Color(red: 0.96, green: 0.70, blue: 0.20).opacity(0.85),
+                    Color(red: 0.96, green: 0.70, blue: 0.20).opacity(0),
+                ],
+                center: UnitPoint(x: 0.26, y: 0.40),
+                startRadius: 0,
+                endRadius: 46
+            )
+            RadialGradient(
+                colors: [
+                    Color(red: 0.15, green: 0.65, blue: 0.90).opacity(0.85),
+                    Color(red: 0.15, green: 0.65, blue: 0.90).opacity(0),
+                ],
+                center: UnitPoint(x: 0.74, y: 0.60),
+                startRadius: 0,
+                endRadius: 52
+            )
         }
+        .clipShape(RoundedRectangle(cornerRadius: Self.backdropRadius, style: .continuous))
+    }
+
+    /// The card's row, over the fill the tile draws for it.
+    ///
+    /// Where the tile draws the glass itself the row is drawn alone, with no
+    /// surface of its own, so the glass is one layer and the row sits on it. A
+    /// Mac without Liquid Glass gets the surface, which draws the fill the row
+    /// needs and the desktop it does not have.
+    @ViewBuilder
+    private var content: some View {
+        if HUDSurface.drawsSystemGlass(material) {
+            recordingRow
+        } else {
+            card
+        }
+    }
+
+    /// The recording card: its surface, and the row it draws while it listens.
+    private var card: some View {
+        ZStack {
+            HUDSurface(material: material, samplesDesktop: false)
+            recordingRow
+        }
+    }
+
+    /// The recording row of ``HUDView``, at the card's own measurements.
+    private var recordingRow: some View {
+        HStack(spacing: 0) {
+            LiveDot(level: Self.level, pulse: 0.25)
+                .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
+
+            Color.clear.frame(width: 10)
+
+            Text("REC")
+                .font(HUDTheme.labelFont)
+                .tracking(HUDTheme.labelTracking)
+                .foregroundStyle(HUDTheme.ink)
+
+            Color.clear.frame(width: 10)
+
+            Text("0:07")
+                .font(HUDTheme.clockFont)
+                .foregroundStyle(HUDTheme.clockInk(material))
+
+            Color.clear.frame(width: 14)
+
+            // The tile draws the card's style through the card's own view, from
+            // the same demonstration the visualizer tile draws, at the same
+            // moment of it: a tile that handed the row a frozen buffer of its own
+            // was a second picture of the same voice.
+            HUDWaveform(
+                visualizer: .stretch,
+                halfHeights: [],
+                history: VisualizerTile.history(at: VisualizerTile.stillTime),
+                spectrumHistory: VisualizerTile.spectrum(at: VisualizerTile.stillTime),
+                phase: DictationScript.phase(at: VisualizerTile.stillTime),
+                time: VisualizerTile.stillTime,
+                level: Self.level,
+                pulse: 0.25,
+                ceiling: 1,
+                reveal: 1,
+                material: material
+            )
+            .frame(maxWidth: .infinity)
+            .frame(height: HUDTheme.waveformHeight)
+
+            divider
+
+            HStack(spacing: 4) {
+                HUDActionButton(action: .stop) {}
+                HUDActionButton(action: .cancel) {}
+            }
+        }
+        .padding(.horizontal, HUDTheme.padding)
+        .frame(maxWidth: .infinity)
+        .frame(height: HUDState.recordingHeight)
+    }
+
+    /// The hairline between the wave and the buttons, as the card draws it.
+    private var divider: some View {
+        Capsule()
+            .fill(HUDTheme.hairline)
+            .frame(width: 1, height: 14)
+            .padding(.horizontal, 8)
     }
 }
 
@@ -2723,40 +2827,78 @@ private struct HUDSwatch: View {
 /// the two pictures are the same kind of picture.
 @MainActor
 enum VisualizerTile {
-    /// The envelope line the tile's synthetic voice is drawn from.
-    static var history: [Double] { SpeechSchedule.history(endingAt: 2.35) }
+    /// How long a selected tile's demonstration runs before it repeats, in
+    /// seconds.
+    ///
+    /// The tile draws the same script the island's preview draws, so it loops
+    /// over the same span: a tile that repeats at a pace of its own is a second
+    /// demonstration that drifts against the one the island shows.
+    static let loop = DictationScript.loop
 
-    /// The five bands of the tile's synthetic voice, on this voice's own window.
+    /// Where the still tiles are frozen, in seconds.
     ///
-    /// A tile's voice is an envelope, not a measurement, so each of its rows is
-    /// written into the band domain the recorder reports before it is scaled:
-    /// ordinary speech puts a band between `0.30` and `0.50` on that scale, and
-    /// the tile's row says how far into that range the moment sits. The window is
-    /// then the card's own, so the two pictures are drawn from the same kind of
-    /// number.
+    /// The moment is just past the loudest syllable of the script, where every
+    /// visualizer has something to show: a tile frozen in the breath before the
+    /// first syllable would be a picture of silence next to the selected one.
+    static let stillTime: Double = DictationScript.stillTime
+
+    /// The envelope line the tile's synthetic voice is drawn from.
+    static var history: [Double] { history(at: stillTime) }
+
+    /// The envelope line of the demonstration at a moment.
     ///
-    /// - Parameter history: the envelope line, oldest first.
-    /// - Returns: one frame per tick, from this voice's quietest band to its
-    ///   loudest.
-    static func spectrum(for history: [Double]) -> [AudioSpectrumFrame] {
-        var scale = SpectrumScale()
-        let dt = 1.0 / VoiceMeter.sampleRate
-        return HUDPreview.spectrumHistory(for: history).map { frame in
-            func measured(_ band: Double) -> Double { 0.30 + 0.24 * band }
-            return scale.normalise(AudioSpectrumFrame(bands: (
-                measured(frame.bands.0),
-                measured(frame.bands.1),
-                measured(frame.bands.2),
-                measured(frame.bands.3),
-                measured(frame.bands.4)
-            )), dt: dt)
-        }
+    /// - Parameter time: where in the demonstration, in seconds.
+    static func history(at time: Double) -> [Double] {
+        DictationScript.history(endingAt: time)
+    }
+
+    /// The five bands of the tile's synthetic voice at a moment.
+    ///
+    /// The script carries the bands of each syllable, so the tile draws the
+    /// spectrum a dictation of this sentence really has: the top row lifts on the
+    /// words with an `s` and the bottom row carries the vowels. It used to
+    /// rebuild a spectrum from the envelope alone, which made every moment the
+    /// same picture at a different height.
+    ///
+    /// - Parameter time: where in the demonstration, in seconds.
+    /// - Returns: one frame per tick, oldest first, on the card's own window.
+    static func spectrum(at time: Double) -> [AudioSpectrumFrame] {
+        DictationScript.spectrumHistory(endingAt: time)
     }
 }
 
 /// A miniature preview swatch showing one visualizer style.
+///
+/// The selected swatch is a demonstration rather than a diagram: it draws the
+/// island's own simulated voice at the island's own pace, so choosing a
+/// visualizer by eye is choosing between two pictures of the same performance.
+/// The other swatches are frozen at one moment of the same demonstration, which
+/// is what makes them comparable: five tiles each running their own clock would
+/// be five different syllables.
+///
+/// Every style is drawn by ``HUDWaveform`` itself, the view the card uses, so a
+/// tile is a preview of a style rather than a sixth style of its own. The Halo
+/// tile is the ring the card draws, at the tile's own canvas.
 private struct VisualizerSwatch: View {
     let visualizer: HUDVisualizer
+    /// Whether the demonstration runs: the chosen tile's, unless Reduce Motion
+    /// asks for a still picture. The preference asks for no movement, not for
+    /// fewer choices, so the chosen tile keeps its frame and stops its clock.
+    let isAnimating: Bool
+
+    /// How fast the demonstration is drawn. Thirty frames a second is the pace
+    /// of the card's own drawing: the preview is a small picture of a voice, and
+    /// at twelve frames a second the syllables of a dictation at a hundred and
+    /// forty words a minute fell between frames.
+    private static let frameInterval: TimeInterval = 1.0 / 30
+
+    /// Where inside the script the swatch's clock starts, in seconds.
+    ///
+    /// The same moment the island's preview opens at, so selecting a visualizer
+    /// and looking at it shows one performance rather than two.
+    private static let startOffset: Double = 0.4
+
+    @State private var startedAt = Date()
 
     var body: some View {
         ZStack {
@@ -2772,26 +2914,12 @@ private struct VisualizerSwatch: View {
                     )
                 )
 
-            previewContent
-                .frame(height: 22)
-                .padding(.horizontal, 10)
-
-            if visualizer == .haloEdge {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(
-                        AngularGradient(
-                            gradient: Gradient(colors: [
-                                HUDTheme.live.opacity(0.0),
-                                HUDTheme.live.opacity(0.9),
-                                HUDTheme.accent.opacity(0.8),
-                                HUDTheme.live.opacity(0.0),
-                                HUDTheme.live.opacity(0.9),
-                                HUDTheme.live.opacity(0.0)
-                            ]),
-                            center: .center
-                        ),
-                        lineWidth: 1.5
-                    )
+            if isAnimating {
+                TimelineView(.animation(minimumInterval: Self.frameInterval)) { timeline in
+                    content(at: moment(for: timeline.date))
+                }
+            } else {
+                content(at: VisualizerTile.stillTime)
             }
         }
         .frame(height: 52)
@@ -2802,22 +2930,36 @@ private struct VisualizerSwatch: View {
         .accessibilityHidden(true)
     }
 
-    @ViewBuilder
-    private var previewContent: some View {
-        let sampleHistory = VisualizerTile.history
-        let sampleSpectrum = VisualizerTile.spectrum(for: sampleHistory)
-        let sampleHeights: [CGFloat] = [2, 4, 7, 10, 11, 8, 4, 3, 5, 9, 11, 7, 3, 2, 4, 8, 10, 5, 2]
-        HUDWaveform(
+    /// Where in the demonstration a clock reading sits.
+    private func moment(for date: Date) -> Double {
+        let elapsed = max(0, date.timeIntervalSince(startedAt)) + Self.startOffset
+        return elapsed.truncatingRemainder(dividingBy: VisualizerTile.loop)
+    }
+
+    private func content(at time: Double) -> some View {
+        let history = VisualizerTile.history(at: time)
+        let spectrum = VisualizerTile.spectrum(at: time)
+        return HUDWaveform(
             visualizer: visualizer,
-            halfHeights: sampleHeights,
-            history: sampleHistory,
-            spectrumHistory: sampleSpectrum,
-            phase: 0.35,
-            time: 2.35,
+            halfHeights: Self.sampleHeights,
+            history: history,
+            spectrumHistory: spectrum,
+            phase: DictationScript.phase(at: time),
+            time: time,
             level: 0.68,
             pulse: 0.25
         )
+        .frame(height: 22)
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity)
     }
+
+    /// The row of half heights the synthetic voice is drawn against, in points.
+    ///
+    /// They are the tile's own, not the card's: the tile is narrower than the
+    /// card's canvas, so a card's row would be drawn inside a narrower box and
+    /// leave the picture short of both edges.
+    private static let sampleHeights: [CGFloat] = [2, 4, 7, 10, 11, 8, 4, 3, 5, 9, 11, 7, 3, 2, 4, 8, 10, 5, 2]
 }
 
 /// A miniature window that shows the paper and ink of one appearance choice.
@@ -2930,12 +3072,12 @@ private struct AppRemoveButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "minus.circle.fill")
-                .font(.system(size: 14, weight: .regular))
+                .font(DotType.font(14, .regular))
                 .foregroundStyle(hovering ? DotTheme.ink2 : DotTheme.ink3)
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DotPressStyle())
         .onHover { hovering = $0 }
         .help("Remove")
         .accessibilityLabel("Remove")

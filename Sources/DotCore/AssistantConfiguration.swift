@@ -73,8 +73,19 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
     /// assistant by a person who never picked one. Only the Assistant page sets
     /// this, and only after the person picked a service and gave it a key (or
     /// picked one that runs on this Mac) or accepted the key the Provider page
-    /// already stored.
+    /// already stored, or pressed the switch that turns a keyless endpoint on.
+    /// It is necessary but not sufficient: ``AssistantAvailability`` also asks
+    /// for the address a request would be built from.
     public var isSetUp: Bool
+    /// Whether a service is chosen, whether or not the assistant is on.
+    ///
+    /// It is what separates an unfinished choice from "None": turning the
+    /// assistant off must not destroy the service, its model or a typed
+    /// address, so the record keeps them and this says whether the page should
+    /// present them. `nil` in a file written before this key existed; such a
+    /// file is read by its stored service, which is how an install that named a
+    /// custom endpoint before the flag existed still finds it.
+    public var serviceChosen: Bool?
 
     /// The voice a fresh configuration speaks with: the one on this Mac.
     public static let defaultVoice = VoiceSettings(providerID: VoiceProviderID.apple)
@@ -95,7 +106,8 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
         delivery: AnswerDelivery = .paste,
         actionsEnabled: Bool = true,
         rewrite: RewriteConfiguration = .default,
-        isSetUp: Bool = false
+        isSetUp: Bool = false,
+        serviceChosen: Bool? = nil
     ) {
         self.chat = chat
         self.voice = voice
@@ -104,6 +116,7 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
         self.actionsEnabled = actionsEnabled
         self.rewrite = rewrite
         self.isSetUp = isSetUp
+        self.serviceChosen = serviceChosen
     }
 
     /// The model id a turn is asked for, resolved from the catalogue.
@@ -119,6 +132,7 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
         case actionsEnabled
         case rewrite
         case isSetUp
+        case serviceChosen
     }
 
     public init(from decoder: Decoder) throws {
@@ -140,6 +154,10 @@ public struct AssistantConfiguration: Codable, Sendable, Equatable {
         // the assistant is only ever set up by the person, on its page.
         isSetUp = ((try? container.decodeIfPresent(Bool.self, forKey: .isSetUp)) ?? nil)
             ?? fallback.isSetUp
+        // Absent is not false: a file written before the flag existed says
+        // nothing about a choice, and the page reads its stored service
+        // instead. A bad value is treated as absent for the same reason.
+        serviceChosen = (try? container.decodeIfPresent(Bool.self, forKey: .serviceChosen)) ?? nil
         // A voice block with no provider is not a choice of silence: the voice
         // on this Mac fills in, and the speed the person set is kept.
         var storedVoice = ((try? container.decodeIfPresent(VoiceSettings.self, forKey: .voice)) ?? nil)

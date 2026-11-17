@@ -245,7 +245,7 @@ private struct TourKeycap: View {
                 .offset(y: pressed ? 2.0 : 0)
 
             Text(symbol)
-                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .font(DotType.font(15, .bold))
                 .foregroundStyle(pressed ? DotTheme.amber : DotTheme.ink)
                 .frame(width: 44, height: 44, alignment: .center)
                 .offset(y: pressed ? 2.0 : 0)
@@ -318,12 +318,12 @@ private struct SpeakScene: View {
                 HStack(spacing: 0) {
                     if !currentText.isEmpty {
                         Text(currentText)
-                            .font(.system(size: 14.5, weight: .regular))
+                            .font(DotType.font(14.5, .regular))
                             .foregroundStyle(Color.white.opacity(0.95))
                             .lineLimit(1)
                     } else {
                         Text("Listening…")
-                            .font(.system(size: 14.5, weight: .regular))
+                            .font(DotType.font(14.5, .regular))
                             .foregroundStyle(Color.white.opacity(0.35))
                             .lineLimit(1)
                     }
@@ -368,7 +368,7 @@ private struct PasteScene: View {
                 if isPasted {
                     HStack(spacing: 9) {
                         Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .bold))
+                            .font(DotType.font(10, .bold))
                             .foregroundStyle(HUDTheme.mint)
                             .frame(width: 20, height: 20)
                             .background(Circle().fill(HUDTheme.mint.opacity(0.20)))
@@ -405,7 +405,7 @@ private struct PasteScene: View {
             HStack(spacing: 0) {
                 if !typedText.isEmpty {
                     Text(typedText)
-                        .font(.system(size: 14, weight: .regular))
+                        .font(DotType.font(14, .regular))
                         .foregroundStyle(DotTheme.ink)
                 }
                 Rectangle()
@@ -510,7 +510,7 @@ struct WelcomeTourPage: View {
                     .foregroundStyle(DotTheme.ink)
                     .accessibilityAddTraits(.isHeader)
                 Text(step.detail(mode: recordingMode))
-                    .font(.system(size: 13.5))
+                    .font(DotType.font(13.5, .regular))
                     .foregroundStyle(DotTheme.ink2)
             }
             .padding(.top, 36)
@@ -521,8 +521,8 @@ struct WelcomeTourPage: View {
 
             HStack {
                 Button("Skip") { onSkip() }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 13, weight: .medium))
+                    .buttonStyle(DotPressStyle())
+                    .font(DotType.font(13, .medium))
                     .foregroundStyle(DotTheme.ink3)
                     .frame(width: 170, alignment: .leading)
 

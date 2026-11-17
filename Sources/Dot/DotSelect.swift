@@ -177,9 +177,11 @@ private struct DotSelectTrigger: View {
     let onSelect: (Int) -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isFocused: Bool
     @State private var isHovering = false
     @State private var isOpen = false
+    @State private var isPressed = false
     @State private var anchor = DotSelectAnchor()
 
     var body: some View {
@@ -191,7 +193,7 @@ private struct DotSelectTrigger: View {
             .frame(maxWidth: fillsWidth ? .infinity : nil)
             .background(
                 RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous)
-                    .fill(isHovering && isEnabled ? DotTheme.fieldFillFocused : DotTheme.fieldFill)
+                    .fill(fill)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous)
@@ -200,6 +202,11 @@ private struct DotSelectTrigger: View {
             .background(DotSelectAnchorReporter(anchor: anchor))
             .contentShape(RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous))
             .onTapGesture(perform: toggle)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in isPressed = isEnabled }
+                    .onEnded { _ in isPressed = false }
+            )
             .focusable()
             .focusEffectDisabled()
             .focused($isFocused)
@@ -210,9 +217,23 @@ private struct DotSelectTrigger: View {
                 isHovering = inside && isEnabled
             }
             .onDisappear {
+                isPressed = false
                 if isOpen { DotSelectListController.shared.close() }
             }
             .opacity(isEnabled ? 1 : 0.45)
+            // The held trigger answers with its fill, not with its geometry: a
+            // field that shrank under the pointer would pull the panel anchor
+            // with it and the list would open a point off the control it
+            // belongs to. 120 ms of the app's press curve is the whole answer,
+            // and the same 120 ms eases the hover wash.
+            .animation(
+                DotPressFeedback.animation(reduceMotion: reducesMotion),
+                value: isPressed
+            )
+            .animation(
+                reducesMotion ? nil : .easeOut(duration: DotPressFeedback.duration),
+                value: isHovering
+            )
             .background(
                 DotSelectAccessibilityElement(
                     label: label,
@@ -233,19 +254,38 @@ private struct DotSelectTrigger: View {
                 .layoutPriority(1)
             Spacer(minLength: 0)
             Image(systemName: "chevron.up.chevron.down")
-                .font(.system(size: 9, weight: .semibold))
+                .font(DotType.font(9, .semibold))
                 .foregroundStyle(DotTheme.ink3)
                 .fixedSize()
         }
     }
 
+    /// Whether motion must be stilled: the environment's answer, or the
+    /// workspace setting a view drawn outside a window never receives.
+    private var reducesMotion: Bool {
+        reduceMotion || DotMotion.reducesMotion
+    }
+
+    /// A field being edited is the focus ring's colour; a field under the
+    /// pointer is one step darker than a field at rest.
     private var borderColour: Color {
-        isFocused || isOpen ? DotTheme.focusRing : DotTheme.fieldBorder
+        if isFocused || isOpen { return DotTheme.focusRing }
+        if isHovering || isPressed { return DotTheme.cardBorderSelected }
+        return DotTheme.fieldBorder
+    }
+
+    /// The fill an open list, a held trigger and a hover draw.
+    private var fill: Color {
+        isHovering || isOpen || isPressed ? DotTheme.fieldFillFocused : DotTheme.fieldFill
     }
 
     /// Opens the list, or closes the one this trigger owns.
     private func toggle() {
         guard isEnabled else { return }
+        // A click that opened the list also ends the press: the drag that drew
+        // the held state never ends when the pointer leaves the trigger for the
+        // list, so the state is cleared here.
+        isPressed = false
         if isOpen {
             DotSelectListController.shared.close()
             return
@@ -283,7 +323,9 @@ enum DotSelectMetrics {
     static let settingsColumn: CGFloat = 240
     /// The corner radius of a field.
     static let corner: CGFloat = 8
-    static let titleFont = Font.system(size: 12.5, weight: .regular)
+    /// The title of a field, resolved on every read so a face registered after
+    /// the first touch is still the one drawn.
+    static var titleFont: Font { DotType.font(12.5, .regular) }
 }
 
 /// The trigger's frame, in the coordinates a panel is placed in.
