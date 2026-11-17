@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 @testable import Dot
 import QuartzCore
 import SwiftUI
@@ -91,6 +92,278 @@ final class DotSelectCaptureTests: XCTestCase {
         let data = try XCTUnwrap(shot.representation, "\(name) could not be encoded")
         try data.write(to: directory.appendingPathComponent("\(name).png"))
     }
+
+    // MARK: - The row a list opens on
+
+    /// The speech provider list, opened on its last row, at the three moments a
+    /// person sees and at rest.
+    ///
+    /// The list must be in one place throughout. The card's clock is stopped and
+    /// set by hand, so each frame is drawn at the moment it is named for rather
+    /// than when a render happened to finish: the scale, the card's rectangle and
+    /// the clip offset are read at that moment, and the file is hashed so the
+    /// frames can be compared as bytes.
+    func testTheProviderListOpensOnItsLastRow() throws {
+        guard let path = ProcessInfo.processInfo.environment["DOT_SELECT_CAPTURE_DIR"],
+              !path.isEmpty
+        else {
+            throw XCTSkip("Set DOT_SELECT_CAPTURE_DIR to write the list's pictures.")
+        }
+        _ = NSApplication.shared
+        OffscreenScreen.install()
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let page = try ProviderPageWindow()
+        defer { page.close() }
+        let opened = try page.open()
+        let viewport = opened.scroll.contentView.bounds.height
+        let heights = page.rows.map { DotSelectPlacement.rowHeight(detail: $0.detail) }
+        let expected = DotSelectPlacement.openOffset(
+            rowHeights: heights,
+            selected: page.rows.count - 1,
+            viewport: viewport
+        )
+
+        let layer = try XCTUnwrap(opened.panel.contentView?.layer, "the card has no layer")
+        let clock = layer.speed
+        layer.speed = 0
+        defer {
+            layer.speed = clock
+            layer.timeOffset = 0
+        }
+
+        var offsets: [CGFloat] = []
+        var drawn: [CGFloat] = []
+        var cards: [CGRect] = []
+        for (name, moment) in [("0.00", 0.0), ("0.05", 0.05), ("0.14", 0.14), ("0.30", 0.30)] {
+            layer.timeOffset = moment
+            CATransaction.flush()
+            let state = page.state(opened)
+            let shot = try page.capture(opened)
+            let file = "provider-last-\(name).png"
+            try shot.data.write(to: directory.appendingPathComponent(file), options: .atomic)
+            offsets.append(state.offset)
+            drawn.append(state.scale)
+            cards.append(shot.card)
+            print(String(
+                format: "PROVIDERFRAME %@ t%.2fs alpha %.2f scale %.4f clipOffset %.3f expected %.3f card %.1fx%.1f at y%.1f sha256 %@",
+                file,
+                moment,
+                state.alpha,
+                state.scale,
+                state.offset,
+                expected,
+                shot.card.width,
+                shot.card.height,
+                shot.card.minY,
+                Self.hash(shot.data)
+            ))
+        }
+
+        for (index, offset) in offsets.enumerated() {
+            XCTAssertEqual(
+                offset,
+                expected,
+                accuracy: 0.5,
+                "frame \(index) is \(offset), not the \(expected) the list opened on"
+            )
+        }
+        XCTAssertEqual(
+            offsets.first ?? 0,
+            offsets.last ?? -1,
+            accuracy: 0.5,
+            "the list moved while the card opened"
+        )
+        XCTAssertLessThan(drawn.first ?? 1, 1, "the card did not start scaled")
+        XCTAssertEqual(drawn.last ?? 0, 1, accuracy: 0.001, "the card did not finish at its own size")
+        let first = try XCTUnwrap(cards.first, "the first frame has no card in it")
+        let last = try XCTUnwrap(cards.last, "the last frame has no card in it")
+        XCTAssertGreaterThan(last.height, first.height + 4, "the card is drawn at one size throughout")
+        XCTAssertEqual(
+            first.minY,
+            last.minY,
+            accuracy: 1,
+            "the card grew away from the edge it hangs from"
+        )
+    }
+
+    static func hash(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// The speech provider picker in a window off every display, opened through the
+/// shipped trigger and the shipped panel.
+@MainActor
+private final class ProviderPageWindow {
+    struct Row {
+        let id: String
+        let title: String
+        let detail: String?
+    }
+
+    /// Eight services, every one with the line it carries in Settings, which is
+    /// the list that opens a point short of its foot.
+    let rows: [Row] = [
+        Row(id: "apple", title: "Apple", detail: "On this Mac"),
+        Row(id: "openai", title: "OpenAI", detail: "Requires API key"),
+        Row(id: "assembly", title: "AssemblyAI", detail: "Requires API key"),
+        Row(id: "deepgram", title: "Deepgram", detail: "Requires API key"),
+        Row(id: "speechmatics", title: "Speechmatics", detail: "Requires API key"),
+        Row(id: "azure", title: "Azure", detail: "Requires API key"),
+        Row(id: "elevenlabs", title: "ElevenLabs", detail: "Requires API key"),
+        Row(id: "custom", title: "Custom endpoint", detail: "Custom endpoint"),
+    ]
+
+    let window: NSWindow
+    let host: NSHostingView<ProviderPage>
+
+    init() throws {
+        let size = CGSize(width: 460, height: 200)
+        window = OffscreenWindow(size: size, styleMask: [.borderless])
+        host = NSHostingView(rootView: ProviderPage(rows: rows))
+        host.frame = NSRect(origin: .zero, size: size)
+        window.contentView = host
+        window.setFrameOrigin(OffscreenWindow.origin)
+        window.orderFrontRegardless()
+        host.layoutSubtreeIfNeeded()
+    }
+
+    func close() {
+        DotSelectListController.shared.close()
+        OffscreenScreen.restore()
+        window.orderOut(nil)
+        window.close()
+    }
+
+    /// Presses the trigger and hands back the list it drew, before the run loop
+    /// turns again.
+    func open() throws -> (panel: DotSelectPanel, scroll: NSScrollView) {
+        let element = try XCTUnwrap(Self.element(in: host), "the trigger is not in the window")
+        XCTAssertTrue(element.accessibilityPerformPress(), "the trigger did not open the list")
+        let panel = try XCTUnwrap(DotSelectListController.shared.panel)
+        XCTAssertLessThan(panel.frame.maxY, 0, "the panel was ordered onto a display")
+        let scroll = try XCTUnwrap(
+            DotSelectListController.shared.model?.scroll.reporter?.listScrollView,
+            "the list did not exist when the open returned"
+        )
+        return (panel, scroll)
+    }
+
+    /// The numbers the card is being drawn with: where the list is scrolled to,
+    /// the window's fade, and the scale the content's layer is presenting.
+    struct State {
+        let offset: CGFloat
+        let alpha: CGFloat
+        let scale: CGFloat
+    }
+
+    func state(_ opened: (panel: DotSelectPanel, scroll: NSScrollView)) -> State {
+        let layer = opened.panel.contentView?.layer
+        let presented = layer?.presentation()?.sublayerTransform
+        return State(
+            offset: opened.scroll.contentView.bounds.origin.y,
+            alpha: opened.panel.alphaValue,
+            scale: presented?.m11 ?? 1
+        )
+    }
+
+    /// One frame of the panel's content, and the card's own rectangle in it.
+    struct Shot {
+        let data: Data
+        let card: CGRect
+    }
+
+    func capture(_ opened: (panel: DotSelectPanel, scroll: NSScrollView)) throws -> Shot {
+        let content = try XCTUnwrap(opened.panel.contentView, "the panel has no content")
+        let layer = try XCTUnwrap(content.layer, "the panel's content has no layer")
+        let scale: CGFloat = 2
+        let width = Int(content.bounds.width * scale)
+        let height = Int(content.bounds.height * scale)
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        // The layer tree draws from the bottom left; the PNG counts from the top.
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: scale, y: -scale)
+        (layer.presentation() ?? layer).render(in: context)
+        let image = try XCTUnwrap(context.makeImage(), "the layer tree did not render")
+        let rep = NSBitmapImageRep(cgImage: image)
+        let data = try XCTUnwrap(rep.representation(using: .png, properties: [:]),
+                                 "the frame could not be encoded")
+        let box = Self.cardBox(rep) ?? .zero
+        return Shot(
+            data: data,
+            card: CGRect(
+                x: box.minX / scale,
+                y: box.minY / scale,
+                width: box.width / scale,
+                height: box.height / scale
+            )
+        )
+    }
+
+    /// The card's rectangle in pixels, read from the picture: the card is opaque
+    /// and its shadow is not, so the pixels that are nearly solid are the card.
+    /// The picture counts from the top left.
+    private static func cardBox(_ rep: NSBitmapImageRep) -> CGRect? {
+        guard let data = rep.bitmapData, rep.samplesPerPixel > 3 else { return nil }
+        var first = rep.pixelsWide
+        var last = -1
+        var top = rep.pixelsHigh
+        var bottom = -1
+        for y in 0..<rep.pixelsHigh {
+            let row = data + y * rep.bytesPerRow
+            for x in 0..<rep.pixelsWide where row[x * rep.samplesPerPixel + 3] > 230 {
+                first = min(first, x)
+                last = max(last, x)
+                top = min(top, y)
+                bottom = max(bottom, y)
+            }
+        }
+        guard last >= first, bottom >= top else { return nil }
+        return CGRect(
+            x: CGFloat(first),
+            y: CGFloat(top),
+            width: CGFloat(last - first + 1),
+            height: CGFloat(bottom - top + 1)
+        )
+    }
+
+    private static func element(in view: NSView) -> DotSelectAccessibilityView? {
+        if let element = view as? DotSelectAccessibilityView { return element }
+        for sub in view.subviews {
+            if let found = element(in: sub) { return found }
+        }
+        return nil
+    }
+}
+
+/// The page the provider picker sits on, with the last service chosen.
+private struct ProviderPage: View {
+    let rows: [ProviderPageWindow.Row]
+    @State private var selection: String? = "custom"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Speech")
+                .font(.system(size: 12, weight: .semibold))
+            DotSelect(
+                label: "Speech provider",
+                options: rows.map {
+                    DotSelectOption(value: $0.id, title: $0.title, detail: $0.detail)
+                },
+                selection: $selection,
+                width: 260
+            )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(24)
+        .background(DotTheme.paper)
+    }
 }
 
 /// The panel's content in a window that is never shown, and its picture.
@@ -121,7 +394,6 @@ final class CapturePage {
             height: cardSize.height + 2 * shadowInset
         )
         model = DotSelectListModel(highlight: 0)
-        model.isPresented = true
         window = OffscreenWindow(size: size, styleMask: [.borderless])
         host = NSHostingView(rootView: DotSelectListHost(
             generation: 1,

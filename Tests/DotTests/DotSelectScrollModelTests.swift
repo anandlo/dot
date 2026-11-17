@@ -239,26 +239,28 @@ final class DotSelectScrollModelTests: XCTestCase {
         XCTAssertEqual(scroll.offset(showing: .bottom), 0, "a list that fits has no foot to reach")
     }
 
-    /// A card that is still opening does not place an end: the opening animation
-    /// moves the list's offset with it.
-    func testAnEndWaitsForTheOpeningToFinish() {
+    /// An end asked for before the list was measured is kept whole until the
+    /// reporter that places it takes it: a measurement in between describes the
+    /// card, and does not consume the request.
+    func testAnEndWaitsForTheReporterThatMeasuresTheList() {
         let scroll = DotSelectScrollModel()
-        XCTAssertFalse(scroll.isOpening, "a card that was not opened is not opening")
-
-        scroll.beginOpening()
-        XCTAssertTrue(scroll.isOpening)
         scroll.requestEnd(.bottom)
-        XCTAssertEqual(scroll.pendingEnd, .bottom, "the request waits for the opening")
-        scroll.finishOpening()
-        XCTAssertFalse(scroll.isOpening)
-        XCTAssertEqual(scroll.pendingEnd, .bottom, "the request is the reporter's to place")
+        XCTAssertEqual(scroll.pendingEnd, .bottom, "the card never learned which end to show")
+
+        scroll.moved(offset: 0, contentHeight: 848, viewportHeight: 310)
+        XCTAssertEqual(
+            scroll.pendingEnd,
+            .bottom,
+            "a measurement took the end the reporter was going to place"
+        )
+        XCTAssertEqual(scroll.takePendingEnd(), .bottom)
+        XCTAssertNil(scroll.pendingEnd)
     }
 
     /// A newer target drops the end the card was waiting to place: a middle
     /// row, or a wheel, is where the reader is now.
     func testANewerTargetDropsTheEndItWasWaitingFor() {
         let scroll = DotSelectScrollModel()
-        scroll.beginOpening()
         scroll.requestEnd(.bottom)
         scroll.cancelPendingEnd()
         XCTAssertNil(scroll.pendingEnd, "the end outlived the target that replaced it")
@@ -268,14 +270,11 @@ final class DotSelectScrollModelTests: XCTestCase {
     /// a card that is gone.
     func testAClosedListDropsTheEndItWasAskedFor() {
         let scroll = DotSelectScrollModel()
-        scroll.beginOpening()
         scroll.requestEnd(.bottom)
         scroll.stop()
         XCTAssertNil(scroll.pendingEnd)
         scroll.requestEnd(.top)
         XCTAssertNil(scroll.pendingEnd, "a stopped model does not take requests")
-        scroll.finishOpening()
-        XCTAssertNil(scroll.pendingEnd)
     }
 
     // MARK: - A chosen row
