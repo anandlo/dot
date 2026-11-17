@@ -317,6 +317,11 @@ final class DotSelectScrollModelTests: XCTestCase {
         )
     }
 
+    /// The row's pixels at two pixels per point.
+    ///
+    /// A rep AppKit makes for the cache display comes back at the display's own
+    /// scale, which is one pixel per point on a display that is not Retina, so
+    /// the bitmap is made here at the scale the luminance is read at.
     private func render(_ view: some View) throws -> NSBitmapImageRep {
         let paper = ZStack {
             RoundedRectangle(cornerRadius: 10).fill(DotTheme.paper)
@@ -328,7 +333,19 @@ final class DotSelectScrollModelTests: XCTestCase {
         host.appearance = NSAppearance(named: .aqua)
         host.frame = NSRect(x: 0, y: 0, width: 240, height: 40)
         host.layoutSubtreeIfNeeded()
-        let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 240 * 2,
+            pixelsHigh: 40 * 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), "the row could not be allocated")
+        rep.size = NSSize(width: 240, height: 40)
         host.cacheDisplay(in: host.bounds, to: rep)
         return rep
     }

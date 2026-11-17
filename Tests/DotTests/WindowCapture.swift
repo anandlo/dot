@@ -16,11 +16,19 @@ enum WindowCapture {
     // MARK: - A picture
 
     /// One picture of a window: eight bits per channel, four channels, sRGB,
-    /// rows from the top of the window down.
+    /// rows from the top of the window down, and the pixels per point the
+    /// window server captured it at.
     struct Pixels {
         let width: Int
         let height: Int
         var data: [UInt8]
+        /// The pixels per point of the display the window server captured on.
+        ///
+        /// The capture is asked for at the best resolution the display offers
+        /// and cannot ask for another one, so this is the display's own ratio:
+        /// two on a Retina display, one on a display that is not. Every rect a
+        /// test converts from points is scaled by it.
+        var scale: CGFloat = 1
 
         /// One pixel as red, green and blue, 0 to 255.
         func pixel(_ x: Int, _ y: Int) -> (Double, Double, Double) {
@@ -182,7 +190,50 @@ enum WindowCapture {
             return true
         }
         guard drawn else { return nil }
-        return Pixels(width: width, height: height, data: buffer)
+        return Pixels(
+            width: width,
+            height: height,
+            data: buffer,
+            scale: window.frame.width > 0 ? CGFloat(width) / window.frame.width : 1
+        )
+    }
+
+    /// Whether a window-server picture can be measured, and a skip when it cannot.
+    ///
+    /// The window server captures at the display's own pixel ratio and there is
+    /// no way to ask it for another one, so on a display that is not Retina the
+    /// picture comes back at one pixel per point while every rect the tests
+    /// convert it with is written for two, and the measurement would be taken
+    /// half a picture away from what it names. A process without the screen
+    /// recording right is handed a blank picture rather than an error, which is
+    /// the same kind of unusable: neither is a property of the code under test.
+    ///
+    /// - Parameters:
+    ///   - image: the picture the window server returned.
+    ///   - expectedScale: the pixels per point every measurement is written for.
+    ///   - requiresContent: whether a picture of one colour is a failed capture.
+    ///     A bare backdrop is one colour on purpose, so a picture a test takes
+    ///     only to measure its card against passes false.
+    /// - Throws: `XCTSkip` naming the reason the picture cannot be used.
+    static func requireUsableCapture(
+        _ image: Pixels,
+        expectedScale: Int = 2,
+        requiresContent: Bool = true
+    ) throws {
+        if requiresContent, image.isBlank {
+            throw XCTSkip(
+                "the window server returned a blank picture, which is what a process without the "
+                    + "screen recording right is handed"
+            )
+        }
+        let scale = Int(image.scale.rounded())
+        if scale != expectedScale {
+            throw XCTSkip(
+                "the window server captured at \(scale) pixel\(scale == 1 ? "" : "s") per point "
+                    + "and these measurements are written for \(expectedScale); it captures at the "
+                    + "display's own ratio and cannot be asked for another one"
+            )
+        }
     }
 
     /// The one call that returns the composited window, out of the framework.
@@ -220,7 +271,12 @@ enum WindowCapture {
     }
 
     /// The pixels of an image, in the capture's own layout.
-    static func pixels(from image: CGImage) -> Pixels? {
+    ///
+    /// - Parameters:
+    ///   - image: the image to read.
+    ///   - scale: the pixels per point the image was drawn at, which a picture
+    ///     the window server did not make carries on its own.
+    static func pixels(from image: CGImage, scale: CGFloat = 1) -> Pixels? {
         let width = image.width
         let height = image.height
         guard width > 0, height > 0 else { return nil }
@@ -241,7 +297,7 @@ enum WindowCapture {
             return true
         }
         guard drawn else { return nil }
-        return Pixels(width: width, height: height, data: buffer)
+        return Pixels(width: width, height: height, data: buffer, scale: scale)
     }
 
     /// Writes a picture as a PNG.

@@ -1064,13 +1064,31 @@ final class DotSelectBehaviourTests: XCTestCase {
         )
     }
 
+    /// The card's pixels at two pixels per point.
+    ///
+    /// A rep AppKit makes for the cache display comes back at the display's own
+    /// scale, which is one pixel per point on a display that is not Retina, so
+    /// the bitmap is made here at the scale the ink share is measured on.
     private static func render(_ view: AnyView, appearance: NSAppearance?) -> NSBitmapImageRep? {
         let host = NSHostingView(rootView: view)
         host.frame = NSRect(x: 0, y: 0, width: 240, height: 78)
         host.appearance = appearance
         host.layoutSubtreeIfNeeded()
-        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return nil }
-        host.cacheDisplay(in: host.bounds, to: rep)
+        let bounds = host.bounds
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(bounds.width) * 2,
+            pixelsHigh: Int(bounds.height) * 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return nil }
+        rep.size = bounds.size
+        host.cacheDisplay(in: bounds, to: rep)
         return rep
     }
 

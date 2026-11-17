@@ -591,6 +591,7 @@ final class DotTextEditorScrollTests: XCTestCase {
                 WindowCapture.capture(window),
                 "the field's window could not be captured"
             )
+            try WindowCapture.requireUsableCapture(pixels)
             let url = folder.appendingPathComponent("\(name).png")
             XCTAssertTrue(WindowCapture.write(pixels, to: url), "the frame could not be written")
             print(

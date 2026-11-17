@@ -1260,7 +1260,11 @@ extension MatrixRenderTests {
         size: CGSize,
         scale: Int
     ) throws -> NSBitmapImageRep {
-        let hosting = NSHostingView(rootView: MatrixPane { content }.frame(width: size.width, height: size.height))
+        let hosting = NSHostingView(
+            rootView: MatrixPane { content }
+                .frame(width: size.width, height: size.height)
+                .environment(\.displayScale, CGFloat(scale))
+        )
         hosting.frame = NSRect(origin: .zero, size: size)
         hosting.appearance = NSAppearance(named: .darkAqua)
         hosting.layoutSubtreeIfNeeded()
@@ -2609,7 +2613,9 @@ extension MatrixRenderTests {
         scale: Int
     ) throws -> (NSBitmapImageRep, Data) {
         let hosting = NSHostingView(
-            rootView: MatrixPane { content }.frame(width: size.width, height: size.height)
+            rootView: MatrixPane { content }
+                .frame(width: size.width, height: size.height)
+                .environment(\.displayScale, CGFloat(scale))
         )
         hosting.frame = NSRect(origin: .zero, size: size)
         hosting.appearance = NSAppearance(named: .darkAqua)

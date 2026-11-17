@@ -14,7 +14,7 @@ jobs:
   test:
     name: Test & Build
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -41,8 +41,28 @@ jobs:
             exit 1
           fi
 
+      # Switzer may be embedded in the app but not redistributed, so it is not
+      # in the repository. The script checks the pinned SHA-256 and fails the
+      # step on a download or checksum error.
+      - name: Fetch the typeface
+        run: ./scripts/fetch-fonts.sh
+
+      - name: Build without warnings
+        run: |
+          set -o pipefail
+          swift build --build-tests 2>&1 | tee build.log
+          matches="$(grep -E "^/.*/(Sources|Tests)/.*: warning:" build.log || true)"
+          if [ -n "$matches" ]; then
+            printf '%s\n' "$matches"
+            echo "::error::the build emitted warnings"
+            exit 1
+          fi
+
+      # Serial: several tests composite offscreen windows through the window
+      # server and time the island's springs, and parallel processes disturb
+      # each other's measurements.
       - name: Swift Test
-        run: swift test --parallel
+        run: swift test
 
       - name: Build Application Bundle
         run: ./scripts/build.sh

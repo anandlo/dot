@@ -1302,12 +1302,7 @@ extension HUDEmergenceTests {
                 WindowCapture.capture(window),
                 "the window server returned no picture of the window"
             )
-            if picture.isBlank {
-                throw XCTSkip(
-                    "the window server returned a blank picture, which is what a process without "
-                        + "the screen recording right is handed"
-                )
-            }
+            try WindowCapture.requireUsableCapture(picture)
             let stem = String(format: "present-glass-t%03d", Int((time * 1000).rounded()))
             XCTAssertTrue(
                 WindowCapture.write(picture, to: root.appendingPathComponent("\(stem).png")),

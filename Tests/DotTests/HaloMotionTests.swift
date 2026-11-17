@@ -2213,12 +2213,7 @@ extension HaloMotionTests {
             WindowCapture.capture(window),
             "the window server returned no picture of the window"
         )
-        if picture.isBlank {
-            throw XCTSkip(
-                "the window server returned a blank picture, which is what a process without the "
-                    + "screen recording right is handed"
-            )
-        }
+        try WindowCapture.requireUsableCapture(picture)
         return picture
     }
 
@@ -2589,7 +2584,8 @@ extension HaloMotionTests {
             .frame(width: room.width, height: room.height)
             let window = WindowCapture.show(view, size: room)
             defer { WindowCapture.hide(window) }
-            if let picture = WindowCapture.capture(window), !picture.isBlank {
+            if let picture = WindowCapture.capture(window) {
+                try WindowCapture.requireUsableCapture(picture)
                 let url = directory.appendingPathComponent("wave-halo-t6.96.png")
                 XCTAssertTrue(
                     WindowCapture.write(picture, to: url),

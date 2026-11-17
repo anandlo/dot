@@ -190,7 +190,11 @@ final class SpeechEngine {
         guard let output = AVAudioPCMBuffer(pcmFormat: destination, frameCapacity: capacity) else {
             throw SpeechEngineError.conversionFailed("no room for the converted audio")
         }
-        var supplied = false
+        // The block the converter calls runs synchronously inside `convert`, on
+        // this thread, so the flag and the buffer need no synchronisation of
+        // their own and the compiler cannot see it.
+        nonisolated(unsafe) var supplied = false
+        nonisolated(unsafe) let input = source
         var conversionError: NSError?
         let status = converter.convert(to: output, error: &conversionError) { _, outStatus in
             guard !supplied else {
@@ -199,7 +203,7 @@ final class SpeechEngine {
             }
             supplied = true
             outStatus.pointee = .haveData
-            return source
+            return input
         }
         if let conversionError {
             throw SpeechEngineError.conversionFailed(conversionError.localizedDescription)

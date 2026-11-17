@@ -139,10 +139,12 @@ final class HUDRewriteChipRowTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
     }
 
+    /// The row's pixels at the two pixels per point its assertions are written
+    /// against, whatever scale the display the suite runs on has: a rep AppKit
+    /// makes for the window comes back at the display's own scale, which is one
+    /// pixel per point on a display that is not Retina.
     private func bitmap(of host: NSView) -> NSBitmapImageRep? {
-        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return nil }
-        host.cacheDisplay(in: host.bounds, to: rep)
-        return rep
+        bitmap(of: host, scale: 2)
     }
 
     /// A view's pixels at a chosen scale, for a frame a reviewer will open.

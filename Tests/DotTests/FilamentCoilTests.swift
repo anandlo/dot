@@ -1223,9 +1223,7 @@ extension FilamentCoilTests {
                 WindowCapture.capture(window),
                 "the window server returned no picture of the window"
             )
-            if picture.isBlank {
-                throw XCTSkip("the window server returned a blank picture (no screen recording right)")
-            }
+            try WindowCapture.requireUsableCapture(picture)
             return picture
         }
 

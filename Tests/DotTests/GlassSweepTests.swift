@@ -204,6 +204,7 @@ final class GlassSweepTests: XCTestCase {
             WindowCapture.capture(front),
             "the window server returned no picture of the card's window"
         )
+        try WindowCapture.requireUsableCapture(twoWindow)
         WindowCapture.hide(front)
         WindowCapture.hide(behind)
 
@@ -445,13 +446,7 @@ final class GlassSweepTests: XCTestCase {
             WindowCapture.capture(window),
             "the window server returned no picture of the window"
         )
-        if requiresContent {
-            XCTAssertFalse(
-                picture.isBlank,
-                "the window server returned a blank picture, which is what a process without the "
-                    + "screen recording right is handed"
-            )
-        }
+        try WindowCapture.requireUsableCapture(picture, requiresContent: requiresContent)
         return picture
     }
 

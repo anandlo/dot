@@ -2346,6 +2346,7 @@ final class HUDMotionPolishTests: XCTestCase {
         )
         .frame(width: size.width, height: size.height)
         .environment(\.colorScheme, .dark)
+        .environment(\.displayScale, CGFloat(Self.scale))
 
         let host = NSHostingView(rootView: view)
         host.frame = NSRect(origin: .zero, size: size)
@@ -2432,6 +2433,7 @@ final class HUDMotionPolishTests: XCTestCase {
         )
         .frame(width: size.width, height: size.height)
         .environment(\.colorScheme, .dark)
+        .environment(\.displayScale, CGFloat(Self.scale))
 
         let host = NSHostingView(rootView: AnyView(view))
         host.frame = NSRect(origin: .zero, size: size)

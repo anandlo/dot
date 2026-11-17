@@ -327,14 +327,36 @@ final class DotSelectMenuTests: XCTestCase {
 
     // MARK: - Pixels
 
+    /// A view's pixels at two pixels per point.
+    ///
+    /// A rep AppKit makes for the cache display comes back at the display's own
+    /// scale, which is one pixel per point on a display that is not Retina, so
+    /// the bitmap is made here at the scale the colours are read at.
+    private func cached(_ host: NSView) throws -> NSBitmapImageRep {
+        let bounds = host.bounds
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(bounds.width) * 2,
+            pixelsHigh: Int(bounds.height) * 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), "the swatch could not be allocated")
+        rep.size = bounds.size
+        host.cacheDisplay(in: bounds, to: rep)
+        return rep
+    }
+
     private func swatch(_ view: some View, mode: MenuMode) throws -> NSBitmapImageRep {
         let host = NSHostingView(rootView: view.frame(width: 16, height: 16))
         host.appearance = NSAppearance(named: mode.appearance)
         host.frame = NSRect(x: 0, y: 0, width: 16, height: 16)
         host.layoutSubtreeIfNeeded()
-        let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: rep)
-        return rep
+        return try cached(host)
     }
 
     private func rowMean(_ row: DotSelectRow, highlight: Bool, pressed: Bool, mode: MenuMode) throws -> CGFloat {
@@ -354,9 +376,7 @@ final class DotSelectMenuTests: XCTestCase {
         host.appearance = NSAppearance(named: mode.appearance)
         host.frame = NSRect(x: 0, y: 0, width: 240, height: 40)
         host.layoutSubtreeIfNeeded()
-        let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: rep)
-        return PixelDifference.meanLuminance(rep)
+        return PixelDifference.meanLuminance(try cached(host))
     }
 }
 

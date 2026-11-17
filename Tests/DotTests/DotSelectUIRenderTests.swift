@@ -162,9 +162,27 @@ final class DotSelectUIRenderTests: XCTestCase {
         return try cache(host)
     }
 
+    /// The host's pixels at two pixels per point.
+    ///
+    /// A rep AppKit makes for the cache display comes back at the display's own
+    /// scale, which is one pixel per point on a display that is not Retina, so
+    /// the bitmap is made here at the scale the pictures are judged at.
     private func cache(_ host: NSView) throws -> NSBitmapImageRep {
-        let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: rep)
+        let bounds = host.bounds
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(bounds.width) * 2,
+            pixelsHigh: Int(bounds.height) * 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), "the cache display could not be allocated")
+        rep.size = bounds.size
+        host.cacheDisplay(in: bounds, to: rep)
         return rep
     }
 

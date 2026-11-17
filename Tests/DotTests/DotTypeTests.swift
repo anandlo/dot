@@ -468,7 +468,7 @@ final class DotTypeTests: XCTestCase {
         skippingTopPixels top: CGFloat
     ) throws -> CGFloat {
         let scale = 2
-        let host = NSHostingView(rootView: view)
+        let host = NSHostingView(rootView: view.environment(\.displayScale, CGFloat(scale)))
         host.frame = NSRect(origin: .zero, size: size)
         host.appearance = NSAppearance(named: .darkAqua)
         let window = OffscreenWindow(size: size, styleMask: [.borderless])

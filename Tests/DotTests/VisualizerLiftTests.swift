@@ -163,12 +163,7 @@ final class VisualizerLiftTests: XCTestCase {
                 WindowCapture.capture(window),
                 "the window server returned no picture of the window"
             )
-            if picture.isBlank {
-                throw XCTSkip(
-                    "the window server returned a blank picture, which is what a process without "
-                        + "the screen recording right is handed"
-                )
-            }
+            try WindowCapture.requireUsableCapture(picture)
             let name = String(format: "wave-%@-t%.2f.png", slug(visualizer), Self.moments[1])
             let url = directory.appendingPathComponent(name)
             XCTAssertTrue(WindowCapture.write(picture, to: url), "\(name) was not written")

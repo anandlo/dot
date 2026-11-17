@@ -764,12 +764,7 @@ final class GlassSurfaceTests: XCTestCase {
             WindowCapture.capture(window),
             "the window server returned no picture of the window"
         )
-        if requiresContent, picture.isBlank {
-            throw XCTSkip(
-                "the window server returned a blank picture, which is what a process without the "
-                    + "screen recording right is handed"
-            )
-        }
+        try WindowCapture.requireUsableCapture(picture, requiresContent: requiresContent)
         return picture
     }
 }
