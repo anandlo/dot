@@ -1,5 +1,35 @@
 import Foundation
 
+/// The clock a quit measures its wait with.
+///
+/// The app uses ``live``: the monotonic clock and a real sleep. A test passes a
+/// clock it moves by hand, so the arithmetic of the wait is asserted exactly
+/// rather than measured against a runner whose speed nobody controls.
+public struct ShutdownClock: Sendable {
+    /// The time now, measured from a fixed point.
+    public let now: @Sendable () -> Duration
+    /// Suspends for at least `duration`.
+    public let sleep: @Sendable (Duration) async -> Void
+
+    /// Creates a clock from the two things the wait needs.
+    public init(
+        now: @escaping @Sendable () -> Duration,
+        sleep: @escaping @Sendable (Duration) async -> Void
+    ) {
+        self.now = now
+        self.sleep = sleep
+    }
+
+    /// The clock and the sleep the app uses.
+    public static let live: ShutdownClock = {
+        let origin = ContinuousClock.now
+        return ShutdownClock(
+            now: { origin.duration(to: ContinuousClock.now) },
+            sleep: { duration in try? await Task.sleep(for: duration) }
+        )
+    }()
+}
+
 /// The last thing the app does: let the archive finish, then answer the quit.
 ///
 /// A day file is replaced whole, so a write cut off by the process ending is a
@@ -36,6 +66,7 @@ public enum Shutdown {
     ///
     /// - Parameters:
     ///   - limit: the longest the answer waits, in total.
+    ///   - clock: what the limit is measured with.
     ///   - pending: the writes not waited for yet, read on the main actor and
     ///     synchronously. Taking them is what tells a later pass that they are
     ///     done.
@@ -43,10 +74,11 @@ public enum Shutdown {
     ///     `NSApplication.reply(toApplicationShouldTerminate:)` in the app.
     public static func drain(
         limit: Duration = archiveLimit,
+        clock: ShutdownClock = .live,
         pending: @MainActor @Sendable () -> [Task<Void, Never>],
         reply: @MainActor @Sendable (Bool) -> Void
     ) async {
-        let deadline = ContinuousClock.now.advanced(by: limit)
+        let deadline = clock.now() + limit
         while true {
             let step = await MainActor.run { () -> Step in
                 let tasks = pending()
@@ -54,7 +86,7 @@ public enum Shutdown {
                     reply(true)
                     return .answered
                 }
-                let remaining = ContinuousClock.now.duration(to: deadline)
+                let remaining = deadline - clock.now()
                 guard remaining > .zero else {
                     reply(true)
                     return .answered
@@ -65,7 +97,7 @@ public enum Shutdown {
             case .answered:
                 return
             case .waiting(let tasks, let remaining):
-                await wait(for: tasks, limit: remaining)
+                await wait(for: tasks, limit: remaining, clock: clock)
             }
         }
     }
@@ -84,7 +116,12 @@ public enum Shutdown {
     /// - Parameters:
     ///   - tasks: the work to wait for.
     ///   - limit: the longest the wait lasts.
-    public static func wait(for tasks: [Task<Void, Never>], limit: Duration) async {
+    ///   - clock: what the limit is measured with.
+    public static func wait(
+        for tasks: [Task<Void, Never>],
+        limit: Duration,
+        clock: ShutdownClock = .live
+    ) async {
         if !tasks.isEmpty {
             // Whichever arrives first wins: the last task finishing, or the
             // limit running out. A group cannot express this, because a child
@@ -98,7 +135,7 @@ public enum Shutdown {
                 await race.arrive()
             }
             let expiry = Task {
-                try? await Task.sleep(for: limit)
+                await clock.sleep(limit)
                 await race.arrive()
             }
             await race.wait()
