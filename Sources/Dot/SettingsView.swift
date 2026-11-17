@@ -2029,15 +2029,15 @@ struct SettingsView: View {
                 .padding(.vertical, 9)
             }
 
-            SettingsSection("Recording card material") {
+            SettingsSection("Island surface") {
                 HStack(alignment: .top, spacing: 10) {
-                    materialCard(.glass, name: "Glass")
-                    materialCard(.black, name: "Black")
+                    materialCard(.glass, name: HUDMaterial.glass.title)
+                    materialCard(.black, name: HUDMaterial.black.title)
                 }
                 .padding(.vertical, 9)
             }
 
-            SettingsSection("Waveform") {
+            SettingsSection("Voice visualizer") {
                 visualizerSection
                     .padding(.vertical, 9)
             }
@@ -2182,7 +2182,7 @@ struct SettingsView: View {
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(DotPressStyle())
-        .accessibilityLabel("\(visualizer.title) waveform")
+        .accessibilityLabel("\(visualizer.title) visualizer")
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
         .accessibilityHint(visualizer.detail)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
