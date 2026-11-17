@@ -1740,6 +1740,11 @@ struct HUDWaveform: View {
             ink: (Filament.Piece) -> Double,
             colour: (Filament.Piece) -> Color
         ) {
+            // `drawLayer` calls its closure synchronously on this thread, so the
+            // two closures never cross an isolation boundary; Swift 6.3's release
+            // build cannot see that and reports the capture as a data race.
+            nonisolated(unsafe) let ink = ink
+            nonisolated(unsafe) let colour = colour
             var layer = surface
             layer.blendMode = .plusLighter
             // A filter added to a context applies to every drawing operation after
