@@ -171,8 +171,8 @@ h2.sec{font-family:var(--display);font-weight:400;font-size:clamp(28px,3.4vw,46p
 .panel{position:absolute;inset:0;opacity:0;transform:scale(.97) translateY(10px);
   transition:opacity 480ms var(--e-out),transform 640ms var(--e-out)}
 .panel.on{opacity:1;transform:none}
-.panel *{animation-play-state:paused}
-.panel.on *{animation-play-state:running}
+.panel:not(.on) *{animation-play-state:paused!important}
+.story__stage[data-live="0"] .panel *{animation-play-state:paused!important}
 .panel > div{zoom:1.35}
 .panel .v-list{top:50%;bottom:auto;transform:translateY(-50%)}
 .panel .v-hist,.panel .v-kc{top:50%;transform:translateY(-50%)}
@@ -335,7 +335,7 @@ h2.sec{font-family:var(--display);font-weight:400;font-size:clamp(28px,3.4vw,46p
   <section id="how" class="band">
     <div class="wrap"><h2 class="sec rv">Talk instead of type.</h2></div>
     <div class="story wrap" id="story">
-      <div class="story__stage" data-ui>
+      <div class="story__stage" data-ui data-live="0">
         <div class="panel" data-i="0" aria-hidden="true"><div class="v-chunks"><i></i><i></i><i></i><i></i><i></i><i></i></div>
           <div class="v-legend"><span>sent while you talk</span><b>sent when you stop</b></div>
         </div>
@@ -644,6 +644,18 @@ h2.sec{font-family:var(--display);font-weight:400;font-size:clamp(28px,3.4vw,46p
   }
   window.addEventListener('scroll', function () { if (!storyTicking) { storyTicking = true; requestAnimationFrame(followStory); } }, { passive: true });
   window.addEventListener('resize', followStory);
+
+  /* The sticky stage keeps its 17 loops off until it is actually on screen. */
+  var stageEl = story && story.querySelector('.story__stage');
+  if (stageEl) {
+    if ('IntersectionObserver' in window) {
+      new IntersectionObserver(function (entries) {
+        stageEl.setAttribute('data-live', entries[0].isIntersecting ? '1' : '0');
+      }, { threshold: 0 }).observe(stageEl);
+    } else {
+      stageEl.setAttribute('data-live', '1');
+    }
+  }
 
   /* Copy buttons: the command is in data-copy, so what is copied is exactly what is shown. */
   Array.prototype.forEach.call(document.querySelectorAll('.copy'), function (btn) {

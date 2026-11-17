@@ -30,7 +30,7 @@ final class ConfigTests: XCTestCase {
         XCTAssertNil(config.microphoneDeviceUID)
         XCTAssertFalse(config.logTranscripts)
         XCTAssertEqual(config.hudMaterial, .glass)
-        XCTAssertEqual(config.appearance, .system)
+        XCTAssertEqual(config.appearance, .dark)
         XCTAssertEqual(config.hudVisualizer, .stretch)
     }
 
@@ -69,7 +69,7 @@ final class ConfigTests: XCTestCase {
         XCTAssertNotNil(payload["hudDwellSeconds"])
         XCTAssertEqual(payload["hudDwellRevision"] as? Int, HUDDwell.revision)
         XCTAssertEqual(payload["maxSegmentSeconds"] as? Int, 30)
-        XCTAssertEqual(payload["appearance"] as? String, "system")
+        XCTAssertEqual(payload["appearance"] as? String, "dark")
 
         let providers = try XCTUnwrap(payload["providers"] as? [String: Any])
         let openai = try XCTUnwrap(providers["openai"] as? [String: Any])
@@ -159,15 +159,48 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(loaded.hotkey, Hotkey.defaultRecord)
         XCTAssertEqual(loaded.maxSegmentSeconds, 30)
         XCTAssertEqual(loaded.provider, "openai")
-        XCTAssertEqual(loaded.appearance, .system)
+        XCTAssertEqual(
+            loaded.appearance,
+            .system,
+            "a file written before the setting existed keeps the system choice it had"
+        )
     }
 
-    func testAMissingAppearanceFallsBackToSystem() throws {
+    func testAMissingAppearanceKeepsTheSystemChoiceRatherThanTurningDark() throws {
         let url = directory.appendingPathComponent("config.json")
         try #"{"provider": "openai", "appearance": null}"#.write(to: url, atomically: true, encoding: .utf8)
         let loaded = DotConfig.load(from: url)
         XCTAssertEqual(loaded.provider, "openai")
-        XCTAssertEqual(loaded.appearance, .system)
+        XCTAssertEqual(
+            loaded.appearance,
+            .system,
+            "dark belongs to a fresh install, not to an existing file with no key"
+        )
+        XCTAssertEqual(
+            DotConfig.default.appearance,
+            .dark,
+            "a fresh install still opens dark"
+        )
+    }
+
+    /// The choice in the file wins over the shipped default in every spelling.
+    ///
+    /// A fresh install opens dark, but the file is the record of what the person
+    /// chose: a stored `light` or `system` must load as itself and never as the
+    /// default.
+    func testAStoredAppearanceOverridesTheDefault() throws {
+        let cases: [(stored: String, expected: AppearanceMode)] = [
+            ("light", .light),
+            ("system", .system),
+            ("dark", .dark),
+        ]
+        for entry in cases {
+            let url = directory.appendingPathComponent("appearance-\(entry.stored).json")
+            try #"{"appearance": "\#(entry.stored)"}"#.write(to: url, atomically: true, encoding: .utf8)
+            let loaded = DotConfig.load(from: url)
+            XCTAssertEqual(loaded.appearance, entry.expected, "a stored \(entry.stored) did not survive")
+            XCTAssertEqual(loaded.provider, DotConfig.default.provider, "the rest of the file came from the defaults")
+        }
     }
 
     func testTheAppearanceIsWrittenAsItsName() throws {
@@ -350,7 +383,7 @@ extension ConfigTests {
         XCTAssertFalse(config.autoPaste, "an unrelated setting survived")
         XCTAssertEqual(config.hudDwellSeconds, 9)
         XCTAssertEqual(config.hudMaterial, .glass, "the bad value fell back on its own")
-        XCTAssertEqual(config.appearance, .system)
+        XCTAssertEqual(config.appearance, .system, "a bad value falls back to the prior choice")
         XCTAssertEqual(config.hudVisualizer, .stretch)
         XCTAssertEqual(config.recordingMode, .toggle)
         XCTAssertEqual(

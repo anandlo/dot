@@ -114,18 +114,18 @@ struct AboutPage: View {
 
             HStack(spacing: 6) {
                 Text(AboutInfo.versionLine(version: version, build: build))
-                    .font(.system(size: 12).monospacedDigit())
+                    .font(DotType.font(12, .regular))
                     .foregroundStyle(DotTheme.ink3)
                     .textSelection(.enabled)
 
                 Button(action: copyVersion) {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(DotType.font(11, .medium))
                         .foregroundStyle(copied ? DotTheme.ink2 : DotTheme.ink3)
                         .frame(width: 18, height: 18)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(DotPressStyle())
                 .accessibilityLabel("Copy version information")
                 .accessibilityValue(copied ? "Copied" : "")
                 .help("Copies the version, the build and the macOS version.")
@@ -209,17 +209,17 @@ struct AboutPage: View {
                 HStack(spacing: 8) {
                     if let detail {
                         Text(detail)
-                            .font(.system(size: 11))
+                            .font(DotType.font(11, .regular))
                             .foregroundStyle(DotTheme.ink3)
                             .lineLimit(1)
                     }
                     Image(systemName: "arrow.up.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(DotType.font(10, .semibold))
                         .foregroundStyle(DotTheme.ink3)
                 }
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DotPressStyle())
         .accessibilityLabel(detail.map { "\(title), \($0)" } ?? title)
     }
 
@@ -228,12 +228,12 @@ struct AboutPage: View {
         Button(action: performUpdate) {
             SettingsRow("Check for updates", symbol: "arrow.triangle.2.circlepath") {
                 Text(updateStatusText)
-                    .font(.system(size: 11))
+                    .font(DotType.font(11, .regular))
                     .foregroundStyle(DotTheme.ink3)
                     .lineLimit(1)
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DotPressStyle())
         .accessibilityLabel("Check for updates")
         .accessibilityValue(updateStatusText)
     }
@@ -284,20 +284,20 @@ struct AboutPage: View {
                 Button(action: onOpenWelcome) {
                     SettingsRow("Show welcome tour", symbol: "sparkles") {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(DotType.font(10, .semibold))
                             .foregroundStyle(DotTheme.ink3)
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(DotPressStyle())
                 SettingsDivider()
                 Button(action: onOpenLog) {
                     SettingsRow("Open log", symbol: "doc.text.magnifyingglass") {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(DotType.font(10, .semibold))
                             .foregroundStyle(DotTheme.ink3)
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(DotPressStyle())
             }
         }
     }

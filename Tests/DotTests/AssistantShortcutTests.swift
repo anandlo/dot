@@ -3,28 +3,34 @@ import XCTest
 
 @testable import Dot
 
-/// The assistant's shortcut as the app wires it: the collision table and the
-/// menu item that shows it.
+/// The assistant's shortcut as the app still wires it: the collision table, and
+/// the menu that no longer shows it.
 @MainActor
 final class AssistantShortcutTests: XCTestCase {
-    func testEveryRoleIsBlockedByTheOtherThree() {
+    /// Only the three active shortcuts block each other.
+    ///
+    /// The assistant's saved chord is not registered, so it must not refuse a
+    /// new dictation shortcut: otherwise the combination would be unusable in
+    /// Dot for a feature Dot no longer has.
+    func testTheActiveRolesAreBlockedByEachOtherAndNotByTheAssistant() {
         let config = DotConfig.default
-        let roles: [AppDelegate.ShortcutRole] = [.record, .paste, .palette, .assistant]
-        for role in roles {
+        let active: [AppDelegate.ShortcutRole] = [.record, .paste, .palette]
+        for role in active {
             let others = AppDelegate.otherHotkeys(than: role, config: config)
-            XCTAssertEqual(others.count, 3, "\(role) must be blocked by the other three")
+            XCTAssertEqual(others.count, 2, "\(role) must be blocked by the other two")
             XCTAssertFalse(
-                others.contains { $0 == config.assistantHotkey } && role == .assistant,
-                "the assistant must not block itself"
+                others.contains(config.assistantHotkey),
+                "\(role) is still blocked by the retired assistant chord"
             )
         }
         XCTAssertEqual(
             AppDelegate.otherHotkeys(than: .assistant, config: config),
-            [config.hotkey, config.pasteHotkey, config.paletteHotkey]
+            [config.hotkey, config.pasteHotkey, config.paletteHotkey],
+            "the retired role may still record any chord, including one of the three"
         )
         XCTAssertEqual(
             AppDelegate.otherHotkeys(than: .record, config: config),
-            [config.pasteHotkey, config.paletteHotkey, config.assistantHotkey]
+            [config.pasteHotkey, config.paletteHotkey]
         )
     }
 
@@ -47,35 +53,57 @@ final class AssistantShortcutTests: XCTestCase {
         }
     }
 
-    func testTheMenuOffersTheAssistantBesideTheRecorder() {
+    /// The product has no spoken assistant, so the menu offers no item that
+    /// starts one, whatever the configuration says.
+    ///
+    /// The action, the state's shortcut and the recorded hotkey stay in place:
+    /// removing the item must not remove the key a person already recorded, and
+    /// the runtime can stop honouring it on its own.
+    func testTheMenuOffersNoAssistantItem() {
         var state = MenuState()
-        state.recordShortcut = MenuShortcuts.shortcut(for: DotConfig.default.hotkey)
         state.assistantShortcut = MenuShortcuts.shortcut(for: DotConfig.default.assistantHotkey)
+        state.assistantUsable = true
         let items = MenuBuilder.items(for: state)
 
-        let record = items.firstIndex { $0.action == .toggleRecording }
-        let assistant = items.firstIndex { $0.action == .askAssistant }
-        XCTAssertNotNil(record)
-        XCTAssertNotNil(assistant)
-        XCTAssertEqual(assistant, record.map { $0 + 1 }, "the assistant sits under the recorder")
-        let item = assistant.map { items[$0] }
-        XCTAssertEqual(item?.title, "Ask the assistant")
-        XCTAssertEqual(item?.shortcut, state.assistantShortcut)
-        XCTAssertEqual(item?.shortcut?.display, DotConfig.default.assistantHotkey.label)
-        XCTAssertEqual(item?.isEnabled, true)
+        XCTAssertNil(
+            items.first { $0.action == .askAssistant },
+            "the menu still offers the assistant"
+        )
+        XCTAssertFalse(
+            flatten(items).contains { $0.title == "Ask the assistant" },
+            "the assistant's item is still somewhere in the menu"
+        )
+        XCTAssertEqual(items.first?.action, .toggleRecording, "the recorder is still the first item")
     }
 
-    func testTheMenuShowsNoShortcutWhenTheLabelCannotBeRead() {
-        let state = MenuState()
-        let item = MenuBuilder.items(for: state).first { $0.action == .askAssistant }
-        XCTAssertNil(item?.shortcut, "an unset state draws no shortcut and no wrong one")
+    /// A state that used to enable or disable the item no longer changes the
+    /// menu at all: the item is simply not there.
+    func testTheAssistantStateDoesNotChangeTheMenu() {
+        var ready = MenuState()
+        ready.assistantUsable = true
+        ready.assistantShortcut = MenuShortcuts.shortcut(for: DotConfig.default.assistantHotkey)
+
+        var unfinished = MenuState()
+        unfinished.assistantUsable = false
+
+        XCTAssertEqual(MenuBuilder.items(for: ready), MenuBuilder.items(for: unfinished))
     }
 
-    func testTheMenuGreysTheAssistantWhenNothingIsSetUp() {
-        var state = MenuState()
-        state.assistantUsable = false
-        let item = MenuBuilder.items(for: state).first { $0.action == .askAssistant }
-        XCTAssertEqual(item?.isEnabled, false, "the item says the key does nothing yet")
-        XCTAssertEqual(item?.title, "Ask the assistant", "and stays where the person learned it")
+    /// The saved assistant chord is preserved and no longer blocks anything.
+    func testTheAssistantKeyIsPreservedAndDoesNotBlockTheActiveShortcuts() {
+        let config = DotConfig.default
+        XCTAssertEqual(config.assistantHotkey, Hotkey.defaultAssistant)
+        for role in [AppDelegate.ShortcutRole.record, .paste, .palette] {
+            XCTAssertFalse(
+                AppDelegate.otherHotkeys(than: role, config: config)
+                    .contains(config.assistantHotkey),
+                "the retired assistant chord still blocks \(role)"
+            )
+        }
+    }
+
+    /// The menu tree, flattened so a title cannot hide in a submenu.
+    private func flatten(_ items: [MenuItem]) -> [MenuItem] {
+        items.flatMap { [$0] + flatten($0.children) }
     }
 }

@@ -197,6 +197,46 @@ final class XiaomiASRProviderTests: XCTestCase {
         )
     }
 
+    func testTheNumberOnTheSilenceBeforeSpeechIsRemoved() {
+        // The model numbers the room tone Dot records before the first word:
+        // a list number, a timestamp, done with a full stop or a colon.
+        XCTAssertEqual(
+            XiaomiASRProvider.stripCJKCharacters("1:00. I am free Monday anytime after two. On Tuesday..."),
+            "I am free Monday anytime after two. On Tuesday..."
+        )
+        XCTAssertEqual(
+            XiaomiASRProvider.stripCJKCharacters("2. Hi, hi, my name is Anand."),
+            "Hi, hi, my name is Anand."
+        )
+        XCTAssertEqual(
+            XiaomiASRProvider.stripCJKCharacters("10. Next thing on the list."),
+            "Next thing on the list."
+        )
+        XCTAssertEqual(XiaomiASRProvider.stripCJKCharacters("10"), "")
+        XCTAssertEqual(XiaomiASRProvider.stripCJKCharacters("100"), "")
+        XCTAssertEqual(XiaomiASRProvider.stripCJKCharacters("1:00"), "")
+    }
+
+    func testANumberThatStartsASentenceIsLeftAlone() {
+        // A number with words after it is the sentence, not furniture.
+        XCTAssertEqual(
+            XiaomiASRProvider.stripCJKCharacters("10 is a fair comparison. Other convenience stores..."),
+            "10 is a fair comparison. Other convenience stores..."
+        )
+        XCTAssertEqual(
+            XiaomiASRProvider.stripCJKCharacters("5 people came."),
+            "5 people came."
+        )
+        XCTAssertEqual(
+            XiaomiASRProvider.stripCJKCharacters("Meeting at 10."),
+            "Meeting at 10."
+        )
+        XCTAssertEqual(
+            XiaomiASRProvider.stripCJKCharacters("I have 2 cats."),
+            "I have 2 cats."
+        )
+    }
+
     func testAKeyIsTheOnlyRequirement() async {
         let provider = XiaomiASRProvider(apiKey: "test-key")
         let ready = await provider.isAvailable()

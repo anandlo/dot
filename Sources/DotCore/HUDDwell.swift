@@ -33,20 +33,24 @@ public enum HUDDwell {
     /// grace is what stops the card from disappearing while its own inertia is
     /// still running.
     public static let scrollGrace: Double = 1.5
-    /// The shortest time the chips stay after a transcript lands, in seconds.
+    /// The shortest time the versions stay after a transcript lands, in
+    /// seconds.
     ///
-    /// A take with a rewrite offer is a card with something to do on it, and
-    /// the ten second dwell a plain transcript gets is not long enough to read
-    /// the words and choose a style. The longer dwell is a floor: a person who
-    /// configured more keeps their own.
-    public static let rewriteSeconds: Double = 8
+    /// A take with a rewrite offer is a card with several versions to read,
+    /// compare and copy. The ten second dwell a plain transcript gets is not
+    /// long enough for that, so a card that holds versions gets a minute: long
+    /// enough to review them without the island disappearing, and still a
+    /// countdown rather than a window that never closes. It is a floor, so a
+    /// person who configured a longer dwell keeps their own. The countdown is
+    /// suspended while the card is hovered or a rewrite is streaming.
+    public static let rewriteSeconds: Double = 60
     /// How long the card stays after the pointer leaves it once it offers the
-    /// chips, in seconds.
+    /// versions, in seconds.
     ///
-    /// The countdown pauses while the card is read. Leaving it restarts at this
-    /// short dwell rather than resuming what was left, because the pointer
-    /// crossing the card is also how a person says "I am done with this".
-    public static let rewriteLeaveSeconds: Double = 3
+    /// Leaving the card is an interaction, and the review window starts again
+    /// from a full minute rather than resuming what was left. Moving the
+    /// pointer away is not how a person discards versions they asked for.
+    public static let rewriteLeaveSeconds: Double = 60
     /// The revision of the dwell a configuration file is written with.
     ///
     /// A file that carries an older revision predates this dwell, and

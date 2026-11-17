@@ -35,6 +35,96 @@ final class DotSelectSessionTests: XCTestCase {
         XCTAssertNil(controller.session)
     }
 
+    /// The click monitor answers a click, and only a click: the wheel monitor
+    /// installed after it must not take its place.
+    func testAClickOnThePageClosesTheListAndIsHandedOn() {
+        let stub = MonitorStub()
+        let controller = makeController(stub)
+        let session = open(controller)
+
+        let click = click(window: 7)
+        XCTAssertTrue(stub.sendMouse(click) === click, "the click belongs to the window behind")
+        XCTAssertEqual(session.monitorsRemoved, session.monitorsAdded)
+        XCTAssertNil(controller.session)
+    }
+
+    /// A wheel over the page closes the list and is then delivered, so one
+    /// gesture both ends the list and scrolls the page.
+    func testAWheelOverThePageClosesTheListAndIsHandedOn() {
+        let stub = MonitorStub()
+        let controller = makeController(stub)
+        let session = open(controller)
+
+        let wheel = scroll(window: 7)
+        XCTAssertTrue(stub.sendScroll(wheel) === wheel, "the page keeps the wheel")
+        XCTAssertEqual(session.monitorsRemoved, session.monitorsAdded)
+        XCTAssertNil(controller.session)
+    }
+
+    /// A wheel over the list is a newer target than an end the list has not
+    /// placed, and it is delivered to the list.
+    ///
+    /// A synthetic wheel carries no window number, so the list is opened with
+    /// the number the event has.
+    func testAWheelOverTheListReportsTheListScrolled() {
+        let stub = MonitorStub()
+        let controller = makeController(stub)
+        let session = controller.beginSession(
+            titles: titles,
+            selected: 0,
+            panelNumber: { 0 },
+            onSelect: { _ in },
+            onClose: {}
+        )
+        var reported = 0
+        session.onListScroll = { reported += 1 }
+
+        let wheel = scroll(window: 0)
+        XCTAssertTrue(stub.sendScroll(wheel) === wheel, "the list keeps its own wheel")
+        XCTAssertEqual(reported, 1, "the list never learned it was scrolled")
+        XCTAssertNotNil(controller.session, "a wheel over the list does not close it")
+    }
+
+    /// A wheel is the list's only when it names the list.
+    ///
+    /// A synthetic wheel carries no window number, so the decision itself is
+    /// what is asked here; how the window server fills the number is AppKit's
+    /// part.
+    func testAWheelIsTheListsOnlyWhenItNamesTheList() {
+        let controller = makeController(MonitorStub())
+        let session = open(controller)
+
+        XCTAssertFalse(
+            session.shouldCloseForScroll(windowNumber: 42),
+            "a wheel over the list belongs to the list"
+        )
+        XCTAssertTrue(
+            session.shouldCloseForScroll(windowNumber: 7),
+            "a wheel over the page ends the list"
+        )
+    }
+
+    /// The click that closed the list on its trigger must not open it again.
+    func testAClickOnTheTriggerThatClosedTheListDoesNotOpenItAgain() {
+        let anchor = NSRect(x: 100, y: 100, width: 200, height: 29)
+
+        XCTAssertTrue(DotSelectListController.suppressesNextOpening(
+            dismissal: .outsideClick,
+            click: CGPoint(x: 150, y: 110),
+            anchor: anchor
+        ), "a click inside the trigger reopens it")
+        XCTAssertFalse(DotSelectListController.suppressesNextOpening(
+            dismissal: .outsideClick,
+            click: CGPoint(x: 500, y: 110),
+            anchor: anchor
+        ), "a click elsewhere on the page is not a press of the trigger")
+        XCTAssertFalse(DotSelectListController.suppressesNextOpening(
+            dismissal: .scrolled,
+            click: CGPoint(x: 150, y: 110),
+            anchor: anchor
+        ), "a wheel is not a click")
+    }
+
     func testAClickInsideTheListLeavesItOpen() {
         let stub = MonitorStub()
         let controller = makeController(stub)
@@ -42,7 +132,7 @@ final class DotSelectSessionTests: XCTestCase {
 
         XCTAssertNotNil(stub.sendMouse(click(window: 42)))
         XCTAssertEqual(stub.removed, 0)
-        XCTAssertEqual(session.monitorsAdded, 4)
+        XCTAssertEqual(session.monitorsAdded, DotSelectSession.watchCount)
         XCTAssertNotNil(controller.session)
     }
 
@@ -94,12 +184,12 @@ final class DotSelectSessionTests: XCTestCase {
         let stub = MonitorStub()
         let controller = makeController(stub)
         let first = open(controller)
-        XCTAssertEqual(stub.added, 4)
+        XCTAssertEqual(stub.added, DotSelectSession.watchCount)
 
         open(controller)
         XCTAssertEqual(first.monitorsRemoved, first.monitorsAdded)
-        XCTAssertEqual(stub.added, 8)
-        XCTAssertEqual(stub.removed, 4)
+        XCTAssertEqual(stub.added, 2 * DotSelectSession.watchCount)
+        XCTAssertEqual(stub.removed, DotSelectSession.watchCount)
     }
 
     /// The list has no window while it is closed.
@@ -118,11 +208,11 @@ final class DotSelectSessionTests: XCTestCase {
         let session = open(controller)
 
         session.stop()
-        XCTAssertEqual(stub.removed, 4)
+        XCTAssertEqual(stub.removed, DotSelectSession.watchCount)
         session.stop()
-        XCTAssertEqual(stub.removed, 4, "a second stop removes nothing")
+        XCTAssertEqual(stub.removed, DotSelectSession.watchCount, "a second stop removes nothing")
         controller.close()
-        XCTAssertEqual(stub.removed, 4)
+        XCTAssertEqual(stub.removed, DotSelectSession.watchCount)
     }
 
     // MARK: Keys and rows
@@ -174,7 +264,7 @@ final class DotSelectSessionTests: XCTestCase {
     // MARK: Helpers
 
     private func assertBalanced(_ stub: MonitorStub, _ session: DotSelectSession) {
-        XCTAssertEqual(stub.added, 4, "keys, clicks and the two window answers")
+        XCTAssertEqual(stub.added, DotSelectSession.watchCount, "keys, clicks and the window answers")
         XCTAssertEqual(stub.removed, stub.added)
         XCTAssertEqual(session.monitorsAdded, session.monitorsRemoved)
     }
@@ -224,6 +314,19 @@ final class DotSelectSessionTests: XCTestCase {
         key(keyCode: keyCode, characters: String(Unicode.Scalar(scalar)!))
     }
 
+    private func scroll(window: Int) -> NSEvent {
+        let event = CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 1,
+            wheel1: -20,
+            wheel2: 0,
+            wheel3: 0
+        )!
+        event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window))
+        return NSEvent(cgEvent: event)!
+    }
+
     private func click(window: Int) -> NSEvent {
         NSEvent.mouseEvent(
             with: .leftMouseDown,
@@ -246,16 +349,22 @@ private final class MonitorStub {
     private(set) var removed = 0
     private var keyHandler: ((NSEvent) -> NSEvent?)?
     private var mouseHandler: ((NSEvent) -> NSEvent?)?
+    private var scrollHandler: ((NSEvent) -> NSEvent?)?
     private var observers: [NSNotification.Name: () -> Void] = [:]
 
     var registrar: DotSelectMonitorRegistrar {
         DotSelectMonitorRegistrar(
             add: { mask, handler in
                 self.added += 1
+                // One handler per kind of event: a wheel and a click are two
+                // monitors, and the second must not take the first's place or
+                // a click test would be answered by the wheel path.
                 if mask.contains(.keyDown) {
                     self.keyHandler = handler
-                } else {
+                } else if mask.contains(.leftMouseDown) {
                     self.mouseHandler = handler
+                } else if mask.contains(.scrollWheel) {
+                    self.scrollHandler = handler
                 }
                 return NSObject()
             },
@@ -298,6 +407,11 @@ private final class MonitorStub {
     func sendMouse(_ event: NSEvent) -> NSEvent? {
         guard let mouseHandler else { return event }
         return mouseHandler(event)
+    }
+
+    func sendScroll(_ event: NSEvent) -> NSEvent? {
+        guard let scrollHandler else { return event }
+        return scrollHandler(event)
     }
 
     func notify(_ name: NSNotification.Name) {

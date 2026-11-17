@@ -14,3 +14,10 @@ dist/*
 */**/.DS_Store
 *.log
 .taste-skill/
+# Local-only font comparison: ITF Free Font License permits self-hosting for the
+# owner's own use but forbids redistribution, so these files must never be staged.
+/output/playwright/font-study/
+# The app's typeface. Same licence: it may be embedded in the app but not
+# redistributed, so the binary is fetched by scripts/fetch-fonts.sh and never
+# committed. Resources/Fonts/README.md carries the provenance and the terms.
+Resources/Fonts/*.ttf

@@ -3,10 +3,12 @@ import SwiftUI
 
 /// The History window: the transcripts Dot remembers, on warm paper.
 ///
-/// The view is only a surface. It receives the history newest first, reports a
-/// copy or a clear through its callbacks, and closes through `onClose`. It
-/// never reads the history file, the clipboard or the Keychain itself, and it
-/// draws no timestamps because the store only keeps strings.
+/// The view is only a surface. It receives the history newest first as the
+/// transcripts themselves, reports a copy or a clear through its callbacks, and
+/// closes through `onClose`. It never reads the history file, the clipboard or
+/// the Keychain itself. It draws no timestamps: the store keeps when each entry
+/// was added, and the palette is the surface that shows an age, because this
+/// window is handed the words alone.
 @MainActor
 struct HistoryView: View {
     /// The transcripts, newest first. The order is kept as it arrives.
@@ -64,9 +66,9 @@ struct HistoryView: View {
             DotWindowHeader("History", subtitle: countText) {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.down")
-                        .font(.system(size: 8.5, weight: .bold))
+                        .font(DotType.font(8.5, .bold))
                     Text("Newest first")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(DotType.font(10, .medium))
                 }
                 .foregroundStyle(DotTheme.ink3.opacity(0.8))
                 .accessibilityHidden(true)
@@ -110,14 +112,14 @@ struct HistoryView: View {
     private var searchBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 11, weight: .semibold))
+                .font(DotType.font(11, .semibold))
                 .foregroundStyle(searchFocused ? DotTheme.accent : DotTheme.ink3)
                 .frame(width: 14)
                 .accessibilityHidden(true)
 
             TextField("Search transcripts", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12.5))
+                .font(DotType.font(12.5, .regular))
                 .foregroundStyle(DotTheme.ink)
                 .focused($searchFocused)
                 .disabled(history.isEmpty)
@@ -130,7 +132,7 @@ struct HistoryView: View {
                     searchFocused = true
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(DotType.font(12, .medium))
                         .foregroundStyle(DotTheme.ink3.opacity(0.58))
                         .frame(width: 22, height: 22)
                         .overlay(
@@ -144,7 +146,7 @@ struct HistoryView: View {
                         )
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(DotPressStyle())
                 .focused($searchClearFocused)
                 .accessibilityLabel("Clear search")
                 .help("Clear search")
@@ -248,10 +250,10 @@ struct HistoryView: View {
             )
             .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DotPressStyle())
         .focused($focusedID, equals: entry.id)
         .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.14)) {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
                 if hovering {
                     hoveredID = entry.id
                 } else if hoveredID == entry.id {
@@ -260,7 +262,7 @@ struct HistoryView: View {
             }
         }
         .scaleEffect(isHovered && !reduceMotion ? 1.004 : 1)
-        .animation(.easeOut(duration: 0.16), value: isHovered)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: isHovered)
         .opacity(rowVisible ? 1 : 0)
         .offset(y: rowVisible || reduceMotion ? 0 : 10)
         .animation(entrance(entry.id), value: appeared)
@@ -287,9 +289,9 @@ struct HistoryView: View {
             if copied {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 8.5, weight: .bold))
+                        .font(DotType.font(8.5, .bold))
                     Text("Copied")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(DotType.font(10, .semibold))
                 }
                 .foregroundStyle(DotTheme.ink)
                 .padding(.horizontal, 9)
@@ -299,7 +301,7 @@ struct HistoryView: View {
                 .transition(.opacity)
             } else {
                 Image(systemName: "doc.on.doc")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(DotType.font(11, .medium))
                     .foregroundStyle(hovered ? DotTheme.accent : DotTheme.ink3)
                     .frame(width: 27, height: 27)
                     .background(
@@ -354,7 +356,7 @@ struct HistoryView: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .strokeBorder(DotTheme.cardBorder, lineWidth: 1)
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 17, weight: .medium))
+                    .font(DotType.font(17, .medium))
                     .foregroundStyle(DotTheme.accent)
             }
             .frame(width: 46, height: 46)
@@ -387,7 +389,7 @@ struct HistoryView: View {
                     onClear()
                 } label: {
                     Text("Clear history…")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(DotType.font(12, .medium))
                         .foregroundStyle(
                             history.isEmpty
                                 ? DotTheme.ink3
@@ -410,7 +412,7 @@ struct HistoryView: View {
                     )
                     .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }
-                .buttonStyle(HistoryPressStyle())
+                .buttonStyle(DotPressStyle())
                 .focused($clearFocused)
                 .disabled(history.isEmpty)
                 .accessibilityLabel("Clear history")
@@ -421,9 +423,9 @@ struct HistoryView: View {
 
                 HStack(spacing: 5) {
                     Image(systemName: "lock.shield")
-                        .font(.system(size: 9.5, weight: .medium))
+                        .font(DotType.font(9.5, .medium))
                     Text("Kept on this Mac")
-                        .font(.system(size: 10))
+                        .font(DotType.font(10, .regular))
                 }
                 .foregroundStyle(DotTheme.ink3)
                 .accessibilityElement(children: .combine)
@@ -513,16 +515,6 @@ struct HistoryView: View {
     private struct Entry: Identifiable {
         let id: Int
         let text: String
-    }
-}
-
-/// The clear button only needs the press motion; its colours are set by the
-/// view so the disabled state reads on paper without a stock control.
-private struct HistoryPressStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(.spring(response: 0.2, dampingFraction: 0.75), value: configuration.isPressed)
     }
 }
 

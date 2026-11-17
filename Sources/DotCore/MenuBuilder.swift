@@ -197,7 +197,11 @@ public struct MenuState: Equatable, Sendable {
     public var isRecording: Bool
     /// The shortcut that starts and stops a recording.
     public var recordShortcut: MenuShortcut?
-    /// The shortcut that asks the assistant.
+    /// The assistant's recorded shortcut.
+    ///
+    /// The item that showed it is no longer drawn, but the key stays in the
+    /// state and in the configuration: the runtime still owns it, and nothing
+    /// has to be re-recorded while the item is absent.
     public var assistantShortcut: MenuShortcut?
     /// The shortcut that pastes the last transcript again.
     public var pasteShortcut: MenuShortcut?
@@ -223,9 +227,9 @@ public struct MenuState: Equatable, Sendable {
     public var launchAtLogin: Bool
     /// Whether the assistant has a service it can ask.
     ///
-    /// The item is shown either way: a person who has not set the assistant up
-    /// still has the key they recorded, and a greyed item beside the shortcut
-    /// says why it does nothing.
+    /// No menu item is drawn from it: the product has no spoken assistant. The
+    /// state stays because the runtime and a menu dump still report it, and
+    /// removing it would change the public shape for no gain.
     public var assistantUsable: Bool
 
     /// Creates the state of the menu.
@@ -293,12 +297,11 @@ public enum MenuBuilder {
             action: .toggleRecording,
             shortcut: state.recordShortcut
         ))
-        items.append(MenuItem(
-            title: "Ask the assistant",
-            action: .askAssistant,
-            shortcut: state.assistantShortcut,
-            isEnabled: state.assistantUsable
-        ))
+        // The assistant's item is not offered: the product has no spoken
+        // assistant, so a menu item that starts one would promise something the
+        // app does not do. The action, the state's shortcut and the recorded
+        // hotkey stay in place, so the configuration and the key table are
+        // untouched while the item is absent.
 
         items.append(.separator)
 

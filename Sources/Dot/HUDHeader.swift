@@ -62,7 +62,7 @@ enum HUDHeader {
     /// - Parameter text: the title, as it is drawn.
     static func width(of text: String) -> CGFloat {
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: HUDTheme.labelFontSize, weight: .semibold),
+            .font: DotType.nsFont(HUDTheme.labelFontSize, .semibold),
             .kern: HUDTheme.labelTracking,
         ]
         return ceil((text as NSString).size(withAttributes: attributes).width)
@@ -93,52 +93,132 @@ enum HUDHeader {
 
     /// The title of a transcript card that carries a rewrite.
     ///
-    /// A card whose text was rewritten says so in the same small caps as the
-    /// delivery, because the words on it are no longer only what was said. The
-    /// copy outcome keeps the word the card has always used for the clipboard.
+    /// The header names what is on the card, not what happened to the take. An
+    /// original version keeps the delivery title it has always had until an
+    /// explicit Copy or Paste names its own outcome. A generated version says
+    /// `PREVIEW` until it has been explicitly delivered; Copy and Paste report
+    /// their own outcome, and a stream or a refused draft reports its state. A
+    /// delivery recorded for another version never describes the version on
+    /// screen, and a paste names only the field it actually wrote into.
     ///
     /// - Parameters:
     ///   - card: the rewrite layer.
     ///   - delivery: how the transcript was delivered.
     ///   - destination: the application the transcript went into.
-    /// - Returns: `"REWRITTEN IN MAIL"`, `"REWRITTEN"`, `"COPIED"`, or the
-    ///   plain delivery title while a rewrite is running or was refused.
+    /// - Returns: `"PREVIEW"`, `"REWRITING"`, `"REVIEW"`, `"COPIED"`,
+    ///   `"PASTED"`, `"PASTED INTO <app>"`, `"REWRITTEN"`,
+    ///   `"REWRITTEN INTO <app>"`, or the original delivery title.
     static func title(
         for card: RewriteCard,
         delivery: HUDDelivery,
         destination: String?
     ) -> String {
         switch card.phase {
-        case .applied:
-            let base = "REWRITTEN"
-            guard delivery == .pasted, let name = normalized(destination) else { return base }
-            let prefix = base + " IN "
-            guard width(of: prefix) < maximumTitleWidth else { return base }
-            return truncated(prefix + name.uppercased(), to: maximumTitleWidth)
-        case .copied:
+        case .rewriting:
+            return "REWRITING"
+        case .failed:
+            // The card's own failure, named rather than left as a version
+            // preview: the selected words are still there and still deliverable,
+            // but the request that was meant to add to them did not finish.
+            return "REWRITE FAILED"
+        case .blocked:
+            return "REVIEW"
+        case .applied(let versionID):
+            guard card.selectedVersionID == versionID else {
+                return fallbackTitle(card, delivery: delivery, destination: destination)
+            }
+            return pastedTitle(
+                original: card.selectedVersion.isOriginal,
+                target: card.deliveryDestination
+            )
+        case .copied(let versionID):
+            guard card.selectedVersionID == versionID else {
+                return fallbackTitle(card, delivery: delivery, destination: destination)
+            }
             return "COPIED"
-        case .offered, .rewriting, .blocked, .failed:
-            return title(delivery: delivery, destination: destination)
+        case .offered:
+            return fallbackTitle(card, delivery: delivery, destination: destination)
         }
     }
 
     /// What VoiceOver reads for a rewritten header.
+    ///
+    /// It follows the same rule as ``title(for:delivery:destination:)`` in
+    /// sentence case, so the screen reader never announces a delivery for a
+    /// version that was only selected.
     static func accessibilityLabel(
         for card: RewriteCard,
         delivery: HUDDelivery,
         destination: String?
     ) -> String {
         switch card.phase {
-        case .applied:
-            guard delivery == .pasted, let name = normalized(destination) else {
-                return "Rewritten"
+        case .rewriting:
+            return "Rewriting"
+        case .failed:
+            return "Rewrite failed"
+        case .blocked:
+            return "Review"
+        case .applied(let versionID):
+            guard card.selectedVersionID == versionID else {
+                return fallbackAccessibilityLabel(card, delivery: delivery, destination: destination)
             }
-            return "Rewritten into \(name)"
-        case .copied:
+            return pasteAccessibilityLabel(
+                original: card.selectedVersion.isOriginal,
+                target: card.deliveryDestination
+            )
+        case .copied(let versionID):
+            guard card.selectedVersionID == versionID else {
+                return fallbackAccessibilityLabel(card, delivery: delivery, destination: destination)
+            }
             return "Copied"
-        case .offered, .rewriting, .blocked, .failed:
+        case .offered:
+            return fallbackAccessibilityLabel(card, delivery: delivery, destination: destination)
+        }
+    }
+
+    /// The title of a version that has no delivery of its own.
+    private static func fallbackTitle(
+        _ card: RewriteCard,
+        delivery: HUDDelivery,
+        destination: String?
+    ) -> String {
+        if card.selectedVersion.isOriginal {
+            return title(delivery: delivery, destination: destination)
+        }
+        return "PREVIEW"
+    }
+
+    /// The accessibility label of a version that has no delivery of its own.
+    private static func fallbackAccessibilityLabel(
+        _ card: RewriteCard,
+        delivery: HUDDelivery,
+        destination: String?
+    ) -> String {
+        if card.selectedVersion.isOriginal {
             return accessibilityLabel(delivery: delivery, destination: destination)
         }
+        return "Preview"
+    }
+
+    /// The title of a version that an explicit paste wrote at the cursor.
+    ///
+    /// Only the target recorded by that write is named. The take's original
+    /// destination is deliberately ignored: an explicit paste may have gone to
+    /// another application, and naming the old one would be a false report.
+    /// When no target could be resolved, the neutral word is the honest one.
+    private static func pastedTitle(original: Bool, target: String?) -> String {
+        let base = original ? "PASTED" : "REWRITTEN"
+        guard let name = normalized(target) else { return base }
+        let prefix = base + (original ? " INTO " : " IN ")
+        guard width(of: prefix) < maximumTitleWidth else { return base }
+        return truncated(prefix + name.uppercased(), to: maximumTitleWidth)
+    }
+
+    /// What VoiceOver reads for a version written at the cursor.
+    private static func pasteAccessibilityLabel(original: Bool, target: String?) -> String {
+        let base = original ? "Pasted" : "Rewritten"
+        guard let name = normalized(target) else { return base }
+        return "\(base) into \(name)"
     }
 
     /// The name of the application, or `nil` when there is none to show.

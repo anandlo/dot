@@ -205,12 +205,12 @@ struct WelcomeView: View {
             // success message, and the pale mint check read as a disabled
             // button next to the black labels.
             Image(systemName: done ? "checkmark.circle.fill" : symbol)
-                .font(.system(size: 15, weight: .medium))
+                .font(DotType.font(15, .medium))
                 .foregroundStyle(done ? DotTheme.ink : DotTheme.ink2)
                 .frame(width: 22)
                 .contentTransition(.symbolEffect(.replace))
             Text(title)
-                .font(.system(size: 13.5, weight: .medium))
+                .font(DotType.font(13.5, .medium))
                 .foregroundStyle(DotTheme.ink)
             Spacer(minLength: 12)
             trailing()
@@ -274,7 +274,7 @@ struct WelcomeView: View {
 
             if let connection, connection.status == .failed {
                 Text(connection.message)
-                    .font(.system(size: 11.5))
+                    .font(DotType.font(11.5, .regular))
                     .foregroundStyle(DotTheme.coral)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 34)
@@ -348,7 +348,7 @@ struct WelcomeView: View {
             Button { onChangeShortcut() } label: {
                 DotKeycap(text: shortcutLabel)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(DotPressStyle())
             .help("Change shortcut")
             .accessibilityLabel("Shortcut \(shortcutLabel). Change.")
         }

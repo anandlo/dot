@@ -29,7 +29,10 @@ struct AssistantRewriteProviderFactory: RewriteProviderFactory {
     var assistant: AssistantConfiguration { configuration() }
 
     func hasKey() -> Bool {
-        AssistantCredentials.hasKey(for: assistant.chat.providerID)
+        // The same sanitized record the provider is built from: a hand-edited
+        // blank id falls back to the build's default, and its key item is the
+        // one the page and the offer have to agree on.
+        AssistantCredentials.hasKey(for: assistant.chat.resolvedProviderID)
     }
 
     func model() -> String {
@@ -38,11 +41,12 @@ struct AssistantRewriteProviderFactory: RewriteProviderFactory {
 
     func makeProvider(temperature: Double) async throws -> any ChatProvider {
         let chat = configuration().chat
-        let row = AssistantProviderCatalogue.row(for: chat.providerID)
+        let providerID = chat.resolvedProviderID
+        let row = AssistantProviderCatalogue.row(for: providerID)
         // A service on this Mac has no key, and reading one would ask the
         // person for a Keychain item they never made.
         let key = row.requiresKey
-            ? await AssistantCredentials.resolvedKey(for: chat.providerID, cache: credentials)
+            ? await AssistantCredentials.resolvedKey(for: providerID, cache: credentials)
             : nil
         return try AssistantProviderCatalogue.makeProvider(
             settings: chat,

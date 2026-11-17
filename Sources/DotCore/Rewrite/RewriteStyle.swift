@@ -11,6 +11,29 @@ public enum RewriteStyleID: String, Codable, Sendable, CaseIterable {
     case plain
     case casual
     case formal
+    /// A warm register that says each thing once.
+    ///
+    /// The raw value is appended to the list rather than inserted: the ones
+    /// before it are already written into configuration files, and a file that
+    /// kept a subset of them keeps exactly that subset. The style reaches an
+    /// existing file the way every style does, through its switch on the
+    /// Assistant page.
+    case warm = "warm"
+    /// The register that reads like a text to a friend, slang included.
+    ///
+    /// It is the one style whose own name says how it sounds, which is why it
+    /// was kept apart from the plain conversational register rather than folded
+    /// into it.
+    case genZ = "gen-z"
+
+    /// The five distinct styles offered in a fresh configuration and in Settings.
+    ///
+    /// Concise absorbs Plain English, and Professional absorbs Formal and Warm,
+    /// so every shipped choice does a clearly different job. `.plain` and `.warm`
+    /// stay on the enum to decode older files without failing.
+    public static let shippedCases: [RewriteStyleID] = [
+        .prompt, .concise, .formal, .casual, .genZ,
+    ]
 
     /// The label on the chip, and the title of the row in Settings.
     public var title: String {
@@ -19,7 +42,9 @@ public enum RewriteStyleID: String, Codable, Sendable, CaseIterable {
         case .concise: "Concise"
         case .plain: "Plain English"
         case .casual: "Casual"
-        case .formal: "Formal"
+        case .formal: "Professional"
+        case .warm: "Warm"
+        case .genZ: "Gen Z"
         }
     }
 
@@ -27,21 +52,26 @@ public enum RewriteStyleID: String, Codable, Sendable, CaseIterable {
     public var subtitle: String {
         switch self {
         case .prompt: "Turns a spoken request into a structured task for a coding agent."
-        case .concise: "Shorter, with every fact kept."
+        case .concise: "Shorter and plain, with every fact kept."
         case .plain: "Simpler words, same meaning."
-        case .casual: "Relaxed and conversational, like a text to a friend."
-        case .formal: "Clear and professional."
+        case .casual: "Natural, everyday chat messages and DMs."
+        case .formal: "Clear, direct, and respectful for work."
+        case .warm: "Friendly and respectful, direct, and never padded."
+        case .genZ: "Casual Gen Z texting style with light natural slang."
         }
     }
 
     /// The instruction the model is given.
+    ///
+    /// The shared cleanup sentence is not part of a template: Dot adds it once
+    /// to every system text.
     public var template: String {
         switch self {
         case .prompt:
             """
             You turn a developer's spoken request into a precise task prompt for an AI coding agent.
             Rules:
-            - Use only what the speaker said. Keep every name, file, path, number, library, version, command and constraint exactly as said.
+            - Use only what the speaker said. Keep every name, file, path, library, version, command and constraint, and every meaningful number.
             - Do not add requirements, features, steps, tools, libraries or opinions the speaker did not state.
             - Where the speaker corrected themselves, keep only the final intent. Drop filler and repetition.
             - Write in the imperative, plainly, as a senior engineer briefing another engineer.
@@ -58,13 +88,22 @@ public enum RewriteStyleID: String, Codable, Sendable, CaseIterable {
             The checks that show the task is complete, taken from what was said. If none were said, write: [missing: how to verify]
             ## Open questions
             Each detail the task needs that was not said, written as [missing: what]. Leave the section out if there are none.
+            ## Working rules
+            Include the relevant working rules for the task, drawing from:
+            - Read the relevant code before you change it.
+            - Keep changes within the scope of this request.
+            - Ask before adding a dependency or changing a public interface.
+            - Run the build and the tests, and report the results.
+            - If something is unclear, ask instead of guessing.
             Output only the prompt.
             """
         case .concise:
             """
-            Rewrite the transcript more concisely. Keep every fact, name, number, negation and \
-            qualifier. Remove filler, repetition and hesitation. Do not add anything. Aim for 50 to \
-            70 percent of the original length. Output only the rewrite.
+            Rewrite the transcript more concisely in plain, direct language. Prefer short common \
+            words and the active voice, while keeping technical terms that have no plain \
+            equivalent. Keep every fact, name, negation and qualifier, and every meaningful number. \
+            Remove filler, repetition and hesitation. Do not add anything. Aim for 50 to 70 percent \
+            of the original length. Output only the rewrite.
             """
         case .plain:
             """
@@ -74,15 +113,35 @@ public enum RewriteStyleID: String, Codable, Sendable, CaseIterable {
             """
         case .casual:
             """
-            Rewrite in a casual, conversational Gen Z register, the way a friend texts: short \
-            sentences, contractions, everyday words, lowercase is fine, light slang only where it \
-            sounds natural. Keep every fact, name, number and negation. Do not add emoji unless the \
-            original had them. Do not add or remove content. Output only the rewrite.
+            Rewrite in the casual, conversational register of an everyday personal message or DM. \
+            Use natural contractions and plain, common words, in short sentences. Do not add an \
+            email greeting, sign-off or heading unless the original needs one, and do not force \
+            slang or emoji. Keep every fact, name and negation, and every meaningful number. Do not \
+            add content or remove anything the speaker meant. Output only the rewrite.
             """
         case .formal:
             """
-            Rewrite in a clear, formal register suitable for work email. Keep every fact, name, \
-            number and negation. Do not add or remove content. Output only the rewrite.
+            Rewrite in a clear, respectful, professional register suitable for work. Be direct and \
+            constructive, using plain words and the active voice. Keep every fact, name and \
+            negation, and every meaningful number. Remove filler, hedging and repetition. Do not \
+            add praise, apologies, thanks or any detail that was not said. Output only the rewrite.
+            """
+        case .warm:
+            """
+            Rewrite in a warm, respectful, direct register. Sound like a considerate colleague: \
+            friendly without being chummy, certain without being blunt. Address the reader as you, \
+            use plain words and the active voice. Keep every fact, name and negation, and every \
+            meaningful number. Remove filler, hedging and repetition, so each point is said once. \
+            Do not add praise, apologies, thanks, promises, opinions or any detail that was not \
+            said. Do not soften a refusal, a deadline or a condition. Output only the rewrite.
+            """
+        case .genZ:
+            """
+            Rewrite in a casual, conversational Gen Z register, the way a friend texts: short \
+            sentences, contractions, everyday words, lowercase is fine, light slang only where it \
+            sounds natural. Keep every fact, name and negation, and every meaningful number. Do not \
+            add emoji unless the original had them. Do not add content or remove anything the \
+            speaker meant. Output only the rewrite.
             """
         }
     }
@@ -92,8 +151,11 @@ public enum RewriteStyleID: String, Codable, Sendable, CaseIterable {
         switch self {
         case .prompt: 0.8 ... 3.0
         case .concise: 0.35 ... 0.85
-        case .plain, .casual: 0.5 ... 1.3
+        case .plain, .casual, .genZ: 0.5 ... 1.3
         case .formal: 0.7 ... 1.5
+        // Saying each thing once may not make the text longer: the band stops
+        // just above the original so a rewrite that pads is reported.
+        case .warm: 0.4 ... 1.05
         }
     }
 

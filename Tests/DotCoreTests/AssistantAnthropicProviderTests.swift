@@ -181,6 +181,23 @@ final class AssistantAnthropicProviderTests: XCTestCase {
         }
     }
 
+    func testAnEmptyModelFailsBeforeTheRequest() async throws {
+        let server = try StubServer(responses: [])
+        do {
+            _ = try await AssistantTestSupport.events(
+                try provider(server).stream(messages: [.user("hi")], tools: [], model: "  ")
+            )
+            XCTFail("an empty model must be refused")
+        } catch let error as ProviderError {
+            XCTAssertEqual(
+                error,
+                .unavailable("Choose a model in Settings."),
+                "the sentence says where the choice is made"
+            )
+        }
+        XCTAssertTrue(server.requests.isEmpty, "a request with no model reached the service")
+    }
+
     func testAStreamThatEndsWithoutMessageStopStillFinishes() async throws {
         let server = try StubServer(responses: [
             sseResponse([
@@ -191,6 +208,37 @@ final class AssistantAnthropicProviderTests: XCTestCase {
             try provider(server).stream(messages: [.user("hi")], tools: [], model: "test-model")
         )
         XCTAssertEqual(events, [.textDelta("Hi"), .done(.endTurn)])
+    }
+
+    /// A reasoning delta is reported as activity and never as text.
+    ///
+    /// A thinking block opens before the answer's text block and streams
+    /// `thinking_delta` events into it. The reasoning is not the answer, so it
+    /// is not a text delta and the thinking block is not a tool call.
+    func testAThinkingDeltaArrivesAsActivityAndNeverAsText() async throws {
+        let server = try StubServer(responses: [
+            sseResponse([
+                (name: "message_start", data: #"{"type":"message_start","message":{"usage":{"input_tokens":3}}}"#),
+                (name: "content_block_start", data: #"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#),
+                (name: "content_block_delta", data: #"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"weighing it"}}"#),
+                (name: "content_block_delta", data: #"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}"#),
+                (name: "content_block_stop", data: #"{"type":"content_block_stop","index":0}"#),
+                (name: "content_block_start", data: #"{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#),
+                (name: "content_block_delta", data: #"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hi"}}"#),
+                (name: "content_block_stop", data: #"{"type":"content_block_stop","index":1}"#),
+                (name: "message_delta", data: #"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}"#),
+                (name: "message_stop", data: #"{"type":"message_stop"}"#),
+            ])
+        ])
+        let events = try await AssistantTestSupport.events(
+            try provider(server).stream(messages: [.user("hi")], tools: [], model: "test-model")
+        )
+        XCTAssertEqual(events, [
+            .thinking,
+            .textDelta("Hi"),
+            .usage(input: 3, output: 5),
+            .done(.endTurn),
+        ], "an empty thinking delta is not activity, and the reasoning never becomes text")
     }
 }
 

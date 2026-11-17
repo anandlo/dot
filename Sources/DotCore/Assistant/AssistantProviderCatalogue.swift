@@ -45,8 +45,20 @@ public struct AssistantProviderRow: Sendable, Equatable, Identifiable {
     public let defaultBaseURL: URL?
     /// The path the request is posted to, relative to the base URL.
     public let path: String
-    /// Suggested models, best first. The first one is the default.
+    /// Suggested models, best first. Every shipped row leaves this empty: a
+    /// model list changes faster than a build does, so the list is read from
+    /// the service rather than frozen into the catalogue. The property is kept
+    /// for the callers that still read it, and so a row can suggest one when
+    /// there is a reason to.
     public let defaultModels: [String]
+    /// The address a model list is read at, when it is not the request path
+    /// appended to the base URL.
+    ///
+    /// OpenCode Go serves its inference at one address and lists its models at
+    /// another, so the row names the list's address rather than deriving it.
+    /// `nil` means the address is a base URL plus a path, as every other
+    /// vendor's is.
+    public let modelsURL: URL?
     /// Whether the service cannot be used without a key.
     public let requiresKey: Bool
     /// The header the key travels in.
@@ -55,6 +67,10 @@ public struct AssistantProviderRow: Sendable, Equatable, Identifiable {
     public let includeUsage: Bool
     /// Headers the vendor's documentation asks for that are not the key.
     public let extraHeaders: [String: String]
+    /// The header this vendor asks every request of one conversation to carry,
+    /// when it asks for one. The value is minted by the provider, never stored
+    /// here: a row names the header, not the session.
+    public let sessionHeader: AssistantSessionHeader?
     /// A query the request needs, e.g. an Azure legacy `api-version`.
     public let queryItems: [URLQueryItem]
     /// The addresses this vendor also serves, the row's own first. Two entries
@@ -77,10 +93,12 @@ public struct AssistantProviderRow: Sendable, Equatable, Identifiable {
         defaultBaseURL: URL?,
         path: String,
         defaultModels: [String] = [],
+        modelsURL: URL? = nil,
         requiresKey: Bool,
         authStyle: AuthStyle = .bearer,
         includeUsage: Bool = false,
         extraHeaders: [String: String] = [:],
+        sessionHeader: AssistantSessionHeader? = nil,
         queryItems: [URLQueryItem] = [],
         plans: [AssistantProviderPlan] = [],
         excludedModelPrefixes: [String] = [],
@@ -93,15 +111,35 @@ public struct AssistantProviderRow: Sendable, Equatable, Identifiable {
         self.defaultBaseURL = defaultBaseURL
         self.path = path
         self.defaultModels = defaultModels
+        self.modelsURL = modelsURL
         self.requiresKey = requiresKey
         self.authStyle = authStyle
         self.includeUsage = includeUsage
         self.extraHeaders = extraHeaders
+        self.sessionHeader = sessionHeader
         self.queryItems = queryItems
         self.plans = plans
         self.excludedModelPrefixes = excludedModelPrefixes
         self.rewriteBody = rewriteBody
         self.keyNote = keyNote
+    }
+
+    /// The hosts this row may be asked to send a key to.
+    ///
+    /// A model list can name the address a model is served at, and a service
+    /// that has been compromised — or a proxy that answers in its place — could
+    /// name a stranger's host and be handed the person's key. Only the hosts
+    /// the catalogue itself ships for the row are trusted: its default address,
+    /// the address its list is read at, and the addresses of its plans.
+    public var trustedRouteHosts: Set<String> {
+        var hosts = Set<String>()
+        for address in [defaultBaseURL, modelsURL] + plans.map(\.baseURL) {
+            guard let host = address?.host?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  !host.isEmpty
+            else { continue }
+            hosts.insert(host)
+        }
+        return hosts
     }
 
     /// The row under a different id, for an endpoint the catalogue does not
@@ -114,10 +152,12 @@ public struct AssistantProviderRow: Sendable, Equatable, Identifiable {
             defaultBaseURL: defaultBaseURL,
             path: path,
             defaultModels: defaultModels,
+            modelsURL: modelsURL,
             requiresKey: requiresKey,
             authStyle: authStyle,
             includeUsage: includeUsage,
             extraHeaders: extraHeaders,
+            sessionHeader: sessionHeader,
             queryItems: queryItems,
             plans: plans,
             excludedModelPrefixes: excludedModelPrefixes,
@@ -137,6 +177,31 @@ public enum AssistantProviderID {
     public static let xiaomi = "xiaomi"
     /// The subscription service whose catalogue is read from the endpoint.
     public static let openCodeGo = "opencode-go"
+}
+
+/// A header a vendor asks every request of one conversation to carry.
+///
+/// The value is not a credential and not a setting: the client mints one id per
+/// conversation and sends that same id with every request of it, so the service
+/// can route the conversation and reuse its cache. A row that names a header is
+/// the only thing that makes a provider send one, so a service that never asked
+/// for it — another vendor, or an endpoint the catalogue does not know — never
+/// receives it.
+public enum AssistantSessionHeader: String, Sendable, Equatable {
+    /// OpenCode Go's documented header. Go answers an inference request that
+    /// arrives without one with `400 MissingSessionID`, before it reads the key.
+    case openCodeGo = "x-opencode-session"
+
+    /// A session id in the shape the vendors write one: a `ses_` prefix and a
+    /// lowercase UUID.
+    ///
+    /// The value is opaque to Dot and carries nothing about the person, the
+    /// account or the key. It exists so the service can recognize the requests
+    /// of one conversation, and it is minted from the system's random source
+    /// rather than stored anywhere.
+    static func makeIdentifier() -> String {
+        "ses_" + UUID().uuidString.lowercased()
+    }
 }
 
 /// The chat services Dot ships a row for.
@@ -174,7 +239,6 @@ public enum AssistantProviderCatalogue {
             style: .openAICompatible,
             defaultBaseURL: URL(string: "https://api.openai.com/v1"),
             path: "chat/completions",
-            defaultModels: ["gpt-4o-mini", "gpt-4o"],
             requiresKey: true,
             includeUsage: true
         ),
@@ -184,7 +248,6 @@ public enum AssistantProviderCatalogue {
             style: .openAICompatible,
             defaultBaseURL: URL(string: "https://api.groq.com/openai/v1"),
             path: "chat/completions",
-            defaultModels: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
             requiresKey: true
         ),
         AssistantProviderRow(
@@ -193,7 +256,6 @@ public enum AssistantProviderCatalogue {
             style: .anthropic,
             defaultBaseURL: URL(string: "https://api.anthropic.com"),
             path: "v1/messages",
-            defaultModels: ["claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
             requiresKey: true
         ),
         AssistantProviderRow(
@@ -202,7 +264,6 @@ public enum AssistantProviderCatalogue {
             style: .openAICompatible,
             defaultBaseURL: URL(string: "https://generativelanguage.googleapis.com/v1beta/openai"),
             path: "chat/completions",
-            defaultModels: ["gemini-2.0-flash", "gemini-2.5-pro"],
             requiresKey: true
         ),
         AssistantProviderRow(
@@ -211,7 +272,6 @@ public enum AssistantProviderCatalogue {
             style: .openAICompatible,
             defaultBaseURL: URL(string: "https://openrouter.ai/api/v1"),
             path: "chat/completions",
-            defaultModels: ["openai/gpt-4o-mini", "anthropic/claude-sonnet-4"],
             requiresKey: true,
             extraHeaders: [
                 "HTTP-Referer": "https://dot.mac",
@@ -224,7 +284,6 @@ public enum AssistantProviderCatalogue {
             style: .openAICompatible,
             defaultBaseURL: URL(string: "https://api.x.ai/v1"),
             path: "chat/completions",
-            defaultModels: ["grok-3-mini", "grok-3"],
             requiresKey: true
         ),
         AssistantProviderRow(
@@ -233,7 +292,6 @@ public enum AssistantProviderCatalogue {
             style: .openAICompatible,
             defaultBaseURL: URL(string: "https://api.deepseek.com"),
             path: "chat/completions",
-            defaultModels: ["deepseek-chat", "deepseek-reasoner"],
             requiresKey: true
         ),
         AssistantProviderRow(
@@ -242,7 +300,6 @@ public enum AssistantProviderCatalogue {
             style: .openAICompatible,
             defaultBaseURL: URL(string: "https://api.mistral.ai/v1"),
             path: "chat/completions",
-            defaultModels: ["mistral-large-latest", "mistral-small-latest"],
             requiresKey: true
         ),
         AssistantProviderRow(
@@ -251,7 +308,6 @@ public enum AssistantProviderCatalogue {
             style: .openAICompatible,
             defaultBaseURL: URL(string: "http://localhost:11434/v1"),
             path: "chat/completions",
-            defaultModels: ["llama3.2", "qwen2.5"],
             requiresKey: false
         ),
         AssistantProviderRow(
@@ -282,12 +338,18 @@ public enum AssistantProviderCatalogue {
             style: .openAICompatible,
             defaultBaseURL: URL(string: "https://opencode.ai/inference/go/openai/v1"),
             path: "chat/completions",
-            defaultModels: ["deepseek-v4.1-flash", "glm-5.3", "kimi-k3", "mimo-v2.6-flash", "qwen3.8-flash"],
+            // Go serves inference under `/openai/v1` and `/anthropic/v1` and
+            // lists what the subscription offers at the plan's own address, so
+            // the list is read there rather than under the inference base.
+            modelsURL: URL(string: "https://opencode.ai/inference/go/v1/models"),
             requiresKey: true,
+            // Every Go inference request must name the conversation it belongs
+            // to, stable for that conversation. The provider mints the id; the
+            // row only says which header carries it.
+            sessionHeader: .openCodeGo,
             // The same subscription serves a Responses-API-only catalogue that
             // this build cannot speak, so those ids are never offered.
-            excludedModelPrefixes: ["grok-", "gpt-", "muse-spark-"],
-            keyNote: "Uses your OpenCode Go subscription key."
+            excludedModelPrefixes: ["grok-", "gpt-", "muse-spark-"]
         ),
         AssistantProviderRow(
             // The same vendor the speech page calls `xiaomi`, so one key serves
@@ -297,7 +359,6 @@ public enum AssistantProviderCatalogue {
             style: .openAICompatible,
             defaultBaseURL: URL(string: "https://api.xiaomimimo.com/v1"),
             path: "chat/completions",
-            defaultModels: ["mimo-v2.6-flash", "mimo-v2.6-pro"],
             requiresKey: true,
             // A subscription answers on its own host and hands out keys that
             // say so; the page offers the choice, and a pasted subscription key
@@ -357,7 +418,7 @@ extension AssistantProviderCatalogue {
 
     /// The model id a provider is asked for.
     public static func model(for settings: AssistantSettings) -> String {
-        settings.resolvedModel(using: row(for: settings.providerID).defaultModels)
+        settings.resolvedModel(using: row(for: settings.resolvedProviderID).defaultModels)
     }
 
     /// The plan a record's address names.
@@ -432,6 +493,161 @@ extension AssistantProviderCatalogue {
         return [URLQueryItem(name: "api-version", value: legacyAzureAPIVersion)]
     }
 
+    /// The path a request is posted to, when a discovered model names another
+    /// wire shape than the row does.
+    ///
+    /// OpenCode Go serves two shapes under one subscription: chat completions
+    /// under its OpenAI address and messages under its Anthropic one. A model
+    /// the service lists with a route is posted to that route's own path,
+    /// because the row's path belongs to the row's shape.
+    ///
+    /// - Parameter style: the shape the route speaks.
+    /// - Returns: the path relative to the route's base URL.
+    public static func path(for style: AssistantAPIStyle) -> String {
+        style == .anthropic ? "messages" : "chat/completions"
+    }
+
+    /// The route a discovered model names, when it may be used as it is.
+    ///
+    /// A discovered route is only honoured for a person who has not typed an
+    /// address or a shape: a typed value is a decision of their own, and a
+    /// model's metadata may not silently replace it. The model also has to be
+    /// the one the record names, so a discovery that belongs to a model the
+    /// person has since replaced cannot route the new one.
+    ///
+    /// A route is metadata from the service, and the request carries the key,
+    /// so the address is held to the hosts the catalogue ships for the row. A
+    /// service that names a stranger's host is answered on the row's own
+    /// address instead of being handed the key.
+    ///
+    /// - Parameters:
+    ///   - settings: the sanitized chat settings.
+    ///   - discovered: the model the settings carry, when they carry one.
+    /// - Returns: the route to post to, or `nil` for the row's own.
+    static func discoveredRoute(
+        settings: AssistantSettings,
+        discovered: DiscoveredModel?
+    ) -> ModelAPIRoute? {
+        guard let discovered,
+              discovered.id == settings.model,
+              settings.baseURL == nil,
+              settings.apiStyle == nil,
+              let route = discovered.route,
+              routeIsTrusted(route, row: row(for: settings.resolvedProviderID))
+        else { return nil }
+        return route
+    }
+
+    /// Whether a discovered route may carry a request that holds the key.
+    ///
+    /// - Parameters:
+    ///   - route: the address and shape the service published.
+    ///   - row: the catalogue row the request belongs to.
+    /// - Returns: `true` only for an address on a host the row ships, with no
+    ///   credentials in the URL and a scheme ``EndpointPolicy`` accepts.
+    static func routeIsTrusted(_ route: ModelAPIRoute, row: AssistantProviderRow) -> Bool {
+        guard let host = route.baseURL.host?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !host.isEmpty,
+              row.trustedRouteHosts.contains(host),
+              route.baseURL.user == nil,
+              route.baseURL.password == nil
+        else { return false }
+        return EndpointPolicy.validate(route.baseURL) == nil
+    }
+
+    /// The body members a reasoning choice adds to a request.
+    ///
+    /// The members come from what the service published about the model and
+    /// from the one choice the person made in Settings. Nothing is invented: a
+    /// model that publishes no efforts gets none, and a shape that has no way
+    /// to express a choice is sent nothing rather than a guess.
+    ///
+    /// - Parameters:
+    ///   - variant: the choice from the settings, `nil` for "the service's own".
+    ///   - model: the discovered model, when one was discovered.
+    ///   - row: the catalogue row.
+    ///   - style: the shape the request is posted as.
+    /// - Returns: the members to merge into the request body.
+    static func reasoningBody(
+        variant: String?,
+        model: DiscoveredModel?,
+        row: AssistantProviderRow,
+        style: AssistantAPIStyle
+    ) -> [String: JSONValue] {
+        guard let variant = variant?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !variant.isEmpty
+        else { return [:] }
+        // A choice is only sent when the model published it. A hand-edited
+        // file, or a discovery that arrived with a level this build does not
+        // know, must not become an effort the service never documented.
+        guard let reasoning = model?.reasoning, reasoning.supportsReasoning else { return [:] }
+        let choice = variant.lowercased()
+        switch choice {
+        case "off", "on":
+            guard reasoning.toggle else { return [:] }
+        default:
+            guard reasoning.efforts.contains(choice) else { return [:] }
+        }
+        switch style {
+        case .openAICompatible:
+            if choice == "off" {
+                // Two ways to turn reasoning off are documented: a vendor's
+                // `thinking` switch, and Xiaomi's rewrite switch, which this
+                // build already sends for a rewrite.
+                return ["thinking": .object(["type": .string("disabled")])]
+            }
+            if choice == "on" {
+                return ["thinking": .object(["type": .string("enabled")])]
+            }
+            // OpenRouter takes an effort inside its own `reasoning` object;
+            // every other compatible service documents `reasoning_effort`.
+            if row.id == "openrouter" {
+                return ["reasoning": .object(["effort": .string(choice)])]
+            }
+            return ["reasoning_effort": .string(choice)]
+        case .anthropic:
+            if choice == "off" {
+                return ["thinking": .object(["type": .string("disabled")])]
+            }
+            if choice == "on" {
+                // Anthropic's `enabled` thinking needs a token budget this
+                // build's answer does not leave room for; only the adaptive
+                // form can be asked for as it stands.
+                guard reasoning.thinkingTypes.contains("adaptive") else { return [:] }
+                return ["thinking": .object(["type": .string("adaptive")])]
+            }
+            var body: [String: JSONValue] = ["output_config": .object(["effort": .string(choice)])]
+            if reasoning.thinkingTypes.contains("adaptive") {
+                body["thinking"] = .object(["type": .string("adaptive")])
+            }
+            return body
+        }
+    }
+
+    /// The reasoning choice a rewrite asks for, from what the model published.
+    ///
+    /// A rewrite is two sentences, and a reasoning pass over them is time the
+    /// person spends waiting for words they did not ask to see. The choice is
+    /// therefore the lightest level the model offers rather than the one made
+    /// in Settings: a model that can be switched off is asked for `off`, and a
+    /// model that only publishes efforts is asked for the lowest of them. A
+    /// model that publishes no reasoning control is sent no member at all,
+    /// because an effort it never documented would be refused at the service.
+    ///
+    /// - Parameter model: the discovered model, when one was discovered.
+    /// - Returns: the variant to hand to ``reasoningBody(variant:model:row:style:)``,
+    ///   or `nil` when the model publishes nothing to choose.
+    static func rewriteReasoningVariant(for model: DiscoveredModel?) -> String? {
+        guard let reasoning = model?.reasoning, reasoning.supportsReasoning else { return nil }
+        if reasoning.toggle { return "off" }
+        // The documented levels, lightest first. The order is what decides the
+        // choice: a service that lists its efforts in any order is still asked
+        // for the one that thinks least.
+        let order = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        let published = Set(reasoning.efforts.map { $0.lowercased() })
+        return order.first { published.contains($0) }
+    }
+
     /// Builds the provider one turn sends with.
     ///
     /// - Parameters:
@@ -443,8 +659,11 @@ extension AssistantProviderCatalogue {
     ///   - temperature: a sampling temperature that replaces the one stored in
     ///     the settings.
     ///   - forRewrite: whether the request is a rewrite rather than an answer.
-    ///     A row may turn a vendor's reasoning off for one: a two sentence
-    ///     rewrite should not wait for a minute of thinking.
+    ///     A rewrite asks for the lightest reasoning the model publishes, from
+    ///     ``rewriteReasoningVariant(for:)``, instead of the level stored in the
+    ///     settings: a two sentence rewrite should not wait for a minute of
+    ///     thinking. The row's own rewrite members are still sent, and a model
+    ///     that publishes no reasoning control gets only those.
     /// - Returns: a provider for the row's wire shape.
     /// - Throws: ``ProviderError/missingCredential(_:)`` when the row needs a
     ///   key that is absent, ``ProviderError/unavailable(_:)`` when no address
@@ -457,36 +676,70 @@ extension AssistantProviderCatalogue {
         forRewrite: Bool = false
     ) throws -> any ChatProvider {
         let settings = settings.sanitized()
-        let row = row(for: settings.providerID)
+        let row = row(for: settings.resolvedProviderID)
         let key = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         if row.requiresKey, key?.isEmpty != false {
-            throw ProviderError.missingCredential("Add a key for \(row.name) to use the assistant.")
+            throw ProviderError.missingCredential("Add a key for \(row.name) to use AI rewrite.")
         }
-        guard let baseURL = try resolvedBaseURL(settings: settings, row: row) else {
-            throw ProviderError.unavailable("Add the address of the \(row.name) endpoint.")
+        let discovered = settings.discoveredModel
+        let route = discoveredRoute(settings: settings, discovered: discovered)
+        let baseURL: URL
+        if let route {
+            // A route came from the service, but it is still posted to over the
+            // same rule as a typed address: TLS unless it is this Mac.
+            if let rejection = EndpointPolicy.validate(route.baseURL) { throw rejection }
+            baseURL = route.baseURL
+        } else {
+            guard let resolved = try resolvedBaseURL(settings: settings, row: row) else {
+                throw ProviderError.unavailable("Add the address of the \(row.name) endpoint.")
+            }
+            baseURL = resolved
         }
-        switch settings.apiStyle ?? row.style {
+        let style = route?.style ?? settings.apiStyle ?? row.style
+        let path = route == nil ? row.path : path(for: style)
+        // A model that published "no temperature" rejects the member outright,
+        // so it is left out rather than sent and refused.
+        let sampling = discovered?.supportsTemperature == false ? nil : temperature ?? settings.temperature
+        var extraBody: [String: JSONValue] = forRewrite ? row.rewriteBody : [:]
+        // A rewrite asks the model for the lightest reasoning it publishes, so
+        // the level chosen for the assistant never makes a two sentence rewrite
+        // wait on a thinking pass. The answer keeps the stored choice.
+        let variant = forRewrite
+            ? rewriteReasoningVariant(for: discovered)
+            : settings.reasoningVariant
+        for (name, value) in reasoningBody(
+            variant: variant,
+            model: discovered,
+            row: row,
+            style: style
+        ) {
+            extraBody[name] = value
+        }
+        switch style {
         case .openAICompatible:
             return OpenAIChatProvider(
                 baseURL: baseURL,
-                path: row.path,
+                path: path,
                 queryItems: row.queryItems + legacyAzureQuery(row: row, baseURL: baseURL),
                 apiKey: key,
                 authStyle: row.authStyle,
                 extraHeaders: row.extraHeaders,
-                temperature: temperature ?? settings.temperature,
+                sessionHeader: row.sessionHeader,
+                temperature: sampling,
                 includeUsage: row.includeUsage,
-                extraBody: forRewrite ? row.rewriteBody : [:],
+                extraBody: extraBody,
                 session: session ?? OpenAIChatProvider.makeSession()
             )
         case .anthropic:
             return AnthropicChatProvider(
                 baseURL: baseURL,
-                path: row.path,
+                path: path,
                 apiKey: key,
                 extraHeaders: row.extraHeaders,
+                sessionHeader: row.sessionHeader,
                 maxTokens: anthropicAnswerLimit,
-                temperature: temperature ?? settings.temperature,
+                temperature: sampling,
+                extraBody: extraBody,
                 session: session ?? AnthropicChatProvider.makeSession()
             )
         }

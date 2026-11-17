@@ -71,4 +71,60 @@ final class ProviderErrorTextTests: XCTestCase {
             "The service answered HTTP 503."
         )
     }
+
+    // MARK: - Credentials in a response body
+
+    func testAVendorKeyInTheBodyIsRedacted() {
+        let secret = "sk-live-0123456789abcdef"
+        let message = ProviderErrorText.sanitized(
+            #"{"error":"invalid key \#(secret)"}"#
+        ) ?? ""
+        XCTAssertFalse(message.contains(secret))
+        XCTAssertTrue(message.contains(ProviderErrorText.redaction))
+    }
+
+    func testABearerTokenIsRedacted() {
+        let message = ProviderErrorText.sanitized(
+            "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature"
+        ) ?? ""
+        XCTAssertFalse(message.contains("eyJhbGciOiJIUzI1NiJ9"))
+        XCTAssertTrue(message.contains(ProviderErrorText.redaction))
+    }
+
+    func testAQueryOrJSONCredentialIsRedacted() {
+        for body in [
+            "https://example.com/callback?api_key=abcd1234efgh",
+            #"{"access_token":"abcd1234efgh","ok":false}"#,
+            "x-api-key: abcd1234efgh",
+            "secret=abcd1234efgh",
+            "password: hunter2hunter2",
+        ] {
+            let message = ProviderErrorText.sanitized(body) ?? ""
+            XCTAssertFalse(
+                message.contains("abcd1234efgh") || message.contains("hunter2hunter2"),
+                "a credential survived: \(body) -> \(message)"
+            )
+        }
+    }
+
+    func testOrdinaryWordsAboutAKeyAreNotRedacted() {
+        XCTAssertEqual(ProviderErrorText.sanitized("Invalid API key"), "Invalid API key")
+        XCTAssertEqual(
+            ProviderErrorText.sanitized("The token is missing from the request."),
+            "The token is missing from the request."
+        )
+        XCTAssertEqual(
+            ProviderErrorText.sanitized("No password was sent."),
+            "No password was sent."
+        )
+    }
+
+    func testARejectedRequestThatRepeatsTheTokenDoesNotShowIt() {
+        let secret = "sk-live-0123456789abcdef"
+        let description = ProviderError.rejected(
+            status: 401,
+            message: #"{"error":"bad key \#(secret)"}"#
+        ).errorDescription ?? ""
+        XCTAssertFalse(description.contains(secret))
+    }
 }

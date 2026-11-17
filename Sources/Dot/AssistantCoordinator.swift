@@ -141,12 +141,13 @@ final class AssistantCoordinator {
     /// Whether a service can be asked at all.
     ///
     /// It is the rule the page, the chips and the menu item use: the person set
-    /// an assistant up, and the service needs no key or has one. A speech key
-    /// alone is not enough, because it says the transcriber was set up rather
-    /// than the assistant, and the person is sent to Settings instead of into a
-    /// request that can only fail.
+    /// an assistant up, the service needs no key or has one, and its address is
+    /// one a request can be built from. A speech key alone is not enough,
+    /// because it says the transcriber was set up rather than the assistant, and
+    /// a record with no address is sent to Settings instead of into a request
+    /// that can only fail.
     private func isReachable(_ configuration: AssistantConfiguration) -> Bool {
-        let row = AssistantProviderCatalogue.row(for: configuration.chat.providerID)
+        let row = AssistantProviderCatalogue.row(for: configuration.chat.resolvedProviderID)
         return AssistantAvailability.isUsable(
             config: configuration,
             hasKey: row.requiresKey ? factory.hasKey(for: row.id) : false

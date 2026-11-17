@@ -3,9 +3,9 @@ import Foundation
 /// Any service that speaks OpenAI's Chat Completions shape.
 ///
 /// One implementation covers the hosted OpenAI API, Groq, OpenRouter, xAI,
-/// DeepSeek, Mistral, Gemini's compatibility endpoint, Ollama, LM Studio and
-/// Azure OpenAI. The differences between them are a base URL, a header and a
-/// path, so they are configuration here rather than a type each.
+/// DeepSeek, Mistral, Gemini's compatibility endpoint, OpenCode Go, Ollama,
+/// LM Studio and Azure OpenAI. The differences between them are a base URL, a
+/// header and a path, so they are configuration here rather than a type each.
 ///
 /// The wire shapes are the documented ones: `stream: true` returns
 /// `chat.completion.chunk` objects over SSE, a tool call arrives as
@@ -25,6 +25,16 @@ public struct OpenAIChatProvider: ChatProvider {
     /// Headers the endpoint needs that are not the key, e.g. OpenRouter's
     /// attribution headers. A secret never belongs here; use `apiKey`.
     public let extraHeaders: [String: String]
+    /// The header this endpoint asks every request of one conversation to
+    /// carry, when it asks for one. `nil` for an endpoint that never asked.
+    public let sessionHeader: AssistantSessionHeader?
+    /// The id every request of this provider sends in ``sessionHeader``.
+    ///
+    /// It is minted once, when the provider is built, and never written to the
+    /// configuration or a log: it names one conversation on the service, not
+    /// the person or the account. A new provider is a new conversation, so a
+    /// rewrite — which builds one per request — starts its own.
+    let sessionID: String?
     public let temperature: Double?
     /// Whether to ask for a usage chunk. OpenAI sends one when asked;
     /// endpoints that do not know the field may reject it, so it is off unless
@@ -44,6 +54,7 @@ public struct OpenAIChatProvider: ChatProvider {
         apiKey: String? = nil,
         authStyle: AuthStyle = .bearer,
         extraHeaders: [String: String] = [:],
+        sessionHeader: AssistantSessionHeader? = nil,
         temperature: Double? = nil,
         includeUsage: Bool = false,
         extraBody: [String: JSONValue] = [:],
@@ -57,6 +68,8 @@ public struct OpenAIChatProvider: ChatProvider {
         self.apiKey = apiKey
         self.authStyle = authStyle
         self.extraHeaders = extraHeaders
+        self.sessionHeader = sessionHeader
+        self.sessionID = sessionHeader == nil ? nil : Self.sessionIdentifier()
         self.temperature = temperature
         self.includeUsage = includeUsage
         self.extraBody = extraBody
@@ -80,9 +93,20 @@ public struct OpenAIChatProvider: ChatProvider {
         return URLSession(configuration: configuration)
     }
 
+    /// A session id in the shape OpenCode Go writes one: a `ses_` prefix and a
+    /// lowercase UUID.
+    ///
+    /// The value is opaque to Dot and carries nothing about the person, the
+    /// account or the key. It exists so the service can recognize the requests
+    /// of one conversation, and it is minted from the system's random source
+    /// rather than stored anywhere.
+    static func sessionIdentifier() -> String {
+        AssistantSessionHeader.makeIdentifier()
+    }
+
     /// The address a completion is posted to.
     public var chatURL: URL {
-        let base = baseURL.appendingPathComponent(path)
+        let base = AssistantEndpoint.url(base: baseURL, path: path)
         guard !queryItems.isEmpty,
               var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
         else { return base }
@@ -104,7 +128,7 @@ public struct OpenAIChatProvider: ChatProvider {
         if let rejection = EndpointPolicy.validate(url) { throw rejection }
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedModel.isEmpty else {
-            throw ProviderError.unavailable("No model is selected for this chat service.")
+            throw ProviderError.unavailable("Choose a model in Settings.")
         }
         let body = OpenAIRequestBody(
             model: trimmedModel,
@@ -124,6 +148,13 @@ public struct OpenAIChatProvider: ChatProvider {
         }
         for (name, value) in extraHeaders {
             request.setValue(value, forHTTPHeaderField: name)
+        }
+        // One id for this provider's whole life, so every request of the
+        // conversation carries it — a streamed turn, a retry, and the next turn
+        // the same provider asks. An endpoint that did not name a header in the
+        // catalogue has no `sessionID` and is sent none.
+        if let sessionHeader, let sessionID {
+            request.setValue(sessionID, forHTTPHeaderField: sessionHeader.rawValue)
         }
         request.timeoutInterval = timeout
         request.httpBody = try JSONEncoder().encode(body)
@@ -190,6 +221,12 @@ public struct OpenAIChatProvider: ChatProvider {
                 ))
             }
             for choice in chunk.choices ?? [] {
+                // Reasoning is reported as activity and never as text, so it
+                // cannot reach the card. A chunk that carries both is reported
+                // in the order the model produced them, the reasoning first.
+                if choice.delta?.reasoning != nil {
+                    continuation.yield(.thinking)
+                }
                 if let delta = choice.delta, let text = delta.content, !text.isEmpty {
                     continuation.yield(.textDelta(text))
                 }
@@ -198,6 +235,7 @@ public struct OpenAIChatProvider: ChatProvider {
                 }
                 if let reason = choice.finishReason {
                     state.stopReason = ChatStopReason(wire: reason)
+                    state.sawFinishReason = true
                     // The documented shape puts every argument fragment before
                     // the finish reason, so the calls are complete here.
                     emit(state.takeCalls(), into: continuation)
@@ -206,7 +244,13 @@ public struct OpenAIChatProvider: ChatProvider {
         }
         if !sawDone {
             emit(state.takeCalls(), into: continuation)
-            continuation.yield(.done(state.stopReason))
+            // A connection that closed after a finish reason said why the model
+            // stopped, and `[DONE]` is only the terminator the reference API
+            // sends. A connection that closed with neither stopped mid-answer:
+            // the words already shown are the beginning of a sentence nobody
+            // finished, so it is reported as an answer this build cannot vouch
+            // for rather than as a completed turn.
+            continuation.yield(.done(state.sawFinishReason ? state.stopReason : .other("incomplete")))
         }
     }
 
@@ -362,10 +406,33 @@ private struct OpenAIStreamChunk: Decodable {
 
             var content: String?
             var toolCalls: [ToolCallFragment]?
+            /// The reasoning the service streamed before the answer, when it
+            /// streamed any.
+            ///
+            /// Two members carry it: `reasoning_content`, which the compatible
+            /// services document, and `reasoning`, which some gateways stream as
+            /// a string and others answer with an object of their own. Only a
+            /// non-empty string is reasoning here.
+            var reasoning: String?
 
             enum CodingKeys: String, CodingKey {
                 case content
                 case toolCalls = "tool_calls"
+                case reasoningContent = "reasoning_content"
+                case reasoning
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                content = try container.decodeIfPresent(String.self, forKey: .content)
+                toolCalls = try container.decodeIfPresent([ToolCallFragment].self, forKey: .toolCalls)
+                // A gateway may answer `reasoning` with an object of its own
+                // rather than a string, and a chunk this build could not decode
+                // would drop the answer it also carries, so a value that is not
+                // a string is read as no reasoning at all.
+                let streamed = try? container.decodeIfPresent(String.self, forKey: .reasoningContent)
+                let named = try? container.decodeIfPresent(String.self, forKey: .reasoning)
+                reasoning = [streamed, named].compactMap { $0 }.first { !$0.isEmpty }
             }
         }
 
@@ -409,6 +476,8 @@ private struct OpenAIStreamState {
     private var partials: [Int: Partial] = [:]
     private var order: [Int] = []
     var stopReason: ChatStopReason = .endTurn
+    /// Whether the service ever said why the model stopped.
+    var sawFinishReason = false
 
     mutating func add(_ fragment: OpenAIStreamChunk.Choice.Delta.ToolCallFragment) {
         let index = fragment.index ?? order.last ?? 0

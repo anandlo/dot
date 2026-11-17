@@ -29,10 +29,80 @@ final class EndpointPolicyTests: XCTestCase {
             "http://127.0.0.1:8765/v1",
             "http://localhost:1234/v1",
             "http://127.0.0.10/v1",
+            "http://127.255.255.255/v1",
             "http://[::1]:8080/v1",
         ] {
             XCTAssertNil(EndpointPolicy.validate(url(address)), address)
         }
+    }
+
+    /// A host name is text, and only a literal address of this Mac is one.
+    ///
+    /// `127.example.com` and `127.0.0.1.nip.io` both begin with `127.` and both
+    /// resolve wherever their owner says: accepting them over http would send
+    /// the key in clear text to a stranger.
+    func testAHostNameThatBeginsWith127IsNotTheMachine() {
+        for host in [
+            "127.example.com",
+            "127.0.0.1.nip.io",
+            "127.0.0.1.evil",
+            "127.0.0.1.evil.example",
+            "127.localhost.example.com",
+        ] {
+            XCTAssertFalse(EndpointPolicy.isLoopback(host), host)
+            XCTAssertNotNil(
+                EndpointPolicy.validate(url("http://\(host)/v1")),
+                "\(host) was treated as this Mac"
+            )
+        }
+    }
+
+    func testAMalformedNumericAddressIsNotTheMachine() {
+        for host in [
+            "127",
+            "127.0",
+            "127.0.0",
+            "127.0.0.1.5",
+            "127..0.1",
+            "127.0.0.256",
+            "127.0.0.-1",
+            "127.0.0.00",
+            "127.0.0.01",
+            "127.0.0.001",
+            "127.0.0.1.",
+            "127.0.0.1:8080",
+            "128.0.0.1",
+            "126.255.255.255",
+            "10.0.0.1",
+            "0.0.0.0",
+        ] {
+            XCTAssertFalse(EndpointPolicy.isLoopback(host), host)
+        }
+    }
+
+    func testEveryRealLoopbackAddressIsTheMachine() {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.9",
+            "127.0.0.10",
+            "127.1.2.3",
+            "127.200.30.40",
+            "127.255.255.255",
+            "localhost",
+            "LOCALHOST",
+            "::1",
+            "[::1]",
+        ] {
+            XCTAssertTrue(EndpointPolicy.isLoopback(host), host)
+        }
+    }
+
+    func testTheNumericOctetsAreReadInDecimalOnly() {
+        XCTAssertTrue(EndpointPolicy.isNumericLoopbackIPv4("127.0.0.1"))
+        XCTAssertTrue(EndpointPolicy.isNumericLoopbackIPv4("127.0.0.0"))
+        XCTAssertFalse(EndpointPolicy.isNumericLoopbackIPv4("127.0.0.010"))
+        XCTAssertFalse(EndpointPolicy.isNumericLoopbackIPv4("127.0.0.0x10"))
+        XCTAssertFalse(EndpointPolicy.isNumericLoopbackIPv4("127.0.0.1\n"))
     }
 
     func testANameThatMerelyEndsInLocalhostIsNotVouchedFor() {

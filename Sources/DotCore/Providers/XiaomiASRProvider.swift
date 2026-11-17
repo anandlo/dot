@@ -252,40 +252,106 @@ public struct XiaomiASRProvider: Provider {
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Removes stray CJK tokens and standalone digit-only noise hallucinations (`"1"`, `"10"`)
-    /// that the bilingual MiMo ASR model can slip into an English transcript during breathy pauses.
+    /// Removes what the model puts around a transcript that the person never
+    /// said.
+    ///
+    /// Two shapes of noise reach the text. One is Chinese: the model is
+    /// bilingual, and a breathy pause can be answered with a token in the other
+    /// language. The other is a number at an edge. The model is a chat model,
+    /// and audio that opens on the room tone Dot records from the key press
+    /// reads to it as the start of a list, so it numbers the silence - "1. ",
+    /// "2. ", "1:00. ". A number is dropped only where it can be nothing else:
+    /// a token made of digits and the separators a list number or a timestamp
+    /// is written with, at the start of the answer and closed by its own full
+    /// stop or colon, at the end of the answer after a sentence has already
+    /// ended, or alone in an answer that says nothing else.
+    ///
+    /// A number that is part of a sentence is speech and is left byte for byte:
+    /// "10 is a fair comparison.", "I have 2 cats." and "Meeting at 10." are not
+    /// touched, because a number with words after it is not furniture, it is
+    /// the sentence.
     static func stripCJKCharacters(_ text: String) -> String {
-        let tokens = text.components(separatedBy: .whitespacesAndNewlines)
-        let filtered = tokens.compactMap { token -> String? in
-            guard !token.isEmpty else { return nil }
-            let containsCJK = token.unicodeScalars.contains { scalar in
-                let v = scalar.value
-                return (0x3000...0x303F).contains(v)
-                    || (0x3400...0x4DBF).contains(v)
-                    || (0x4E00...0x9FFF).contains(v)
-                    || (0xF900...0xFAFF).contains(v)
-                    || (0xFF00...0xFFEF).contains(v)
-            }
-            guard !containsCJK else { return nil }
-            return token
-        }
-        var joined = filtered.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-        // Strip leading or trailing standalone list-number hallucinations ("1.", "10.") that
-        // MiMo ASR sometimes inserts on leading/trailing breath or pause boundaries.
-        joined = replacing(#"^\s*(?:1|10)\.(?=\s+[A-Z])"#, in: joined, options: [])
-        joined = replacing(#"(?<=[.!?])\s+(?:1|10)\.?$"#, in: joined, options: [])
-        joined = joined
+        var tokens = text
             .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        // If an entire segment returned ONLY a short digit/punctuation token (e.g. "1.", "10.", "10")
-        // with zero letters, it is a breath/noise hallucination from MiMo ASR; discard it.
+            .filter { !$0.isEmpty && !containsCJK($0) }
+
+        // The head. The model numbered the silence it was given before the
+        // first word, so the number carries its own closing mark, or it is the
+        // whole answer.
+        if let first = tokens.first,
+           isListNumber(first),
+           tokens.count == 1 || isClosedListNumber(first) {
+            tokens.removeFirst()
+        }
+        // The tail. The same furniture, reached only after a sentence has
+        // ended: "the app. 1." is two answers, while "at 10." is one.
+        if tokens.count >= 2,
+           let last = tokens.last,
+           endsSentence(tokens[tokens.count - 2]),
+           isListNumber(last),
+           isClosedListNumber(last) || isWholeNumber(last) {
+            tokens.removeLast()
+        }
+
+        let joined = tokens.joined(separator: " ")
+        // An answer with no letter in it and almost nothing else is a breath:
+        // the model transcribed the room and put a mark on it.
         let hasAnyLetter = joined.unicodeScalars.contains { CharacterSet.letters.contains($0) }
         if !hasAnyLetter && joined.count <= 4 {
             return ""
         }
         return joined
+    }
+
+    /// Whether a token carries a Chinese, Japanese or Korean character.
+    private static func containsCJK(_ token: String) -> Bool {
+        token.unicodeScalars.contains { scalar in
+            let value = scalar.value
+            return (0x3000...0x303F).contains(value)
+                || (0x3400...0x4DBF).contains(value)
+                || (0x4E00...0x9FFF).contains(value)
+                || (0xF900...0xFAFF).contains(value)
+                || (0xFF00...0xFFEF).contains(value)
+        }
+    }
+
+    /// Whether a token can only be a list number or a timestamp.
+    ///
+    /// Digits, and the separators they are written with, with at least one
+    /// digit among them: "2.", "10", "1:00" and "1,000." are furniture, while
+    /// "2nd", "10:30pm" and "-5" carry something the speaker meant.
+    private static func isListNumber(_ token: String) -> Bool {
+        let digits = CharacterSet(charactersIn: "0123456789")
+        let separators = CharacterSet(charactersIn: ":.,")
+        var hasDigit = false
+        for scalar in token.unicodeScalars {
+            if digits.contains(scalar) {
+                hasDigit = true
+            } else if !separators.contains(scalar) {
+                return false
+            }
+        }
+        return hasDigit
+    }
+
+    /// Whether a list number is closed the way a numbered item or a timestamp
+    /// is written: "2.", "10." or "1:00.".
+    private static func isClosedListNumber(_ token: String) -> Bool {
+        token.hasSuffix(".") || token.hasSuffix(":")
+    }
+
+    /// Whether a token is a plain whole number with nothing around it.
+    private static func isWholeNumber(_ token: String) -> Bool {
+        guard !token.isEmpty else { return false }
+        let digits = CharacterSet(charactersIn: "0123456789")
+        return token.unicodeScalars.allSatisfy { digits.contains($0) }
+    }
+
+    /// Whether a token ends a sentence, which is what makes a number after it a
+    /// fragment of its own rather than part of what was said.
+    private static func endsSentence(_ token: String) -> Bool {
+        guard let last = token.unicodeScalars.last else { return false }
+        return CharacterSet(charactersIn: ".!?:").contains(last)
     }
 
     /// Replaces every match of a regular expression.

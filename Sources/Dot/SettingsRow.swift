@@ -81,14 +81,14 @@ struct SettingsRow<Trailing: View>: View {
                             .accessibilityHidden(true)
                     } else if let symbol {
                         Image(systemName: symbol)
-                            .font(.system(size: 16, weight: .regular))
+                            .font(DotType.font(16, .regular))
                             .foregroundStyle(DotTheme.ink2)
                             .frame(width: 20, alignment: .leading)
                             .accessibilityHidden(true)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title)
-                            .font(.system(size: 13))
+                            .font(DotType.font(13, .regular))
                             .foregroundStyle(titleTone)
                         if !wideSubtitle, let subtitle {
                             subtitleLine(subtitle)
@@ -115,7 +115,7 @@ struct SettingsRow<Trailing: View>: View {
     /// One line of the fact under the title.
     private func subtitleLine(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 11))
+            .font(DotType.font(11, .regular))
             .foregroundStyle(subtitleTone)
             .fixedSize(horizontal: false, vertical: true)
     }

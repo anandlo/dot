@@ -101,6 +101,8 @@ final class PaletteTests: XCTestCase {
 
     func testEscapeDismissesThePalette() {
         _ = NSApplication.shared
+        OffscreenPalette.install()
+        defer { OffscreenPalette.restore() }
         let controller = PaletteController(activates: false)
         controller.show(entries: entries, insert: { _ in }, copy: { _ in })
         XCTAssertTrue(controller.isVisible)
@@ -111,6 +113,8 @@ final class PaletteTests: XCTestCase {
 
     func testReturnInsertsTheSelectedTranscriptAndCloses() {
         _ = NSApplication.shared
+        OffscreenPalette.install()
+        defer { OffscreenPalette.restore() }
         let controller = PaletteController(activates: false)
         var inserted: [String] = []
         controller.show(entries: entries, insert: { inserted.append($0) }, copy: { _ in })
@@ -122,6 +126,8 @@ final class PaletteTests: XCTestCase {
 
     func testShiftReturnCopiesWithoutInserting() {
         _ = NSApplication.shared
+        OffscreenPalette.install()
+        defer { OffscreenPalette.restore() }
         let controller = PaletteController(activates: false)
         var inserted: [String] = []
         var copied: [String] = []
@@ -139,6 +145,8 @@ final class PaletteTests: XCTestCase {
 
     func testReturnInAnEmptyPaletteDoesNothing() {
         _ = NSApplication.shared
+        OffscreenPalette.install()
+        defer { OffscreenPalette.restore() }
         let controller = PaletteController(activates: false)
         var inserted: [String] = []
         controller.show(entries: [], insert: { inserted.append($0) }, copy: { _ in })
@@ -151,6 +159,8 @@ final class PaletteTests: XCTestCase {
 
     func testTheArrowsMoveTheSelectionThroughThePanel() {
         _ = NSApplication.shared
+        OffscreenPalette.install()
+        defer { OffscreenPalette.restore() }
         let controller = PaletteController(activates: false)
         controller.show(entries: entries, insert: { _ in }, copy: { _ in })
         XCTAssertEqual(controller.debugSelectedText, entries[0].text)
@@ -165,6 +175,8 @@ final class PaletteTests: XCTestCase {
 
     func testThePanelIsNonActivatingAndCanTakeTheKeyboard() {
         _ = NSApplication.shared
+        OffscreenPalette.install()
+        defer { OffscreenPalette.restore() }
         let controller = PaletteController(activates: false)
         controller.show(entries: entries, insert: { _ in }, copy: { _ in })
         let panel = try? XCTUnwrap(NSApp.windows.first { $0 is PalettePanel })
@@ -177,6 +189,8 @@ final class PaletteTests: XCTestCase {
 
     func testAKeyThePaletteDoesNotUseIsLeftForTheField() {
         _ = NSApplication.shared
+        OffscreenPalette.install()
+        defer { OffscreenPalette.restore() }
         let controller = PaletteController(activates: false)
         controller.show(entries: entries, insert: { _ in }, copy: { _ in })
 

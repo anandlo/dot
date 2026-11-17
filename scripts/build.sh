@@ -76,6 +76,26 @@ if [ -f "$APP/Contents/Resources/Assets.car" ]; then
   ICON_NAME_ENTRY=$'\t<key>CFBundleIconName</key>\n\t<string>AppIcon</string>'
 fi
 
+# The app's typeface is embedded but never committed: the foundry's licence
+# allows it in the application and forbids redistributing the file. A checkout
+# without it still builds and falls back to the system face.
+FONT_ENTRY=""
+mkdir -p -- "$APP/Contents/Resources/Fonts"
+FONT_COUNT=0
+for font in "$PROJECT_DIR"/Resources/Fonts/*.ttf; do
+  [ -f "$font" ] || continue
+  cp -- "$font" "$APP/Contents/Resources/Fonts/"
+  FONT_COUNT=$((FONT_COUNT + 1))
+done
+if [ "$FONT_COUNT" -gt 0 ]; then
+  FONT_ENTRY=$'\t<key>ATSApplicationFontsPath</key>\n\t<string>Fonts</string>'
+  log "embedded $FONT_COUNT font file(s)"
+else
+  rmdir -- "$APP/Contents/Resources/Fonts" 2>/dev/null || true
+  warn "Resources/Fonts holds no font: the app will fall back to the system face."
+  warn "run ./scripts/fetch-fonts.sh to fetch the typeface the app is designed in."
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -96,6 +116,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 $ICON_NAME_ENTRY
+$FONT_ENTRY
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

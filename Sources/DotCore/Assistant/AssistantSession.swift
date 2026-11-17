@@ -335,6 +335,11 @@ extension AssistantSession {
         do {
             for try await event in provider.stream(messages: messages, tools: tools, model: model) {
                 switch event {
+                case .thinking:
+                    // The service is reasoning. The turn is already reported as
+                    // thinking before its first request, and the reasoning is
+                    // never carried to a surface, so there is nothing to add.
+                    continue
                 case .textDelta(let delta):
                     guard !delta.isEmpty else { continue }
                     producedOutput = true

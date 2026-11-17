@@ -68,6 +68,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var history = HistoryStore.loadEntries()
     private var providers: [MenuProvider] = []
     private var transcriptionTask: Task<Void, Never>?
+    /// Whether the app is inside `applicationWillTerminate`.
+    ///
+    /// Set before the transcription task is cancelled, so a task that resumes
+    /// while the app is quitting cannot paste, show a card or write history.
+    private var isTerminating = false
     /// The loop that asks the provider for a live partial while recording.
     private var liveTask: Task<Void, Never>?
     /// What has already been transcribed for the recording that is running.
@@ -151,6 +156,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// knows it. Resolved when the microphone starts, while the device is known
     /// to be the one producing the take.
     private var recordingDeviceUID: String?
+    /// The room floor of that microphone, in dBFS, or `nil` when nothing has
+    /// measured it yet.
+    ///
+    /// The key is the one the recorder starts on and the one ``learn(from:)``
+    /// writes: the CoreAudio UID of the device, resolved through the catalog at
+    /// the key press. It is read from the configuration at the moment it is
+    /// used, so a take trimmed after a stop uses the floor that take just
+    /// taught the book. A device with no entry has no floor, and a clip with no
+    /// floor is sent exactly as it was recorded rather than trimmed on a guess.
+    private var silenceFloorDBFS: Double? {
+        MicrophoneCalibrationBook
+            .calibration(for: recordingDeviceUID, in: config.microphoneCalibration)?
+            .noiseFloorDBFS
+    }
     /// The credential migration that runs off the main actor at launch.
     private var migrationTask: Task<Void, Never>?
 
@@ -182,6 +201,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var state: State = .idle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The typeface first: every window built after this resolves its fonts,
+        // and a face registered after a view was built would leave that view in
+        // the system font for the life of the process. The packaged app is
+        // already covered by `ATSApplicationFontsPath`, so this answers "already
+        // registered" and carries on; it is here for a bundle launched in a way
+        // that skipped the plist entry.
+        if let resources = Bundle.main.resourceURL {
+            DotType.registerFonts(at: resources.appendingPathComponent("Fonts"))
+        }
         Log.shared.openFile()
         heartbeat.start()
         // A dictation app is asked to do its one job by a key press that may
@@ -275,6 +303,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // The flag comes first: a transcription task cancelled below may resume
+        // on this actor before the app is gone, and it must not paste or draw.
+        isTerminating = true
+        // A card's last change was written when it happened; this covers a
+        // change that arrived in the same turn as the quit, before the layer
+        // and its entry are gone.
+        persistRewrite(rewrite.card)
         saveConfiguration()
         assistant.terminate()
         migrationTask?.cancel()
@@ -445,6 +480,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         actions.cancel = { [weak self] in self?.cancelRecording() }
         actions.copy = { [weak self] in self?.copyLastTranscript() }
         actions.paste = { [weak self] in self?.pasteLastTranscript() }
+        // A card that holds versions delivers the one on screen, named at the
+        // click, and never re-shows the transcript: that would clear the layer
+        // and lose the other versions.
+        actions.copyVersion = { [weak self] text in self?.rewrite.copySelected(text) }
+        actions.pasteVersion = { [weak self] text in self?.rewrite.pasteSelected(text) }
+        actions.selectOriginal = { [weak self] in self?.rewrite.select(versionID: 0) }
+        actions.previousVersion = { [weak self] in self?.rewrite.selectPrevious() }
+        actions.nextVersion = { [weak self] in self?.rewrite.selectNext() }
+        actions.rerunRewrite = { [weak self] in
+            guard let self else { return }
+            self.rewrite.rerun(configuration: self.config.assistant.rewrite)
+        }
         actions.beginInlineEdit = { [weak self] in self?.hud.beginInlineEditing() }
         actions.endInlineEdit = { [weak self] in self?.hud.endInlineEditing() }
         actions.updateTranscript = { [weak self] updated in
@@ -460,13 +507,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         actions.keepOriginal = { [weak self] in self?.rewrite.keepOriginal() }
         hud.actions = actions
         rewrite.onChange = { [weak self] card in
-            self?.hud.setRewrite(card)
+            guard let self else { return }
+            self.hud.setRewrite(card)
+            // Every change of the layer is also a chance to keep the versions
+            // it holds. The write is skipped while a draft streams and when the
+            // entry already carries this snapshot, so a streamed token never
+            // reaches the disk.
+            self.persistRewrite(card)
         }
+        // The layer belongs to the card. A card that is replaced or hidden
+        // stops the stream and forgets the versions, so a late answer can never
+        // attach to words nobody can see.
+        hud.onTranscriptEnded = { [weak self] in self?.rewrite.reset() }
+        hud.onHide = { [weak self] in self?.rewrite.reset() }
+    }
+
+    /// Keeps the versions and the selection the card is showing.
+    ///
+    /// The card names the transcript it was built from, and the versions are
+    /// attached only to the entry with that text. A cleared or shortened
+    /// history is therefore never brought back, an inline edit never inherits
+    /// versions built on the old words, and a reset writes nothing at all.
+    private func persistRewrite(_ card: RewriteCard?) {
+        guard let card, let snapshot = RewriteSnapshot(card: card) else { return }
+        guard let updated = HistoryStore.storing(snapshot, for: card.original, in: history) else {
+            return
+        }
+        history = updated
+        HistoryStore.saveEntries(history, limit: config.historyLimit)
+        Log.shared.info("history.rewrite.saved", [
+            "versions": .int(snapshot.versions.count),
+            "selected": .int(snapshot.selectedVersionID),
+        ])
     }
 
     /// Runs one chip's style against the transcript on the card.
+    ///
+    /// An existing style selects its latest version; a style that has never run
+    /// starts a request. Running another version of a style is the explicit
+    /// rerun control, so browsing the versions never silently regenerates.
     private func chooseRewrite(_ style: RewriteStyle) {
-        rewrite.choose(style, configuration: config.assistant.rewrite)
+        rewrite.selectStyle(style, configuration: config.assistant.rewrite)
     }
 
     /// Shows the launch card once, after the menu is ready.
@@ -543,7 +624,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .toggleRecording:
             toggleRecording()
         case .askAssistant:
-            assistantHotkeyPressed()
+            // The spoken assistant is retired. The action stays in the enum so a
+            // menu built by an older state still parses, but it starts nothing:
+            // dictation is the only thing the keys do.
+            break
         case .pasteLast:
             pasteLastTranscript()
         case .copyLast:
@@ -616,7 +700,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The item is drawn either way; a person who never set the assistant up
         // sees it greyed rather than pressing a key that answers with a
         // sentence.
-        let assistantRow = AssistantProviderCatalogue.row(for: config.assistant.chat.providerID)
+        let assistantRow = AssistantProviderCatalogue.row(for: config.assistant.chat.resolvedProviderID)
         state.assistantUsable = AssistantAvailability.isUsable(
             config: config.assistant,
             hasKey: assistantRow.requiresKey ? CredentialStore.hasKey(for: assistantRow.id) : false
@@ -671,31 +755,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The assistant's shortcut was pressed.
-    ///
-    /// One key asks, sends, stops and silences, and ``AssistantInteraction``
-    /// decides which of those it is. Escape is answered by the same table.
-    private func assistantHotkeyPressed() {
-        Log.shared.info("assistant.hotkey.pressed", [
-            "hotkey": .string(config.assistantHotkey.label),
-            "phase": .string(assistantPhaseName),
-        ])
-        switch AssistantInteraction.action(for: .assistant, phase: assistantPhase) {
-        case .startCapture:
-            startRecording(fromHotkey: true, purpose: .assistant)
-        case .stopCapture:
-            stopRecording()
-        case .cancelTurn:
-            assistant.cancelTurn()
-        case .stopSpeech:
-            assistant.stopSpeech()
-        case .cancelCapture, .decline, .ignore:
-            // A question is never approved from the keyboard: a confirmation
-            // waits for the card's own buttons.
-            break
-        }
-    }
-
     /// Escape was released.
     ///
     /// The assistant's table answers first; anything it does not handle falls
@@ -744,18 +803,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The phase, for a log line.
-    private var assistantPhaseName: String {
-        switch assistantPhase {
-        case .idle: "idle"
-        case .recording: "recording"
-        case .thinking: "thinking"
-        case .streaming: "streaming"
-        case .tool: "tool"
-        case .speaking: "speaking"
-        case .confirming: "confirming"
-        }
-    }
-
     /// The hot key came back up.
     ///
     /// Only ``RecordingMode/hold`` acts on this: the key is the gesture, and
@@ -919,6 +966,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         transcriptionTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            guard TranscriptionLifecycle.end(
+                isTerminating: self.isTerminating,
+                isCancelled: Task.isCancelled
+            ) == .deliver else {
+                self.abandonTranscription()
+                return
+            }
 
             let initialLedger = self.ledger ?? initialLedger
             let lastTranscribed = initialLedger.provisional?.endSample ?? initialLedger.committedSamples
@@ -947,15 +1001,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return false
             }()
 
-            // Fast-Path: If trailing audio is release silence/room noise, await the in-flight
-            // live task with a fast deadline (1.0s) and promote its transcript immediately.
+            // Fast-Path: If trailing audio is release silence/room noise, await the cancelled
+            // live task for the same second a last partial gets and promote its transcript
+            // immediately. TaskCompletion.wait is bounded even when the request ignores
+            // cancellation, so a stuck upload cannot hold the stop open.
             if !uncoveredHasSpeech, let activeTask = inFlightLiveTask {
-                _ = await withTaskGroup(of: Void.self) { group in
-                    group.addTask { _ = await activeTask.result }
-                    group.addTask { try? await Task.sleep(for: .milliseconds(1000)) }
-                    await group.next()
-                    group.cancelAll()
-                }
+                _ = await TaskCompletion.wait(for: activeTask, upTo: Live.partialWait)
                 let currentLedger = self.ledger ?? initialLedger
                 let candidateText = currentLedger.displayText
                 if !candidateText.isEmpty {
@@ -992,10 +1043,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.handleTranscript(text)
             case .send(let range, let prefix):
                 let piece = Array(recording.samples[range])
-                let segments = Segmenter.segmentCount(
-                    samples: piece.count,
-                    seconds: self.maxSegmentSeconds(self.provider)
-                )
+                let segments = self.plannedSegments(for: piece)
                 Log.shared.info("transcription.tail", [
                     "samples": .int(piece.count),
                     "segments": .int(segments),
@@ -1010,8 +1058,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     self.handleTranscript(transcript)
                 } catch is CancellationError {
-                    self.finishWork()
+                    // A genuine cancellation: the task stopped, so no result is
+                    // coming. The card must not keep saying "transcribing".
+                    self.abandonTranscription()
                 } catch {
+                    guard TranscriptionLifecycle.end(
+                        isTerminating: self.isTerminating,
+                        isCancelled: Task.isCancelled
+                    ) == .deliver else {
+                        self.abandonTranscription()
+                        return
+                    }
                     // The tail failed, but the audio the live loop already
                     // committed is transcribed and final. Losing it because the
                     // last few seconds failed would throw away the recording.
@@ -1108,6 +1165,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         static let emptyDelay: Duration = .milliseconds(200)
         /// How much new audio, in seconds, justifies a new partial.
         static let minimumGrowth: Double = 1.1
+        /// How long a stop or a recovery waits for the live request it
+        /// cancelled before sending the tail.
+        ///
+        /// A cancelled request can still be finishing on the wire; a tail sent
+        /// over it would put two uploads of one take at the service. The bound
+        /// is the same second a last partial gets, and a request that ignores
+        /// cancellation longer than that is left behind.
+        static let partialWait: Duration = .milliseconds(1000)
         /// How many consecutive failures end the loop.
         static let failureLimit = 5
         /// The longest error text that reaches the log, in characters.
@@ -1181,7 +1246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     isCommit = false
                     commitUpTo = provRange.upperBound
                 }
-                guard let wav = self.recorder.wav(range: reqRange) else {
+                guard let wav = self.uploadWAV(range: reqRange) else {
                     try? await Task.sleep(for: Live.emptyDelay)
                     continue
                 }
@@ -1268,6 +1333,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The prefix is the text of the chunks the live loop already committed;
     /// this call only pays for the tail.
     ///
+    /// The floor of the microphone is passed with the samples so the room tone
+    /// the take opens on is cut before the model hears it. The transcriber
+    /// writes the one event that describes the cut, because this is the call
+    /// that closes a take and a take has one trim.
+    ///
     /// - Parameters:
     ///   - samples: the tail, in 16 kHz mono samples.
     ///   - prefix: the text that is already final.
@@ -1282,6 +1352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             provider: provider,
             model: settings.model,
             language: settings.language,
+            noiseFloorDBFS: silenceFloorDBFS,
             maxSegmentSeconds: maxSegmentSeconds(provider),
             progress: nil
         )
@@ -1301,6 +1372,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return TranscriptLedger.join([prefix, report.text])
     }
 
+    /// A WAV of one range of the take, with the room tone at its edges cut.
+    ///
+    /// The live loop sends from the start of the take on its first request, and
+    /// a take begins with the tone of the room, not with the first word: that
+    /// quiet lead-in is what the model answers with a list number. The same
+    /// trimmer and the same floor as the stop are used here, so both paths hand
+    /// the provider audio that starts on speech.
+    ///
+    /// The trim is not logged here. One take makes several live requests, and
+    /// the one event that describes a take's trim is written by the stop.
+    ///
+    /// - Parameter range: the samples to send, as offsets from the start of the
+    ///   recording.
+    /// - Returns: `nil` when the range holds nothing that has arrived yet.
+    private func uploadWAV(range: Range<Int>) -> Data? {
+        let samples = recorder.samples(in: range)
+        guard !samples.isEmpty else { return nil }
+        guard let floor = silenceFloorDBFS else { return WAVWriter.encode(samples: samples) }
+        let trim = SilenceTrim.trim(samples, noiseFloorDBFS: floor)
+        guard trim.range != 0..<samples.count else { return WAVWriter.encode(samples: samples) }
+        return WAVWriter.encode(samples: Array(samples[trim.range]))
+    }
+
+    /// How many requests a piece of audio will need once its room tone is cut.
+    ///
+    /// The transcriber counts its own segments from the audio it sends, and the
+    /// transcriber is what cuts the room tone. The number announced before the
+    /// call is this one, measured with the same trimmer on the same audio, so
+    /// the count names the requests that will really be made and a take whose
+    /// lead-in was cut is not reported as replanned.
+    ///
+    /// - Parameter samples: the piece that is about to be sent.
+    private func plannedSegments(for samples: [Int16]) -> Int {
+        let seconds = maxSegmentSeconds(provider)
+        guard let floor = silenceFloorDBFS else {
+            return Segmenter.segmentCount(samples: samples.count, seconds: seconds)
+        }
+        let trim = SilenceTrim.trim(samples, noiseFloorDBFS: floor)
+        return Segmenter.segmentCount(samples: trim.range.count, seconds: seconds)
+    }
+
     /// The longest segment one request may carry, in seconds.
     ///
     /// The length is a capability of the provider: it is what the service
@@ -1314,22 +1426,187 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return min(provider.maxSegmentSeconds, configured)
     }
 
+    /// Ends a take whose microphone failed and recovers the audio it captured.
+    ///
+    /// The take is stopped, not thrown away: the recorder keeps the samples of
+    /// a failed capture and ``Recorder/stop()`` hands them over, the committed
+    /// prefix of the transcript is reused, and only the audio that was never
+    /// transcribed is sent. Exactly one ``handleTranscript(_:)`` runs on this
+    /// path, so a recovered take is pasted once.
+    ///
+    /// - Parameter message: why the microphone stopped, from the recorder.
     private func failRecording(_ message: String) {
         guard state == .recording else { return }
         rewrite.reset()
-        stopLiveTranscription()
-        ledger = nil
-        recorder.cancel()
-        // The watcher keeps running: a failed take is not a reason to stop
-        // hearing the key. It still reports secure input, and in hold mode the
-        // next press must still be able to end the recording.
-        state = .idle
+        // Keep the live task instead of dropping it. Its request was
+        // cancelled, not completed, and recovery has to wait for it to settle
+        // before the tail is sent; two uploads on the same take must not
+        // overlap at the service.
+        let inFlightLiveTask = liveTask
+        liveTask = nil
+        inFlightLiveTask?.cancel()
+        // The samples of the failed take are still in the recorder: stop()
+        // drains them and clears its copy, exactly like the normal stop.
+        let recording = recorder.stop()
+        state = .working
+        recordingElapsed = recording.duration
         refreshMenu()
-        hud.showMessage(text: message, action: nil)
-        Log.shared.error("recording.failed", ["error": .string(message)])
+        Log.shared.error("recording.failed", [
+            "error": .string(message),
+            "samples": .int(recording.sampleCount),
+        ])
+
+        let samples = recording.sampleCount
+        guard samples > 0 else {
+            ledger = nil
+            hud.showMessage(text: "\(message) Nothing was recorded.", symbol: "mic.slash")
+            finishWork()
+            return
+        }
+
+        learn(from: recording)
+        let recoveredLedger = ledger
+            ?? TranscriptLedger(commitSeconds: maxSegmentSeconds(provider))
+        hud.showMessage(
+            text: "\(message) Transcribing the audio Dot captured.",
+            symbol: "mic.slash"
+        )
+        recover(
+            recording,
+            ledger: recoveredLedger,
+            failure: message,
+            liveTask: inFlightLiveTask
+        )
+    }
+
+    /// Sends what a failed take still owes, using the ledger a normal stop uses.
+    ///
+    /// The live task has been cancelled by the caller but may still be
+    /// finishing its request. It is awaited here, before the tail is planned or
+    /// sent, so the two uploads cannot overlap. The wait is bounded by the same
+    /// second the normal stop allows the last partial; a request that ignores
+    /// cancellation for longer than that is left behind.
+    ///
+    /// The committed text is the fallback when the tail fails, exactly as in
+    /// ``stopRecording()``; the failure that ended the take is never reported
+    /// as if the take had simply stopped.
+    ///
+    /// - Parameters:
+    ///   - recording: the samples the recorder kept for the failed take.
+    ///   - initialLedger: the transcript the live loop had already committed.
+    ///   - failure: why the microphone stopped, for the log and the card.
+    ///   - inFlightLiveTask: the live request the failure cancelled, if any.
+    private func recover(
+        _ recording: Recorder.Recording,
+        ledger initialLedger: TranscriptLedger,
+        failure: String,
+        liveTask inFlightLiveTask: Task<Void, Never>?
+    ) {
+        let samples = recording.sampleCount
+        transcriptionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard TranscriptionLifecycle.end(
+                isTerminating: self.isTerminating,
+                isCancelled: Task.isCancelled
+            ) == .deliver else {
+                self.abandonTranscription()
+                return
+            }
+            if let inFlightLiveTask {
+                // The request was cancelled, not completed. Let it settle so
+                // the tail does not overlap it at the provider. The bound is
+                // the same second the stop gives a last partial.
+                _ = await TaskCompletion.wait(for: inFlightLiveTask, upTo: Live.partialWait)
+            }
+            let currentLedger = self.ledger ?? initialLedger
+            self.ledger = nil
+            // The key was never released, so the tail may be speech cut
+            // mid-word. Recovery keeps the strict speech tolerance instead of
+            // the release-silence one a normal stop may use.
+            switch FailedTakeRecovery.plan(ledger: currentLedger, sampleCount: samples) {
+            case .alreadyFinal(let text):
+                Log.shared.info("recording.failed.recovered", [
+                    "source": .string("committed"),
+                    "samples": .int(samples),
+                    "characters": .int(text.count),
+                ])
+                self.handleTranscript(text)
+            case .send(let range, let prefix):
+                let piece = Array(recording.samples[range])
+                let segments = self.plannedSegments(for: piece)
+                Log.shared.info("recording.failed.tail", [
+                    "samples": .int(piece.count),
+                    "segments": .int(segments),
+                    "final_samples": .int(currentLedger.committedSamples),
+                ])
+                do {
+                    let transcript = try await self.transcribe(
+                        samples: piece,
+                        prefix: prefix,
+                        total: segments
+                    )
+                    self.handleTranscript(transcript)
+                } catch is CancellationError {
+                    self.abandonTranscription()
+                } catch {
+                    guard TranscriptionLifecycle.end(
+                        isTerminating: self.isTerminating,
+                        isCancelled: Task.isCancelled
+                    ) == .deliver else {
+                        self.abandonTranscription()
+                        return
+                    }
+                    let fallback = currentLedger.displayText
+                    if !fallback.isEmpty {
+                        Log.shared.info("recording.failed.fallbackToPrefix", [
+                            "characters": .int(fallback.count),
+                        ])
+                        self.handleTranscript(fallback)
+                    } else {
+                        self.failRecoveredTake(failure, error: error)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reports a failed take whose captured audio could not be transcribed.
+    private func failRecoveredTake(_ failure: String, error: Error) {
+        guard TranscriptionLifecycle.end(
+            isTerminating: isTerminating,
+            isCancelled: Task.isCancelled
+        ) == .deliver else {
+            abandonTranscription()
+            return
+        }
+        let detail: String
+        if let providerError = error as? ProviderError {
+            detail = providerError.errorDescription ?? providerError.localizedDescription
+        } else {
+            detail = error.localizedDescription
+        }
+        Log.shared.error("recording.failed.lost", [
+            "capture": .string(failure),
+            "transcription": .string(detail),
+        ])
+        hud.showMessage(
+            text: "\(failure) The audio Dot captured could not be transcribed: \(detail)",
+            action: nil
+        )
+        finishWork()
     }
 
     private func handleTranscript(_ transcript: String) {
+        // The last chokepoint before a paste: a transcript that finishes while
+        // the app is quitting, or after its task was cancelled, is dropped.
+        // Cancelling a task is not a delivery.
+        guard TranscriptionLifecycle.end(
+            isTerminating: isTerminating,
+            isCancelled: Task.isCancelled
+        ) == .deliver else {
+            abandonTranscription()
+            return
+        }
         // A question is answered, not delivered. It keeps nothing: no history
         // entry, no rewrite, and nothing on the clipboard until the answer is
         // ready to go where the person was writing.
@@ -1400,13 +1677,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // The rewrite layer belongs to the card that was just shown. Its state
         // changes come back through `rewrite.onChange`, so the card is the only
-        // one that knows what is on it.
+        // one that knows what is on it. A sentence that was dictated before
+        // starts from the versions its entry already kept, so dictating the same
+        // words again cannot erase them; the next generation takes the id after
+        // the last saved one.
         rewrite.begin(
             text: transcript,
             delivery: delivery,
             destination: decision == .paste ? frontmostNameAtPress : nil,
             configuration: config.assistant.rewrite,
-            anchor: rewriteAnchor
+            anchor: rewriteAnchor,
+            saved: storedRewrite(for: transcript)
         )
         rewriteAnchor = nil
         if config.logTranscripts {
@@ -1506,6 +1787,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleFailure(_ error: Error) {
+        guard TranscriptionLifecycle.end(
+            isTerminating: isTerminating,
+            isCancelled: Task.isCancelled
+        ) == .deliver else {
+            abandonTranscription()
+            return
+        }
         rewrite.reset()
         let message: String
         if let providerError = error as? ProviderError {
@@ -1515,6 +1803,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Log.shared.error("transcription.failed", ["error": .string(message)])
         hud.showMessage(text: message, action: nil)
+        finishWork()
+    }
+
+    /// Ends a transcription that will not produce a delivered result.
+    ///
+    /// A cancelled task is not a transcript. The card is hidden instead of
+    /// being left on "transcribing", and nothing is pasted, copied or written
+    /// to the history. The committed prefix is already final; it is kept in
+    /// the transcript log when that logging policy is on, and only its length
+    /// otherwise. Its words are not delivered: cancellation abandons the take,
+    /// the same policy as the Escape key, and termination must never touch the
+    /// clipboard or the screen.
+    private func abandonTranscription() {
+        let committed = ledger.map { TranscriptLedger.join($0.committedText) } ?? ""
+        // The words of a cancelled take are only kept where the transcript
+        // logging policy keeps them; otherwise the log gets their length.
+        if config.logTranscripts, !committed.isEmpty {
+            Log.shared.info("transcription.cancelled.text", [
+                "terminating": .bool(isTerminating),
+                "text": .string(committed),
+            ])
+        } else {
+            Log.shared.info("transcription.cancelled", [
+                "terminating": .bool(isTerminating),
+                "committed_characters": .int(committed.count),
+            ])
+        }
+        if isTerminating {
+            // The app hides the card on its way out; there is no menu left to
+            // refresh, and device work during teardown would be wasted.
+            ledger = nil
+            return
+        }
+        // Nothing is coming to replace the card, so it is hidden rather than
+        // left on a transcribing state nobody will finish.
+        hud.hide()
         finishWork()
     }
 
@@ -1553,23 +1877,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Transcript delivery
 
     /// Applies an inline edit made directly on the HUD island.
+    ///
+    /// The edit is the person's own act, so the versions built on the old words
+    /// are cleared rather than left to be fed stale text. The history keeps the
+    /// transcript that was dictated: editing the card must not rewrite what the
+    /// history says was recorded.
     private func applyInlineTranscriptEdit(_ newText: String) {
-        let previous = lastTranscript
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         lastTranscript = trimmed.isEmpty ? nil : newText
         hud.updateTranscriptText(newText)
-        if !trimmed.isEmpty {
-            Paste.copy(newText)
-            if let previous, let index = history.firstIndex(where: { $0.text == previous }) {
-                history[index].text = newText
-            } else if !history.isEmpty {
-                history[0].text = newText
-            } else {
-                history = [HistoryStore.Entry(text: newText, addedAt: Date())]
-            }
-            HistoryStore.saveEntries(history)
-            refreshMenu()
-        }
+        rewrite.rebaseOriginal(newText)
+        guard !trimmed.isEmpty else { return }
+        Paste.copy(newText)
+        Log.shared.info("transcript.edited", [
+            "characters": .int(newText.count),
+            "history_kept": .bool(!history.isEmpty),
+        ])
     }
 
     private func pasteLastTranscript() {
@@ -1580,9 +1903,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastTranscript = transcript
         Paste.copy(transcript)
         if Paste.accessibilityGranted, Paste.pasteCommand() {
-            hud.showTranscript(text: transcript, delivery: .pasted, elapsed: "0:00")
+            showRememberedTranscript(transcript, delivery: .pasted)
         } else {
-            hud.showTranscript(text: transcript, delivery: .copied, elapsed: "0:00")
+            showRememberedTranscript(transcript, delivery: .copied)
         }
         Log.shared.info("transcript.pasted.again")
     }
@@ -1594,7 +1917,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         lastTranscript = transcript
         Paste.copy(transcript)
-        hud.showTranscript(text: transcript, delivery: .copied, elapsed: "0:00")
+        showRememberedTranscript(transcript, delivery: .copied)
         Log.shared.info("transcript.copied.again")
     }
 
@@ -1634,7 +1957,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 hasRequestedAccessibility = true
                 Paste.requestAccessibility()
             }
-            hud.showTranscript(text: text, delivery: .copied, elapsed: "0:00")
+            showRememberedTranscript(text, delivery: .copied)
             Log.shared.warn("palette.inserted.copiedOnly")
             return
         }
@@ -1644,7 +1967,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // wait for it to be the one receiving keys.
             try? await Task.sleep(for: .milliseconds(140))
             let delivery: HUDDelivery = Paste.pasteCommand() ? .pasted : .copied
-            hud.showTranscript(text: text, delivery: delivery, elapsed: "0:00")
+            showRememberedTranscript(text, delivery: delivery)
             Log.shared.info("palette.inserted", [
                 "characters": .int(text.count),
                 "delivery": .string(delivery == .pasted ? "pasted" : "copied"),
@@ -1657,15 +1980,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func copyFromPalette(_ text: String) {
         lastTranscript = text
         Paste.copy(text)
-        hud.showTranscript(text: text, delivery: .copied, elapsed: "0:00")
+        showRememberedTranscript(text, delivery: .copied)
         Log.shared.info("palette.copied", ["characters": .int(text.count)])
     }
 
+    /// Copies a remembered transcript and shows the versions it kept.
+    ///
+    /// A click on a history row still copies the transcript itself, never a
+    /// rewrite: the clipboard keeps the words that were dictated, which is what
+    /// the row says it copies. What follows is the card the take left behind,
+    /// with the version that was selected and the arrows to reach the others.
     private func copyHistory(_ text: String) {
+        // A recording owns the card and the clipboard. Copying history during
+        // one would replace the take on screen with words from yesterday and
+        // overwrite the clipboard the take is about to deliver.
+        guard state == .idle else {
+            Log.shared.warn("history.copy.ignored", ["reason": .string("recording")])
+            return
+        }
         lastTranscript = text
         Paste.copy(text)
-        hud.showTranscript(text: text, delivery: .copied, elapsed: "0:00")
-        Log.shared.info("transcript.copied.history")
+        showRememberedTranscript(text, delivery: .copied)
+        Log.shared.info("transcript.copied.history", [
+            "versions": .int(history.first(where: { $0.text == text })?.rewrite?.versions.count ?? 0),
+        ])
+    }
+
+    /// Shows a transcript that came back from the history, with its versions.
+    ///
+    /// Showing a card first is what invalidates the previous take's requests and
+    /// clears its layer. If the entry kept versions they are restored, not
+    /// regenerated; if it kept none and a rewrite could run right now, the card
+    /// offers the same styles a fresh take would. Offering a chip is not asking
+    /// the service: nothing is generated until one is clicked.
+    private func showRememberedTranscript(_ text: String, delivery: HUDDelivery) {
+        hud.showTranscript(text: text, delivery: delivery, elapsed: "0:00")
+        let plan = RewriteRestorePlan.of(
+            saved: storedRewrite(for: text),
+            eligible: rewrite.offersRewrite(
+                for: text,
+                delivery: delivery,
+                configuration: config.assistant.rewrite
+            )
+        )
+        switch plan {
+        case .saved(let snapshot):
+            rewrite.restore(
+                original: text,
+                saved: snapshot,
+                configuration: config.assistant.rewrite
+            )
+        case .choices:
+            rewrite.begin(
+                text: text,
+                delivery: delivery,
+                destination: nil,
+                configuration: config.assistant.rewrite,
+                anchor: nil
+            )
+        case .none:
+            break
+        }
+    }
+
+    /// The versions the entry for this exact text keeps, when it has any.
+    private func storedRewrite(for text: String) -> RewriteSnapshot? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let entry = history.first(where: { $0.text == trimmed }) else { return nil }
+        return entry.rewrite
     }
 
     private func confirmClearHistory(refreshingHistory: Bool = false) {
@@ -2262,8 +2644,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.pasteLastTranscript()
                 case GlobalHotkeyManager.paletteIdentifier:
                     self.showPalette()
-                case GlobalHotkeyManager.assistantIdentifier:
-                    self.assistantHotkeyPressed()
                 default:
                     break
                 }
@@ -2287,14 +2667,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             Log.shared.error("hotkey.register.failed", ["hotkey": .string(config.pasteHotkey.label)])
         }
-        if manager.register(config.assistantHotkey, identifier: GlobalHotkeyManager.assistantIdentifier) {
-            Log.shared.info("hotkey.registered", [
+        // The assistant's saved shortcut is deliberately not registered: the
+        // product has no spoken assistant, and a key that is bound but answers
+        // nothing would only take the combination from another app. The hotkey
+        // itself stays in the configuration file, so a person's choice is not
+        // destroyed by this build.
+        if config.assistantHotkey == config.hotkey
+            || config.assistantHotkey == config.pasteHotkey
+            || config.assistantHotkey == config.paletteHotkey {
+            Log.shared.info("hotkey.assistant.retired", [
                 "hotkey": .string(config.assistantHotkey.label),
-                "role": .string("assistant"),
+                "reason": .string("collides with an active shortcut"),
             ])
-        } else {
-            Log.shared.error("hotkey.register.failed", ["hotkey": .string(config.assistantHotkey.label)])
-            Log.shared.warn("hotkey.role.unavailable", ["role": .string("assistant")])
         }
         if manager.register(config.paletteHotkey, identifier: GlobalHotkeyManager.paletteIdentifier) {
             Log.shared.info("hotkey.registered", ["hotkey": .string(config.paletteHotkey.label), "role": .string("palette")])
@@ -2413,9 +2797,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The shortcuts a new one must not collide with.
     ///
-    /// All four are Dot's, and two of them can be on the same combination
-    /// without Carbon telling anyone: the second registration simply never
-    /// fires.
+    /// Only the three active shortcuts are in the set. The assistant's saved
+    /// chord is no longer registered, so it must not refuse a dictation
+    /// shortcut: a person who recorded it once would otherwise be unable to use
+    /// that combination for anything. The chord stays in the configuration and
+    /// in the Keychain-adjacent settings untouched.
     static func otherHotkeys(
         than role: ShortcutRole,
         config: DotConfig
@@ -2424,7 +2810,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             (.record, config.hotkey),
             (.paste, config.pasteHotkey),
             (.palette, config.paletteHotkey),
-            (.assistant, config.assistantHotkey),
         ]
         return all.filter { $0.0 != role }.map(\.1)
     }

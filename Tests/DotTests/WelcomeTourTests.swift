@@ -149,36 +149,25 @@ final class WelcomeTourTests: XCTestCase {
         XCTAssertEqual(TourStep.paste.title(shortcut: "⇧F6", mode: .hold), "Let go to paste")
     }
 
-    // MARK: - The voice on the card is the island's voice
+    // MARK: - The voice on the card is the tour's own
 
-    /// The welcome card draws the island's waveform from the demonstration's own
-    /// level, so the two surfaces cannot drift into different drawings of a
-    /// voice.
-    func testTheCardUsesTheIslandsWaveform() {
-        let time = SpeechSchedule.spoken * 0.5
-        let history = SpeechSchedule.history(endingAt: time)
-        XCTAssertEqual(history.count, Waveform.historyLength)
-        XCTAssertEqual(history.last ?? -1, SpeechSchedule.level(at: time), accuracy: 1e-12)
-
-        let heights = Waveform.halfHeights(
-            history: history,
-            phase: SpeechSchedule.phase(at: time),
-            count: Waveform.columnCount,
-            maximum: 9,
-            breath: time * 0.35
+    /// The card's still frame is drawn from the tour's voice, so it has to be a
+    /// moment of the demonstration and not the breath on either side of it: a
+    /// still taken just before the sentence starts would be a picture of
+    /// silence next to the other two tour steps.
+    ///
+    /// The premise is the tour's own clock: `stillPhase` walks the scene to a
+    /// moment inside the utterance, twelve hundredths of a second before its
+    /// last syllable ends.
+    func testTheStillFrameIsAMomentOfTheTourSpeaking() {
+        let still = TourFrame.stillPhase * TourFrame.cycle
+        XCTAssertGreaterThan(still, 0)
+        XCTAssertLessThanOrEqual(still, SpeechSchedule.spoken)
+        XCTAssertGreaterThan(
+            SpeechSchedule.level(at: still),
+            0.3,
+            "the tour's still frame at \(still) s is drawn from a level under a third"
         )
-        XCTAssertEqual(heights.count, Waveform.columnCount)
-        XCTAssertTrue(heights.allSatisfy { $0 >= Waveform.minimumHalfHeight })
-        XCTAssertGreaterThan(heights.max() ?? 0, Waveform.minimumHalfHeight * 2, "the voice is flat")
-    }
-
-    /// The history travels at the island's rate and ends at this moment.
-    func testTheHistoryEndsAtThisMoment() {
-        let time = 1.4
-        let history = SpeechSchedule.history(endingAt: time)
-        XCTAssertEqual(history.last ?? -1, SpeechSchedule.level(at: time), accuracy: 1e-12)
-        let oldest = time - Double(Waveform.historyLength - 1) / Waveform.sampleRate
-        XCTAssertEqual(history.first ?? -1, SpeechSchedule.level(at: oldest), accuracy: 1e-12)
     }
 
     @MainActor

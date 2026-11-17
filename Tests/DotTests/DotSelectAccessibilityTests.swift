@@ -25,6 +25,22 @@ final class DotSelectAccessibilityTests: XCTestCase {
         XCTAssertTrue(opened)
     }
 
+    /// A row reads its own name, and the chosen row says it is chosen.
+    ///
+    /// The row's button is the element VoiceOver reads; the drawing inside it is
+    /// ignored, so the two strings it carries are the two decided here.
+    func testARowReadsItsNameAndWhetherItIsChosen() {
+        let row = DotSelectRow(title: "Ava", detail: "Connected")
+
+        let plain = DotSelectRowDescription(row: row, isSelected: false)
+        XCTAssertEqual(plain.label, "Ava", "the row's detail is not part of its name")
+        XCTAssertEqual(plain.value, "", "a row that is not chosen says nothing")
+
+        let chosen = DotSelectRowDescription(row: row, isSelected: true)
+        XCTAssertEqual(chosen.label, "Ava")
+        XCTAssertEqual(chosen.value, "Selected")
+    }
+
     func testADisabledTriggerDoesNotPress() {
         var opened = false
         let view = DotSelectAccessibilityView()

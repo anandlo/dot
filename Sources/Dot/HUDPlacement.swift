@@ -109,6 +109,99 @@ enum HUDPlacement {
         )
     }
 
+    /// The frame of the panel when the shape is drawn out of the notch.
+    ///
+    /// The card pours out of the display's top edge, so the panel has to reach
+    /// it: the frame spans from the top of the screen down to the bottom of the
+    /// card's shadow margin. It is the frame ``frame(visibleFrame:panelSize:topInset:)``
+    /// would give, widened upwards by the distance between the screen's top edge
+    /// and the top of its usable frame, plus the inset the card used to keep
+    /// below it. Everything below the top edge stays where it was, so the card's
+    /// rest rectangle on the screen does not move.
+    ///
+    /// - Parameters:
+    ///   - screenFrame: the whole frame of the screen, in screen coordinates.
+    ///   - visibleFrame: the usable frame of the screen.
+    ///   - panelSize: the fixed size of the panel.
+    ///   - topInset: the distance from the top of the usable frame to the top
+    ///     edge of the panel.
+    /// - Returns: a frame whose top edge is the screen's, inside the screen.
+    static func emergenceFrame(
+        screenFrame: CGRect,
+        visibleFrame: CGRect,
+        panelSize: CGSize,
+        topInset: CGFloat
+    ) -> CGRect {
+        let base = frame(visibleFrame: visibleFrame, panelSize: panelSize, topInset: topInset)
+        let screen = screenFrame.standardized
+        guard screen.height.isFinite,
+              screen.height > 0,
+              screen.maxY.isFinite,
+              visibleFrame.standardized.maxY.isFinite
+        else { return base }
+        let inset = topInset.isFinite ? max(0, topInset) : 0
+        let growth = emergenceGrowth(
+            screenMaxY: screen.maxY,
+            visibleMaxY: visibleFrame.standardized.maxY,
+            topInset: inset
+        )
+        return CGRect(
+            x: base.minX,
+            y: base.minY,
+            width: base.width,
+            height: base.height + growth
+        )
+    }
+
+    /// The distance from the top of the panel to the top of the card at rest.
+    ///
+    /// The panel now reaches the top of the screen, so the card keeps the whole
+    /// of that distance above it as well as the margin its shadow needs. The
+    /// sum is what puts the card back exactly where
+    /// ``frame(visibleFrame:panelSize:topInset:)`` and ``cardFrame(panelFrame:cardSize:topInset:)``
+    /// put it.
+    ///
+    /// - Parameters:
+    ///   - screenFrame: the whole frame of the screen, in screen coordinates.
+    ///   - visibleFrame: the usable frame of the screen.
+    ///   - topInset: the distance from the top of the usable frame to the top
+    ///     edge of the panel.
+    ///   - shadowPadding: the room the card keeps above it for its shadow.
+    /// - Returns: the card's top inset inside the panel, in points.
+    static func emergenceCardTopInset(
+        screenFrame: CGRect,
+        visibleFrame: CGRect,
+        topInset: CGFloat,
+        shadowPadding: CGFloat
+    ) -> CGFloat {
+        let padding = shadowPadding.isFinite ? max(0, shadowPadding) : 0
+        let screen = screenFrame.standardized
+        guard screen.maxY.isFinite, visibleFrame.standardized.maxY.isFinite else { return padding }
+        let inset = topInset.isFinite ? max(0, topInset) : 0
+        return padding + emergenceGrowth(
+            screenMaxY: screen.maxY,
+            visibleMaxY: visibleFrame.standardized.maxY,
+            topInset: inset
+        )
+    }
+
+    /// The height the panel gains when it reaches the top of the screen.
+    ///
+    /// - Parameters:
+    ///   - screenMaxY: the top edge of the screen.
+    ///   - visibleMaxY: the top edge of the usable frame.
+    ///   - topInset: the inset the card's panel used to keep below the usable
+    ///     frame.
+    /// - Returns: the distance the usable frame starts below the screen, plus
+    ///   the inset.
+    private static func emergenceGrowth(
+        screenMaxY: CGFloat,
+        visibleMaxY: CGFloat,
+        topInset: CGFloat
+    ) -> CGFloat {
+        max(0, screenMaxY - visibleMaxY + topInset)
+    }
+
     /// The index of the screen under a point.
     ///
     /// The point is `NSEvent.mouseLocation`, which is in the same global

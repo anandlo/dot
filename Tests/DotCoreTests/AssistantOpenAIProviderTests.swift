@@ -151,6 +151,82 @@ final class AssistantOpenAIProviderTests: XCTestCase {
         XCTAssertEqual(calls.last?.arguments["day"], .string("Friday"))
     }
 
+    /// Reasoning is reported as activity and never as text.
+    ///
+    /// A reasoning service streams its thinking before its answer, in
+    /// `reasoning_content` or in `reasoning`. Neither is the answer, so neither
+    /// becomes a text delta: the provider says only that work is happening, in
+    /// the wire order the model produced it.
+    func testStreamedReasoningArrivesAsActivityAndNeverAsText() async throws {
+        let server = try StubServer(responses: [
+            sseResponse([
+                #"{"choices":[{"delta":{"reasoning_content":"x"}}]}"#,
+                #"{"choices":[{"delta":{"reasoning_content":"y"}}]}"#,
+                #"{"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}"#,
+                "[DONE]",
+            ])
+        ])
+        let events = try await AssistantTestSupport.events(
+            try provider(server).stream(messages: [.user("hi")], tools: [], model: "test-model")
+        )
+        XCTAssertEqual(events, [.thinking, .thinking, .textDelta("Hi"), .done(.endTurn)])
+    }
+
+    /// A `reasoning` object beside an answer keeps the answer.
+    ///
+    /// A gateway answers `reasoning` with a string on the models that stream
+    /// reasoning text and with an object of its own beside an effort on the
+    /// others. A chunk whose `reasoning` is not a string is a chunk with no
+    /// reasoning wording in it, and the answer it also carries still arrives.
+    func testAnObjectValuedReasoningMemberIsNoReasoningAndKeepsTheAnswer() async throws {
+        let server = try StubServer(responses: [
+            sseResponse([
+                #"{"choices":[{"delta":{"reasoning":"z"}}]}"#,
+                #"{"choices":[{"delta":{"reasoning":{"effort":"low"},"content":"A"}}]}"#,
+                "[DONE]",
+            ])
+        ])
+        let events = try await AssistantTestSupport.events(
+            try provider(server).stream(messages: [.user("hi")], tools: [], model: "test-model")
+        )
+        XCTAssertEqual(events, [.thinking, .textDelta("A"), .done(.endTurn)])
+    }
+
+    /// A finish reason without the `[DONE]` terminator is a finished answer.
+    ///
+    /// `[DONE]` is the reference API's terminator, not the only way a streamed
+    /// answer ends: a compatible server may close after the chunk that carried
+    /// the finish reason, and that answer is complete.
+    func testAStreamThatClosesAfterAFinishReasonIsComplete() async throws {
+        let server = try StubServer(responses: [
+            sseResponse([
+                #"{"choices":[{"delta":{"content":"Hi"}}]}"#,
+                #"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            ])
+        ])
+        let events = try await AssistantTestSupport.events(
+            try provider(server).stream(messages: [.user("hi")], tools: [], model: "test-model")
+        )
+        XCTAssertEqual(events, [.textDelta("Hi"), .done(.endTurn)])
+    }
+
+    /// A stream that closes with neither is an answer nobody finished.
+    ///
+    /// The words were already shown, so they are not thrown away; the turn is
+    /// reported as incomplete so the caller does not keep a sentence the model
+    /// never finished as if it were one.
+    func testAStreamThatClosesWithNoFinishReasonIsIncomplete() async throws {
+        let server = try StubServer(responses: [
+            sseResponse([
+                #"{"choices":[{"delta":{"content":"Hel"}}]}"#,
+            ])
+        ])
+        let events = try await AssistantTestSupport.events(
+            try provider(server).stream(messages: [.user("hi")], tools: [], model: "test-model")
+        )
+        XCTAssertEqual(events, [.textDelta("Hel"), .done(.other("incomplete"))])
+    }
+
     func testAnErrorInsideTheStreamFailsTheRead() async throws {
         let server = try StubServer(responses: [
             sseResponse([
@@ -237,9 +313,11 @@ final class AssistantOpenAIProviderTests: XCTestCase {
             )
             XCTFail("an empty model must be refused")
         } catch let error as ProviderError {
-            guard case .unavailable = error else {
-                return XCTFail("expected unavailable, got \(error)")
-            }
+            XCTAssertEqual(
+                error,
+                .unavailable("Choose a model in Settings."),
+                "the sentence says where the choice is made"
+            )
         }
     }
 

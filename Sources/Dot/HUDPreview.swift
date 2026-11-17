@@ -30,6 +30,13 @@ enum HUDPreview {
         case assistantConfirmDestructive
         case rewriteOffered
         case rewriteRunning
+        case rewriteOriginal
+        case rewriteTwoVersions
+        case rewriteThreeVersions
+        case rewriteLongTranscript
+        case rewriteLongLabels
+        case rewriteFailure
+        case rewriteReducedMotion
         case rewriteAppliedFaithful
         case rewriteAppliedCheck
         case rewritePromptApplied
@@ -141,6 +148,12 @@ enum HUDPreview {
         actions.cancel = {}
         actions.copy = {}
         actions.paste = {}
+        actions.copyVersion = { _ in }
+        actions.pasteVersion = { _ in }
+        actions.selectOriginal = {}
+        actions.previousVersion = {}
+        actions.nextVersion = {}
+        actions.rerunRewrite = {}
         actions.settings = {}
         actions.close = {}
         actions.rewrite = { _ in }
@@ -169,7 +182,8 @@ enum HUDPreview {
     static func renderAll(to directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for state in State.allCases {
-            let image = try render(state: state)
+            let reduced = state == .rewriteReducedMotion
+            let image = try render(state: state, reduceMotion: reduced)
             let url = directory.appendingPathComponent("render-\(state.rawValue).png")
             guard let data = image.representation(using: .png, properties: [:]) else {
                 throw RenderError.couldNotEncode
@@ -225,7 +239,8 @@ enum HUDPreview {
         showsShadow: Bool = true,
         presence: Double = 1,
         content: Double = 1,
-        scheme: ColorScheme = .dark
+        scheme: ColorScheme = .dark,
+        reduceMotion: Bool = false
     ) throws -> NSBitmapImageRep {
         let model = makeModel(state: state)
         model.visualizer = visualizer
@@ -240,7 +255,8 @@ enum HUDPreview {
             model: model,
             showsShadow: showsShadow,
             animated: false,
-            actions: previewActions
+            actions: previewActions,
+            reduceMotionOverride: reduceMotion
         )
             .padding(HUD.shadowPadding)
             .frame(width: size.width, height: size.height)
@@ -277,11 +293,11 @@ enum HUDPreview {
 
     /// The model of one state, with a signal that looks like speech.
     ///
-    /// Every value a recording still draws comes from one ``VoiceMeter`` fed the
-    /// synthetic voice of ``SpeechEnvelope``: the history, the level, the
-    /// adaptive ceiling and the bars. A still that set the level to a constant
-    /// would prove only that the canvas can draw a constant, and the render is
-    /// how the shape is reviewed.
+    /// Every value a recording still draws comes from one ``VoiceMeter`` fed
+    /// ``DictationScript``'s voice: the history, the level, the adaptive ceiling,
+    /// the column heights and the five bands. A still that set the level to a
+    /// constant would prove only that the canvas can draw a constant, and the
+    /// render is how the shape is reviewed.
     static func makeModel(state: State) -> HUDModel {
         let model = HUDModel()
         let voice = voiceSample()
@@ -296,9 +312,8 @@ enum HUDPreview {
         model.time = 2.4
         model.phase = 0.35
         model.history = voice.history
-        model.bars = voice.bars
         model.halfHeights = voice.halfHeights
-        model.spectrumHistory = spectrumHistory(for: voice.history)
+        model.spectrumHistory = voice.spectrum
 
         switch state {
         case .recording:
@@ -379,21 +394,26 @@ enum HUDPreview {
             model.mode = .assistantConfirm(request)
             model.assistantAllow = {}
             model.assistantCancel = {}
-        case .rewriteOffered, .rewriteRunning, .rewriteAppliedFaithful,
-             .rewriteAppliedCheck, .rewritePromptApplied, .rewriteBlocked, .rewriteCopied:
+        case .rewriteOffered, .rewriteRunning, .rewriteOriginal,
+             .rewriteTwoVersions, .rewriteThreeVersions, .rewriteLongTranscript,
+             .rewriteLongLabels, .rewriteFailure, .rewriteReducedMotion,
+             .rewriteAppliedFaithful, .rewriteAppliedCheck, .rewritePromptApplied,
+             .rewriteBlocked, .rewriteCopied:
             applyRewriteState(state, to: model)
         }
         return model
     }
 
-    /// The six states of the rewrite layer, on the transcript card.
+    /// The states of the rewrite layer, on the transcript card.
     private static func applyRewriteState(_ state: State, to model: HUDModel) {
-        let style = RewriteStyle.concise
-        let text = state == .rewriteRunning ? longTranscript : transcript
+        let concise = RewriteStyle.concise
+        let prompt = RewriteStyle.prompt
+        let long = state == .rewriteRunning || state == .rewriteLongTranscript
+        let text = long ? longTranscript : transcript
         model.mode = .transcript(
             text: text,
             delivery: .pasted,
-            elapsed: "0:07",
+            elapsed: long ? "4:18" : "0:07",
             destination: "Mail"
         )
         var card = RewriteCard(
@@ -403,36 +423,76 @@ enum HUDPreview {
         )
         switch state {
         case .rewriteRunning:
-            card.phase = .rewriting(styleID: style.id, title: style.title)
-            card.rewrite = "Dot records the microphone, transcribes the words and pastes them back where you were."
-        case .rewriteAppliedFaithful:
-            card.phase = .applied(styleID: style.id)
-            card.rewrite = rewrite
-            card.canUndo = true
-        case .rewriteAppliedCheck:
-            card.phase = .applied(styleID: style.id)
-            card.rewrite = rewrite
-            card.warning = FaithfulnessCheck.nameChanged
-            card.canUndo = true
-        case .rewritePromptApplied:
-            // The render goes through the shipped assembly, so what it draws is
-            // the model output and Dot's working rules in the order the paste
-            // writes them.
-            let prompt = RewriteStyle.prompt
-            card.phase = .applied(styleID: prompt.id)
-            card.rewrite = RewritePrompt.finalText(
-                promptRewrite,
-                style: prompt,
-                configuration: .default
+            card.append(id: 1, style: concise, text: rewrite, warning: nil)
+            card.phase = .rewriting(styleID: concise.id, title: concise.title)
+            card.draft = "Dot records the microphone, transcribes the words"
+            card.selectedVersionID = 1
+        case .rewriteOriginal:
+            card.append(id: 1, style: concise, text: rewrite, warning: nil)
+            card.append(id: 2, style: prompt, text: promptText, warning: nil)
+            card.select(versionID: 0)
+        case .rewriteTwoVersions:
+            card.append(id: 1, style: concise, text: rewrite, warning: nil)
+        case .rewriteThreeVersions, .rewriteReducedMotion:
+            card.append(id: 1, style: concise, text: rewrite, warning: nil)
+            card.append(id: 2, style: prompt, text: promptText, warning: nil)
+        case .rewriteLongTranscript:
+            card.append(id: 1, style: concise, text: rewrite, warning: nil)
+            card.append(id: 2, style: prompt, text: promptText, warning: nil)
+            // The still proves the long body scrolls while the version row is
+            // still there; the selected version is the original words.
+            card.select(versionID: 0)
+        case .rewriteLongLabels:
+            let customs = (0 ..< 6).map { index in
+                RewriteStyle(
+                    CustomRewriteStyle(
+                        id: "custom-\(index)",
+                        title: String(
+                            ("Release notes rewrite \(index) ").prefix(CustomRewriteStyle.maximumTitleLength)
+                        ),
+                        instruction: "Rewrite."
+                    )
+                )
+            }
+            card.choices = customs
+            card.append(
+                id: 1,
+                style: customs[0],
+                text: "Release notes for the next build, rewritten once.",
+                warning: nil
             )
-            card.canUndo = true
+            card.append(
+                id: 2,
+                style: customs[1],
+                text: "Release notes for the next build, rewritten a second time with a different result.",
+                warning: nil
+            )
+        case .rewriteFailure:
+            card.note = RewriteCard.failureNote
+        case .rewriteAppliedFaithful:
+            card.append(id: 1, style: concise, text: rewrite, warning: nil)
+            card.phase = .applied(versionID: 1)
+            card.deliveryDestination = "Mail"
+            card.canUndo = false
+        case .rewriteAppliedCheck:
+            card.append(id: 1, style: concise, text: rewrite, warning: FaithfulnessCheck.nameChanged)
+            card.phase = .applied(versionID: 1)
+            card.deliveryDestination = "Mail"
+            card.canUndo = false
+        case .rewritePromptApplied:
+            card.append(id: 1, style: prompt, text: promptText, warning: nil)
+            card.phase = .applied(versionID: 1)
+            card.deliveryDestination = "Mail"
+            card.canUndo = false
         case .rewriteBlocked:
-            card.phase = .blocked(styleID: style.id, error: FaithfulnessCheck.numberChanged)
-            card.rewrite = rewrite
+            card.phase = .blocked(styleID: concise.id, error: FaithfulnessCheck.numberChanged)
+            card.draft = rewrite
         case .rewriteCopied:
-            card.phase = .copied(styleID: style.id)
-            card.rewrite = rewrite
+            card.append(id: 1, style: concise, text: rewrite, warning: nil)
+            card.phase = .copied(versionID: 1)
             card.note = RewriteCard.clipboardNote
+        case .rewriteOffered:
+            break
         default:
             break
         }
@@ -440,38 +500,52 @@ enum HUDPreview {
         model.cardSize = HUD.transcriptSize(text: text, rewrite: card)
     }
 
-    /// Three seconds of a plausible voice, through the product's own meter.
+    /// The Agent prompt render's words.
     ///
-    /// - Parameter moment: how far into the synthetic voice the still is drawn,
-    ///   in seconds. It is the moment where the drawn half second holds a pause
-    ///   and the syllable after it, so the still shows the shape the meter makes
-    ///   rather than one even arch: at `1.45 s` the bars fall through the pause
-    ///   and rise into the next word.
-    /// - Returns: the history, the level, the ceiling, the column heights and the
-    ///   bar heights the card draws, all from one meter.
+    /// The working rules are part of the prompt the model writes, so the render
+    /// is the model's output as it stands rather than that output with a second
+    /// block glued under it.
+    private static var promptText: String {
+        promptRewrite
+    }
+
+    /// Three seconds of the demonstration voice, through the product's own meter.
+    ///
+    /// The signal is ``DictationScript``'s: the same dictation the island's
+    /// preview draws and the same five bands, so a still of the card is a still
+    /// of what a recording of that script looks like rather than a second,
+    /// invented voice.
+    ///
+    /// - Parameter moment: where in the script the still is drawn, in seconds.
+    ///   The default is the moment the Settings tiles freeze at, just past the
+    ///   loudest syllable, where the trace holds a vowel and the pause that
+    ///   follows it rather than one even arch.
+    /// - Returns: the history, the level, the ceiling, the column heights and
+    ///   the spectrum history the card draws, all from one meter.
     static func voiceSample(
-        at moment: Double = 1.45
-    ) -> (history: [Double], level: Double, ceiling: Double, halfHeights: [CGFloat], bars: [Double]) {
+        at moment: Double = DictationScript.stillTime
+    ) -> (
+        history: [Double],
+        level: Double,
+        ceiling: Double,
+        halfHeights: [CGFloat],
+        spectrum: [AudioSpectrumFrame]
+    ) {
         let meter = VoiceMeter()
+        var scale = SpectrumScale()
+        var spectrum: [AudioSpectrumFrame] = []
         // Three seconds before the moment as well as up to it, so the history
         // is full: the visualisers that scroll draw the whole three seconds, and
         // a still whose history began at zero draws a dead left half. Before the
         // voice starts there is room, which is what a recording opens with.
         var time: TimeInterval = moment - 3
         while time <= moment {
-            let rms = max(SpeechEnvelope.rms(at: time), 0.00001)
-            meter.push(decibels: 20 * log10(rms), now: time)
+            meter.push(decibels: -58 + DictationScript.level(at: time) * 50, now: time)
+            spectrum.append(scale.normalise(DictationScript.bands(at: time), dt: 1.0 / 60.0))
             time += 1.0 / 60.0
         }
         var history: [Double] = []
         meter.copyOrderedHistory(into: &history)
-        var bars: [Double] = []
-        VisualizerBars.stretch(
-            into: &bars,
-            history: history,
-            spectrum: spectrumHistory(for: history),
-            reveal: 1
-        )
         let heights = Waveform.halfHeights(
             history: history,
             phase: meter.phase,
@@ -479,38 +553,7 @@ enum HUDPreview {
             maximum: HUDTheme.waveformHeight / 2,
             breath: 1.1
         )
-        return (history, meter.envelope, meter.ceiling, heights, bars)
-    }
-
-    /// The five bands the grid and the scrolling meter draw, for a still.
-    ///
-    /// A still has no audio tap, and the matrix is a picture of five bands, so
-    /// the bands have to come from the one signal the still does have. The
-    /// model is the honest one: a band carries the energy of the envelope, and
-    /// the bands above the fundamental are lifted where the envelope is rising,
-    /// which is where a sibilant sits in a word. It is the shape of a spectrum
-    /// rather than a spectrum, and it is drawn only by the documentation
-    /// renders.
-    ///
-    /// - Parameter history: the envelope history, oldest first.
-    /// - Returns: one frame per tick of the history, oldest first.
-    static func spectrumHistory(for history: [Double]) -> [AudioSpectrumFrame] {
-        var frames: [AudioSpectrumFrame] = []
-        frames.reserveCapacity(history.count)
-        for index in history.indices {
-            let energy = min(1, max(0, history[index]))
-            let before = history[max(0, index - 2)]
-            let onset = min(1, max(0, (energy - before) * 4))
-            // The fundamental is the chest at the bottom row, the sibilance the
-            // top row, and the middle three the vowel between them.
-            let chest = energy * 0.88
-            let vowel = energy * 0.94
-            let presence = energy * 0.80
-            let formant = min(1, energy * 0.62 + onset * 0.30)
-            let sibilance = min(1, energy * 0.35 + onset * 0.55)
-            frames.append(AudioSpectrumFrame(bands: (sibilance, formant, presence, vowel, chest)))
-        }
-        return frames
+        return (history, meter.envelope, meter.ceiling, heights, spectrum)
     }
 
     /// The render could not be made.

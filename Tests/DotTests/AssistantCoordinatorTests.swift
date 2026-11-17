@@ -102,6 +102,23 @@ final class AssistantCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.phase, .idle)
     }
 
+    /// A hand-edited space may not turn a keyed service into a keyless one.
+    ///
+    /// The trimmed id is the catalogue row and the Keychain item: `anthropic`
+    /// with spaces around it still needs Anthropic's key, where the raw id
+    /// would have been read as a custom endpoint that asks for none.
+    func testAKeyedServiceWithSpacesInItsIDStillNeedsItsKey() async {
+        configuration.chat = AssistantSettings(providerID: "  anthropic  ")
+        let coordinator = makeCoordinator(events: answering("Hello."), hasKey: false)
+        coordinator.ask("What is the weather?", frontmost: mail, frontmostName: "Mail")
+        XCTAssertEqual(
+            hud.events,
+            [.message("Set up an assistant service in Settings.", "sparkle")]
+        )
+        XCTAssertEqual(provider.callCount, 0, "the raw id skipped the key check")
+        XCTAssertEqual(factory.providerCallCount, 0)
+    }
+
     func testALocalServiceNeedsNoKey() async {
         configuration.chat = AssistantSettings(providerID: "ollama", model: "llama3.2")
         let coordinator = makeCoordinator(events: answering("Hello."), hasKey: false)
