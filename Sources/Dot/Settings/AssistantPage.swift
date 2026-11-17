@@ -1956,24 +1956,30 @@ struct FlowLayout: Layout {
 /// record. Asking the service about each prefix would send a request per
 /// keystroke and store a cache entry per prefix; this waits for the typing to
 /// stop and runs the newest action only. It is injectable so a test can prove
-/// the coalescing without waiting a real typing pause.
+/// the coalescing without waiting a real typing pause: the delay runs on the
+/// clock it is given, and a test hands in one it moves itself rather than the
+/// wall clock the app uses.
 @MainActor
 final class AssistantCheckDebounce {
     /// How long an edit rests before it is checked.
     static let defaultDelay: Duration = .milliseconds(600)
 
     private let delay: Duration
+    private let clock: any Clock<Duration>
     private var task: Task<Void, Never>?
 
-    init(delay: Duration = AssistantCheckDebounce.defaultDelay) {
+    init(delay: Duration = AssistantCheckDebounce.defaultDelay, clock: any Clock<Duration> = ContinuousClock()) {
         self.delay = delay
+        self.clock = clock
     }
 
     /// Replaces whatever was waiting with `action`, after the delay.
     func schedule(_ action: @escaping @MainActor () -> Void) {
         task?.cancel()
+        let clock = clock
+        let delay = delay
         task = Task { @MainActor in
-            try? await Task.sleep(for: delay)
+            try? await clock.sleep(for: delay)
             guard !Task.isCancelled else { return }
             action()
         }

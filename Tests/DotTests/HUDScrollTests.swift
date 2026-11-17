@@ -456,15 +456,129 @@ final class HUDScrollTests: XCTestCase {
             1.5,
             "the wheel left the residue window before the correction could be tested"
         )
+        XCTAssertEqual(
+            clip.bounds.origin.x,
+            0.5,
+            accuracy: 0.01,
+            "the opening correction did not leave the rail on the wheel's half point"
+        )
     }
 
-    /// A version chosen while the card is arriving keeps the rail where it is.
+    /// The residue's reach is two points, and the window is that plus half a point.
     ///
-    /// A version that carries a style opens the row on that style, so the card
-    /// leaves the rail alone for it. This runs the action the next-version
-    /// arrow runs while the appearance is still arriving — the rail placed a
-    /// fraction of a point into its content, inside the window the opening
-    /// residue occupies — and proves the correction does not pull it back.
+    /// The appearance leaves the rail's clip inside its content by a residue
+    /// that is bounded in points rather than in device pixels: it measured 2.0
+    /// points on the hosted 1x runner and 2.0 points on a 2 px/pt display here,
+    /// which is four device pixels there. The window is therefore one value,
+    /// and the same on every display.
+    func testTheResidueWindowCoversTheMeasuredResidue() {
+        XCTAssertEqual(
+            HUD.railResidueWindow,
+            2.5,
+            accuracy: 1e-12,
+            "the window is the measured residue plus half a point of headroom"
+        )
+        XCTAssertEqual(
+            HUD.railResidueWindow,
+            2.0 + 0.5,
+            accuracy: 1e-12,
+            "the measured maximum residue is two points and the headroom is half a point"
+        )
+        XCTAssertLessThanOrEqual(
+            2.0,
+            HUD.railResidueWindow,
+            "the window does not reach the largest residue the appearance was measured at"
+        )
+    }
+
+    /// The correction corrects the appearance's residue and nothing else.
+    ///
+    /// A rail left two points inside its content is holding the largest
+    /// residue the appearance was measured at. The correction puts it back on
+    /// the position the person gave it, and leaves a rail that is further than
+    /// the window from that position where it is.
+    func testTheCorrectionOnlyTouchesTheResidueWindow() {
+        let wide = CGSize(width: 400, height: 0)
+        XCTAssertEqual(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 2.0, y: 0),
+                intended: .zero,
+                window: HUD.railResidueWindow,
+                scrollRange: wide
+            ),
+            .zero,
+            "a two-point residue was left in the rail"
+        )
+        XCTAssertNil(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 2.6, y: 0),
+                intended: .zero,
+                window: HUD.railResidueWindow,
+                scrollRange: wide
+            ),
+            "a position outside the residue window was corrected"
+        )
+        XCTAssertEqual(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 1.0, y: 0),
+                intended: CGPoint(x: 0.5, y: 0),
+                window: HUD.railResidueWindow,
+                scrollRange: wide
+            ),
+            CGPoint(x: 0.5, y: 0),
+            "the correction restored zero rather than the position the person wrote"
+        )
+        XCTAssertNil(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 0.5, y: 0),
+                intended: CGPoint(x: 0.5, y: 0),
+                window: HUD.railResidueWindow,
+                scrollRange: wide
+            ),
+            "a rail already on the person's position was written again"
+        )
+        XCTAssertEqual(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 0, y: 1.0),
+                intended: .zero,
+                window: HUD.railResidueWindow,
+                scrollRange: wide
+            ),
+            .zero,
+            "a residue on the vertical axis was left, and the rail has no travel there"
+        )
+        XCTAssertEqual(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 0.2, y: 0),
+                intended: CGPoint(x: -1, y: 0),
+                window: 1.5,
+                scrollRange: CGSize(width: 200, height: 0)
+            ),
+            .zero,
+            "a corrected position was written before the document's first style"
+        )
+        XCTAssertEqual(
+            HUD.railOpeningOrigin(
+                origin: CGPoint(x: 199.4, y: 0),
+                intended: CGPoint(x: 200.4, y: 0),
+                window: 1.5,
+                scrollRange: CGSize(width: 200, height: 0)
+            ),
+            CGPoint(x: 200, y: 0),
+            "a corrected position was written past the document's travel"
+        )
+    }
+
+    /// A version chosen while the card is arriving keeps the rail where the person put it.
+    ///
+    /// A version that carries a style opens the row on that style, and the card
+    /// used to leave the rail alone for it. The correction now serves the
+    /// position the person gave the rail, whether or not a style is selected.
+    /// This runs the action the next-version arrow runs while the appearance is
+    /// still arriving, gives the rail a half point through the card's own wheel,
+    /// which is a position inside the window the opening residue occupies and so
+    /// one the card has to know is the person's rather than the residue's, and
+    /// proves the correction does not pull it back to the rail's first style.
     func testAVersionSelectionDuringTheEntranceSurvivesTheOpeningCorrection() throws {
         try WindowCapture.requireFullMotion()
         var moves = 0
@@ -515,17 +629,39 @@ final class HUDScrollTests: XCTestCase {
         // The row the action asked for is laid out on the run-loop turns that
         // follow, and the card scrolls it to the style the chosen version
         // carries. That reveal is also the last thing that moves the rail, so
-        // the placement is repeated until it holds: the placement lands inside
-        // the window the opening correction is defined over, which is where the
-        // appearance's residue leaves a rail placed near the start, and it has
-        // held once two turns read inside that window. Bounded: a rail that
-        // never holds its position is reported rather than read.
+        // the wheel is sent until its half point holds: the rail is put back on
+        // its first style and the wheel is applied again, because a wheel is
+        // travel and the row's reveal may have carried the rail anywhere. The
+        // position holds once two turns read inside the window the opening
+        // correction is defined over. Bounded: a rail that never holds its
+        // position is reported rather than read.
         let rail = try XCTUnwrap(waitForRail(hud), "the card's style rail was not found")
         let clip = rail.contentView
+        var selected = card
+        selected.select(versionID: 1)
+        let cardFrame = HUDPlacement.cardFrame(
+            panelFrame: hud.debugPanel.frame,
+            cardSize: HUD.transcriptSize(text: selected.original, rewrite: selected),
+            topInset: HUD.shadowPadding
+        )
+        let band = HUD.rewriteChipRowFrame(cardFrame: cardFrame, card: selected)
+        let point = CGPoint(x: band.midX, y: band.midY)
         var held = 0
         for _ in 0 ..< 6 where held < 2 {
-            clip.scroll(to: NSPoint(x: 0.5, y: 0))
+            clip.scroll(to: .zero)
             rail.reflectScrolledClipView(clip)
+            hud.debugHandleScrollEvent(
+                DeliveredScrollEvent(
+                    window: hud.debugPanel,
+                    windowNumber: hud.debugPanel.windowNumber,
+                    location: hud.debugPanel.convertPoint(fromScreen: point),
+                    deltaX: -0.5,
+                    deltaY: 0,
+                    phase: .began,
+                    timestamp: ProcessInfo.processInfo.systemUptime
+                ),
+                at: point
+            )
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.02))
             hud.debugRootView.layoutSubtreeIfNeeded()
             held = abs(clip.bounds.origin.x) <= 1.5 ? held + 1 : 0

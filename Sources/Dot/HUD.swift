@@ -219,11 +219,33 @@ final class HUD {
     private var hasReadPointerSinceArrival = false
     /// Whether the rail's opening position has been restored for this card.
     private var railPositionRestored = false
-    /// Whether the wheel has moved the rail since this card appeared.
+    /// The position the person last gave the rail during this card.
     ///
-    /// A wheel is the person's wherever it lands: one that moved the rail by
-    /// any amount turns the opening-position correction off for this card.
-    private var railWheelMovedSincePresent = false
+    /// The card opens the rail on its first style, and the person may move it
+    /// before the appearance has stopped: a wheel, a version's arrow, the row's
+    /// own arrow keys or VoiceOver actions, and the scroll a styled version
+    /// opens on. Whichever of those wrote last is where the rail belongs, so the
+    /// opening correction restores this rather than zero.
+    private var railIntendedOrigin: CGPoint = .zero
+    /// The rail's clip the person's position is read from, and the observation
+    /// that reads it.
+    ///
+    /// The row's scroll view is SwiftUI's: the arrows, the arrow keys, the
+    /// VoiceOver actions and a styled version's scroll all move it from inside
+    /// the row, so the clip's own bounds change is the only report the card gets
+    /// of them. The clip is read again whenever the row is laid out as a new
+    /// view, which is why the observation is kept beside it rather than made
+    /// once.
+    private weak var railOriginClip: NSClipView?
+    private var railOriginToken: NSObjectProtocol?
+    /// The rail the appearance is reading, kept between frames.
+    ///
+    /// The rail is a scroll view inside the card's SwiftUI tree, and finding it
+    /// means walking that tree. The correction reads it on every frame, so the
+    /// one it found is kept until the row is laid out again as a new view.
+    private weak var railScrollView: NSScrollView?
+    /// Whether the card itself is writing the rail, which is not the person.
+    private var isCorrectingRailOrigin = false
     /// The rail's frame on the previous tick, while its position is restored.
     private var lastRailFrame: CGRect?
     /// How settled the content of the card is.
@@ -1089,7 +1111,7 @@ final class HUD {
         hasRenderedSincePresent = false
         hasReportedFirstTick = false
         railPositionRestored = false
-        railWheelMovedSincePresent = false
+        railIntendedOrigin = .zero
         hasReadPointerSinceArrival = false
         startRendering()
         scheduleRenderFallback()
@@ -1460,7 +1482,10 @@ final class HUD {
                     scrollView: rail,
                     step: axis.step(deltaX: event.deltaX, deltaY: event.deltaY) * scale
                 ) {
-                    railWheelMovedSincePresent = true
+                    // A wheel that moved the rail is the person's position,
+                    // however small: the opening correction puts the rail back
+                    // on this rather than on its first style.
+                    railIntendedOrigin = rail.contentView.bounds.origin
                 }
             }
             return delivered
@@ -2040,30 +2065,71 @@ final class HUD {
         self.dismissal = dismissal
     }
 
-    /// Puts the style rail back on its opening position once the card has arrived.
+    /// How far the card's appearance can leave the rail from where it belongs, in points.
     ///
     /// SwiftUI hands the card's appearance scale and offset to the scroll view
     /// it hosts as a frame transform, and AppKit answers each one by
-    /// re-deriving the rail's clip bounds: the clip is left up to a point
-    /// inside its content, a residue that depends on the frames the appearance
-    /// happened to take. Nothing else writes it back — the card's own position
-    /// for the rail is its first style — so the card restores it itself once
-    /// per appearance.
+    /// re-deriving the rail's clip bounds, which it leaves inside its content.
+    /// The residue is bounded in points, not in device pixels: it measured 2.0
+    /// points on the hosted 1x runner and 2.0 points here on a 2 px/pt display,
+    /// which is four device pixels there. Half a point of headroom over that
+    /// measured maximum is the window, and the same window holds at every
+    /// scale, so a display that puts more pixels in a point cannot shorten it.
+    static let railResidueWindow: CGFloat = 2.5
+
+    /// Where the opening correction puts the rail, or `nil` when it leaves it.
     ///
-    /// The rail is left alone when a version with a style is selected, because
-    /// the row opens centred on that style. It is also left alone once the
-    /// wheel has moved the rail: a wheel displacement is the person's however
-    /// small, and one inside the residue's reach is still theirs, so that card
-    /// is never corrected. Any other way of reaching a position moves the rail
-    /// far enough to be outside the residue window — the versions' arrows, the
-    /// row's arrow keys, its VoiceOver actions — and the correction is decided
-    /// by where the rail is, not by which code moved it.
+    /// The correction only touches the appearance's own residue. A rail whose
+    /// clip sits inside the residue window of the position the person last gave
+    /// it is holding that residue over the position, and is put back on it. A
+    /// rail further than the window from that position was put there by
+    /// something else and is left alone, and one already on it has nothing to
+    /// correct.
+    ///
+    /// - Parameters:
+    ///   - origin: where the rail's clip is now.
+    ///   - intended: the position the person last wrote, or `.zero` when they
+    ///     wrote none.
+    ///   - window: the residue's reach, in points, from ``railResidueWindow``.
+    ///   - scrollRange: how far the rail's document travels on each axis.
+    /// - Returns: the origin to scroll to, held inside the document, or `nil`
+    ///   to leave the rail where it is.
+    static func railOpeningOrigin(
+        origin: CGPoint,
+        intended: CGPoint,
+        window: CGFloat,
+        scrollRange: CGSize
+    ) -> CGPoint? {
+        guard origin != intended,
+              abs(origin.x - intended.x) <= window,
+              abs(origin.y - intended.y) <= window
+        else { return nil }
+        return CGPoint(
+            x: min(max(intended.x, 0), max(0, scrollRange.width)),
+            y: min(max(intended.y, 0), max(0, scrollRange.height))
+        )
+    }
+
+    /// Puts the style rail back on the position the person gave it once the card has arrived.
+    ///
+    /// SwiftUI hands the card's appearance scale and offset to the scroll view
+    /// it hosts as a frame transform, and AppKit answers each one by
+    /// re-deriving the rail's clip bounds: the clip is left a couple of points
+    /// inside its content, a residue that depends on the frames the appearance
+    /// happened to take. Nothing else writes it back, so the card restores it
+    /// itself once per appearance.
+    ///
+    /// What it restores is the position the person last wrote, not zero. Every
+    /// way of reaching a position is the person's, whether it is the wheel, the
+    /// versions' arrows, the row's arrow keys, its VoiceOver actions or the
+    /// scroll a styled version opens on, and each of them records what it
+    /// wrote. A card with a style selected therefore needs no rule of its own:
+    /// the row opens on that style, which is one of the positions the person's
+    /// own reveal wrote.
     private func restoreTheRailsOpeningPosition() {
-        guard !railPositionRestored, !railWheelMovedSincePresent,
-              debugAppearanceAtRest
-        else { return }
-        guard model.rewrite?.selectedVersion.styleID == nil else { return }
-        guard let rail = Self.chipRowScrollView(in: hostingView) else { return }
+        guard let rail = cardRail() else { return }
+        observeTheRailsOrigin(of: rail)
+        guard !railPositionRestored, debugAppearanceAtRest else { return }
         // The rail's frame changes while the card's own size springs to the
         // layer's height, and a correction made during that would be answered by
         // the transform that is still arriving. One quiet frame decides it.
@@ -2074,16 +2140,88 @@ final class HUD {
         railPositionRestored = true
         lastRailFrame = nil
         let clip = rail.contentView
-        // The residue this corrects was measured at up to a point. A wheel has
-        // already turned the correction off, so what reaches here is the
-        // appearance's own residue: these points are the whole of what the
-        // correction is allowed to touch.
-        let residue: CGFloat = 1.5
-        guard abs(clip.bounds.origin.x) <= residue, abs(clip.bounds.origin.y) <= residue,
-              clip.bounds.origin != .zero
-        else { return }
-        clip.scroll(to: .zero)
+        let document = rail.documentView?.frame.size ?? .zero
+        let scrollRange = CGSize(
+            width: document.width - clip.bounds.width,
+            height: document.height - clip.bounds.height
+        )
+        guard let origin = Self.railOpeningOrigin(
+            origin: clip.bounds.origin,
+            intended: railIntendedOrigin,
+            window: Self.railResidueWindow,
+            scrollRange: scrollRange
+        ) else { return }
+        isCorrectingRailOrigin = true
+        clip.scroll(to: origin)
         rail.reflectScrolledClipView(clip)
+        isCorrectingRailOrigin = false
+    }
+
+    /// The card's style rail, as the appearance correction reads it.
+    ///
+    /// The row is laid out again as a new view when a card arrives, which gives
+    /// it a new scroll view. One that is no longer in the card's tree is looked
+    /// for again.
+    ///
+    /// - Returns: the rail, or `nil` while the card draws none.
+    private func cardRail() -> NSScrollView? {
+        if let railScrollView, railScrollView.isDescendant(of: hostingView) {
+            return railScrollView
+        }
+        let rail = Self.chipRowScrollView(in: hostingView)
+        railScrollView = rail
+        return rail
+    }
+
+    /// Reads the rail's position from the clip the row scrolls, while the card is up.
+    ///
+    /// The row's scroll view is SwiftUI's, so the card never sees the call that
+    /// moves it: the versions' arrows, the row's arrow keys, its VoiceOver
+    /// actions and a styled version's scroll all write the clip from inside the
+    /// row, and the clip's own bounds change is the only report of them. The
+    /// appearance writes the clip the same way, so a write is taken as the
+    /// person's only when it carries the rail further than the residue can
+    /// reach: the appearance leaves a couple of device pixels, and every one of
+    /// those actions centres a chip, which travels tens of points.
+    ///
+    /// The row is laid out again as a new view when a version arrives, which
+    /// gives it a new clip to scroll, and the reveal that follows is one jump
+    /// on the turn the new row appears. A reveal over a rail whose clip the
+    /// observation kept is read here; one that lands on a clipped row before the
+    /// next frame is not, and it does not need reading: a reveal that far from
+    /// the residue is outside the correction's window and is left alone.
+    ///
+    /// - Parameter rail: the card's rail, as the appearance correction reads it.
+    private func observeTheRailsOrigin(of rail: NSScrollView) {
+        let clip = rail.contentView
+        if clip === railOriginClip, railOriginToken != nil { return }
+        if let railOriginToken {
+            NotificationCenter.default.removeObserver(railOriginToken)
+        }
+        railOriginClip = clip
+        clip.postsBoundsChangedNotifications = true
+        railOriginToken = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clip,
+            queue: .main
+        ) { [weak self, weak rail] _ in
+            MainActor.assumeIsolated {
+                guard let self, let rail else { return }
+                self.recordTheRailsOrigin(rail)
+            }
+        }
+    }
+
+    /// Keeps the rail's position when the clip was written further than the residue reaches.
+    ///
+    /// - Parameter rail: the card's rail.
+    private func recordTheRailsOrigin(_ rail: NSScrollView) {
+        guard !isCorrectingRailOrigin, !railPositionRestored else { return }
+        let origin = rail.contentView.bounds.origin
+        guard abs(origin.x - railIntendedOrigin.x) > Self.railResidueWindow,
+              abs(origin.y - railIntendedOrigin.y) > Self.railResidueWindow
+        else { return }
+        railIntendedOrigin = origin
     }
 
     private func advanceSpectrum(target: AudioSpectrumFrame, dt: Double) {
