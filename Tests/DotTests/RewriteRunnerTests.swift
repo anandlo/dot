@@ -63,7 +63,8 @@ final class RewriteRunnerTests: XCTestCase {
         runner: RewriteRunner? = nil,
         text: String? = nil,
         anchor: Bool = true,
-        delivery: HUDDelivery = .pasted
+        delivery: HUDDelivery = .pasted,
+        at takenAt: Date? = nil
     ) -> Bool {
         let target = runner ?? self.runner
         let source = text ?? original
@@ -75,7 +76,8 @@ final class RewriteRunnerTests: XCTestCase {
             delivery: delivery,
             destination: "Mail",
             configuration: configuration,
-            anchor: captured
+            anchor: captured,
+            at: takenAt
         )
     }
 
@@ -111,6 +113,67 @@ final class RewriteRunnerTests: XCTestCase {
 
     private func isBlocked(_ runner: RewriteRunner? = nil) -> Bool {
         (runner ?? self.runner).card?.isBlocked == true
+    }
+
+    // MARK: - The day a rewrite is filed under
+
+    /// A sentence said again on another day has its rewrite filed under the day
+    /// it was said again.
+    ///
+    /// The history keeps the first date it saw for a sentence, so a lookup there
+    /// would file the second day's rewrite under the first day, and the first
+    /// day's file would change under a person reading it.
+    func testARewriteIsFiledUnderTheDeliveryThatProducedIt() async throws {
+        let dayOne = utc(2026, 11, 16, 9, 0)
+        let dayFive = utc(2026, 11, 20, 9, 0)
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dot-delivery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let calendar = fixedUTC()
+        let archive = TranscriptArchive(calendar: { calendar }, now: { Date() })
+        let dayOneFile = folder.appendingPathComponent("2026-11-16.md")
+
+        try await archive.recordTake("Sounds good.", at: dayOne, folder: folder)
+        let firstDay = try Data(contentsOf: dayOneFile)
+
+        XCTAssertTrue(begin(text: "Sounds good.", at: dayFive))
+        runner.choose(.concise, configuration: configuration)
+        await expectTrue { self.generated() }
+
+        let record = try XCTUnwrap(runner.card?.archiveRecord)
+        XCTAssertEqual(record.takenAt, dayFive, "the card did not carry this delivery's instant")
+        try await archive.recordTake(record.text, at: record.takenAt, folder: folder)
+        try await archive.recordVersions(
+            of: record.text,
+            takenAt: record.takenAt,
+            versions: record.versions,
+            folder: folder
+        )
+
+        let fifthDay = try String(
+            contentsOf: folder.appendingPathComponent("2026-11-20.md"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(fifthDay.contains("### Concise"), fifthDay)
+        XCTAssertEqual(try Data(contentsOf: dayOneFile), firstDay, "day 1's file changed")
+    }
+
+    private func fixedUTC() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        if let timeZone = TimeZone(secondsFromGMT: 0) { calendar.timeZone = timeZone }
+        return calendar
+    }
+
+    private func utc(_ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int) -> Date {
+        let calendar = fixedUTC()
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = day
+        components.hour = hour
+        components.minute = minute
+        return calendar.date(from: components) ?? Date()
     }
 
     // MARK: - Offering

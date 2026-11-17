@@ -66,6 +66,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var provider: (any Provider)?
     private var lastTranscript: String?
     private var history = HistoryStore.loadEntries()
+    /// The Markdown copy of the day's takes, when the person has turned it on.
+    ///
+    /// It is an actor, so a delivery hands it the words and returns: the disk
+    /// work of reading a day file, changing it and replacing it never sits
+    /// between the stop key and the paste.
+    private let transcriptArchive = TranscriptArchive(now: { Date() })
+    /// What the last archive write did, for the Settings row to read.
+    private(set) var archiveStatus: TranscriptArchiveStatus = .idle
+    /// The archive writes that are still in flight, so a quit can wait for them.
+    ///
+    /// A day file is replaced whole, so a write cut off by the process ending is
+    /// a write that did not happen. Every write is registered here when it
+    /// starts and removes itself on the main actor when it ends, which keeps the
+    /// bookkeeping on one actor and the list no longer than the writes in
+    /// flight.
+    private var archiveTasks: [UUID: Task<Void, Never>] = [:]
+    /// The archive's work, one change at a time and in the order it was made.
+    private let archiveSequence = ArchiveSequence()
+    /// Whether the quit is waiting for the archive.
+    ///
+    /// It makes a second termination request a no-op, and it tells
+    /// ``applicationWillTerminate(_:)`` that the card's last versions have
+    /// already been written by the quit.
+    private var archiveShuttingDown = false
     private var providers: [MenuProvider] = []
     private var transcriptionTask: Task<Void, Never>?
     /// Whether the app is inside `applicationWillTerminate`.
@@ -306,10 +330,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The flag comes first: a transcription task cancelled below may resume
         // on this actor before the app is gone, and it must not paste or draw.
         isTerminating = true
-        // A card's last change was written when it happened; this covers a
-        // change that arrived in the same turn as the quit, before the layer
-        // and its entry are gone.
-        persistRewrite(rewrite.card)
+        // The quit already wrote the card's last versions and waited for that
+        // write. This covers only a termination that never asked, where there
+        // was no drain to wait for it.
+        if !archiveShuttingDown {
+            persistRewrite(rewrite.card)
+        }
         saveConfiguration()
         assistant.terminate()
         migrationTask?.cancel()
@@ -539,6 +565,133 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "versions": .int(snapshot.versions.count),
             "selected": .int(snapshot.selectedVersionID),
         ])
+        // The archive lists the versions under the take they were made from, so
+        // the file a person reads holds the rewrites and not only the words.
+        // The instant is the card's own, carried from the delivery: the history
+        // keeps the first date it saw for a sentence, and looking the date up
+        // there would file today's rewrite under the day the words first
+        // arrived. The history above is written first and either way: a folder
+        // Dot cannot reach is a line in the Settings row, never a lost
+        // transcript.
+        RewriteArchiveRequest.file(
+            card,
+            enabled: config.transcriptArchive.enabled,
+            with: { record in
+                archive(record.text, at: record.takenAt, versions: record.versions)
+            }
+        )
+    }
+
+    /// Writes one change to the archive, off the main actor.
+    ///
+    /// One path serves both hooks: a delivered take is a change with no
+    /// versions, and a rewrite is the same take with its version list. The disk
+    /// work belongs to the ``TranscriptArchive`` actor, so nothing here touches
+    /// a day file on the thread that delivers a transcript, and setting
+    /// ``archiveStatus`` is the only thing that comes back.
+    ///
+    /// - Parameters:
+    ///   - text: the transcript the change is about.
+    ///   - date: when that take was delivered.
+    ///   - versions: the completed rewrites, when this change is a rewrite.
+    private func archive(_ text: String, at date: Date, versions: [RewriteVersion]? = nil) {
+        guard config.transcriptArchive.enabled else { return }
+        let settings = config.transcriptArchive
+        let archive = transcriptArchive
+        let id = UUID()
+        let task = archiveSequence.submit { [weak self] in
+            let folder = TranscriptArchiveFolder.resolve(settings)
+            if let refreshed = folder.refreshedBookmark {
+                // The refresh may have taken a while, and the person may have
+                // chosen another folder in the meantime. A bookmark for the old
+                // folder would put the archive back where they moved it from.
+                await MainActor.run {
+                    guard let self else { return }
+                    guard let stored = TranscriptArchiveFolder.refresh(
+                        refreshed,
+                        resolvedFrom: settings,
+                        current: self.config.transcriptArchive
+                    ) else { return }
+                    self.config.transcriptArchive.folderBookmark = stored
+                    self.saveConfiguration()
+                }
+            }
+            let outcome: TranscriptArchiveStatus
+            do {
+                if let versions {
+                    try await archive.recordVersions(
+                        of: text,
+                        takenAt: date,
+                        versions: versions,
+                        folder: folder.url
+                    )
+                } else {
+                    try await archive.recordTake(text, at: date, folder: folder.url)
+                }
+                Log.shared.info("archive.write", [
+                    "characters": .int(text.count),
+                    "versions": .int(versions?.count ?? 0),
+                ])
+                outcome = .saved(Date())
+            } catch {
+                // The text is never in the log: the words are the one thing a
+                // failed write must not put anywhere else. A refusal names its
+                // own reason as one word, so the log can be counted; the row
+                // gets the sentence.
+                let reason = (error as? TranscriptArchiveError)?.logReason
+                    ?? error.localizedDescription
+                Log.shared.error("archive.write.failed", [
+                    "folder": .string(folder.url.path),
+                    "reason": .string(reason),
+                ])
+                outcome = .failed(error.localizedDescription)
+            }
+            await MainActor.run {
+                guard let self else { return }
+                self.archiveTasks[id] = nil
+                self.archiveStatus = outcome
+            }
+        }
+        archiveTasks[id] = task
+    }
+
+    /// Waits for the archive's writes before the log's last line.
+    ///
+    /// A day file is replaced whole, so a write cut off by the process ending is
+    /// a write that did not happen. AppKit is asked to wait while the writes in
+    /// flight finish, and answered as soon as they have, or when the limit
+    /// ``Shutdown`` keeps runs out.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // A second request while the first is still waiting changes nothing:
+        // the drain that is running will answer, and it is already waiting for
+        // everything registered.
+        guard !archiveShuttingDown else { return .terminateLater }
+        archiveShuttingDown = true
+        // The card's last versions are written here rather than in
+        // `applicationWillTerminate`, so that write is one of the tasks the quit
+        // waits for instead of one running underneath it as the process ends.
+        persistRewrite(rewrite.card)
+        Task { @MainActor in
+            await Shutdown.drain(
+                pending: { self.takePendingArchiveWrites() },
+                reply: { answer in
+                    NSApplication.shared.reply(toApplicationShouldTerminate: answer)
+                }
+            )
+        }
+        return .terminateLater
+    }
+
+    /// The archive writes the quit has not waited for yet, handed over once.
+    ///
+    /// Taking them out of the list is what tells a later pass of the drain they
+    /// were waited for. A write registered while the drain runs is still in the
+    /// list and is picked up by the next pass, which is why a request that
+    /// arrives after the quit began is drained rather than dropped.
+    private func takePendingArchiveWrites() -> [Task<Void, Never>] {
+        let pending = Array(archiveTasks.values)
+        archiveTasks = [:]
+        return pending
     }
 
     /// Runs one chip's style against the transcript on the card.
@@ -1621,13 +1774,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         lastTranscript = transcript
+        let deliveredAt = Date()
         history = HistoryStore.adding(
             transcript,
-            at: Date(),
+            at: deliveredAt,
             to: history,
             limit: config.historyLimit
         )
         HistoryStore.saveEntries(history, limit: config.historyLimit)
+        // The date of this delivery, which is not always the date the history
+        // holds for these words: a sentence dictated again keeps the first date
+        // it was heard. The card is given the same instant, so its rewrites are
+        // filed under the delivery that produced them. The call returns
+        // immediately; the file is written behind it.
+        archive(transcript, at: deliveredAt)
         refreshMenu()
 
         // The history keeps the transcript and the clipboard keeps the
@@ -1687,7 +1847,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             destination: decision == .paste ? frontmostNameAtPress : nil,
             configuration: config.assistant.rewrite,
             anchor: rewriteAnchor,
-            saved: storedRewrite(for: transcript)
+            saved: storedRewrite(for: transcript),
+            at: deliveredAt
         )
         rewriteAnchor = nil
         if config.logTranscripts {
@@ -2015,6 +2176,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the service: nothing is generated until one is clicked.
     private func showRememberedTranscript(_ text: String, delivery: HUDDelivery) {
         hud.showTranscript(text: text, delivery: delivery, elapsed: "0:00")
+        // Words taken from the history were delivered on the day the entry
+        // records, so a rewrite of them is filed there rather than today.
+        let takenAt = history.first { $0.text == text }?.addedAt
         let plan = RewriteRestorePlan.of(
             saved: storedRewrite(for: text),
             eligible: rewrite.offersRewrite(
@@ -2028,7 +2192,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             rewrite.restore(
                 original: text,
                 saved: snapshot,
-                configuration: config.assistant.rewrite
+                configuration: config.assistant.rewrite,
+                at: takenAt
             )
         case .choices:
             rewrite.begin(
@@ -2036,7 +2201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 delivery: delivery,
                 destination: nil,
                 configuration: config.assistant.rewrite,
-                anchor: nil
+                anchor: nil,
+                at: takenAt
             )
         case .none:
             break

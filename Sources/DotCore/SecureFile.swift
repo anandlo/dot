@@ -68,6 +68,73 @@ public enum SecureFile {
         }
     }
 
+    /// Writes `data` over `url` in a folder Dot does not own.
+    ///
+    /// The bytes travel the same way ``write(_:to:)`` sends them: a temporary
+    /// file next to the destination, created `0600`, renamed over it. What is
+    /// different is the folder. This one was chosen by the person, so it is read
+    /// and never made: creating it would invent a path they did not pick, and
+    /// restricting it - which ``write(_:to:)`` does to whatever folder it is
+    /// handed - would take `0700` away from a folder they share. The
+    /// destination file itself still ends up `0600`.
+    ///
+    /// The bytes are flushed to the disk before the precondition runs, so a
+    /// caller that checks something at the last moment is checking against
+    /// bytes that will survive a power cut.
+    ///
+    /// - Parameters:
+    ///   - data: the bytes to write.
+    ///   - url: the file to write. Its folder must already exist.
+    ///   - beforeCommit: work to do after the temporary file is written and
+    ///     flushed, and immediately before it is renamed over `url`. Throwing
+    ///     from it abandons the write: the temporary file is removed and the
+    ///     error is rethrown, so the destination is untouched.
+    /// - Throws: ``SecureFileError/cannotCreate(_:)`` when the folder is not
+    ///   there, the same errors ``write(_:to:)`` reports for a temporary file
+    ///   that cannot be written or renamed, and whatever `beforeCommit` throws.
+    public static func replace(
+        _ data: Data,
+        inExistingFolder url: URL,
+        beforeCommit: () throws -> Void = {}
+    ) throws {
+        let directory = url.deletingLastPathComponent()
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            throw SecureFileError.cannotCreate(directory.path)
+        }
+        let temporary = directory.appendingPathComponent(
+            ".\(url.lastPathComponent).\(UUID().uuidString).tmp"
+        )
+        let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, mode_t(filePermissions))
+        guard descriptor >= 0 else {
+            throw SecureFileError.cannotCreate(temporary.path)
+        }
+        do {
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+            try handle.write(contentsOf: data)
+            // The flush is here rather than in `write`: this file belongs to
+            // the person, and the check that runs next is only worth making if
+            // the bytes it protects are already on the disk.
+            try handle.synchronize()
+            try handle.close()
+        } catch {
+            unlink(temporary.path)
+            throw SecureFileError.cannotWrite(temporary.path)
+        }
+        do {
+            try beforeCommit()
+        } catch {
+            unlink(temporary.path)
+            throw error
+        }
+        guard rename(temporary.path, url.path) == 0 else {
+            unlink(temporary.path)
+            throw SecureFileError.cannotReplace(url.path)
+        }
+    }
+
     /// Restricts an existing file or folder to its owner.
     ///
     /// A file written by an older build is still `0644` on disk until it is

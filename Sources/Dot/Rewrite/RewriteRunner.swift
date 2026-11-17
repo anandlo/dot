@@ -196,7 +196,8 @@ final class RewriteRunner {
         destination: String?,
         configuration: RewriteConfiguration,
         anchor: InsertionAnchor?,
-        saved: RewriteSnapshot? = nil
+        saved: RewriteSnapshot? = nil,
+        at takenAt: Date? = nil
     ) -> Bool {
         cancelWork()
         take += 1
@@ -218,6 +219,7 @@ final class RewriteRunner {
         card = RewriteCard(
             original: text,
             choices: configuration.choices,
+            takenAt: takenAt,
             phase: .offered,
             versions: seeded.versions,
             selectedVersionID: 0,
@@ -245,7 +247,8 @@ final class RewriteRunner {
     func restore(
         original: String,
         saved: RewriteSnapshot,
-        configuration: RewriteConfiguration
+        configuration: RewriteConfiguration,
+        at takenAt: Date? = nil
     ) -> Bool {
         let text = original.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
@@ -261,6 +264,7 @@ final class RewriteRunner {
         card = RewriteCard(
             original: text,
             choices: generationChoices(for: text, configuration: configuration),
+            takenAt: takenAt,
             phase: .offered,
             versions: seeded.versions,
             selectedVersionID: seeded.selectedVersionID
