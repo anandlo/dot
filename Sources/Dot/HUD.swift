@@ -238,6 +238,16 @@ final class HUD {
     /// once.
     private weak var railOriginClip: NSClipView?
     private var railOriginToken: NSObjectProtocol?
+    /// Whether every write to the rail's clip is being taken as the person's.
+    ///
+    /// The row's own reveal is an eased scroll of several frames, and its last
+    /// steps are each shorter than the residue's reach. One write that carries
+    /// the rail further than that qualifies the ones after it: they are followed
+    /// until the clip holds still for a frame, so the record lands on where the
+    /// reveal came to rest rather than on the frame that crossed the window.
+    private var railOriginTracks = false
+    /// The clip origin the tracking last read, so a frame without a write ends it.
+    private var railTrackedOrigin: CGPoint?
     /// The rail the appearance is reading, kept between frames.
     ///
     /// The rail is a scroll view inside the card's SwiftUI tree, and finding it
@@ -905,6 +915,18 @@ final class HUD {
         contentSpring.isResting && (reduceMotion ? reduceFade.isResting : emergeSpring.isResting)
     }
 
+    /// Whether the record is still following writes to the rail's clip.
+    ///
+    /// The headless test reads it to know that a reveal has stopped arriving,
+    /// which is a state of the card rather than a duration; the app never does.
+    var debugRailFollowsWrites: Bool { railOriginTracks }
+
+    /// Whether the opening correction has been decided for this card.
+    ///
+    /// The headless test reads it to know which frame's clip origin is the last
+    /// one the correction could still have read; the app never does.
+    var debugRailPositionRestored: Bool { railPositionRestored }
+
     /// The position the person last gave the rail, as the opening correction reads it.
     ///
     /// The headless test reads it to prove the card took the scroll the row ran
@@ -1118,6 +1140,8 @@ final class HUD {
         hasReportedFirstTick = false
         railPositionRestored = false
         railIntendedOrigin = .zero
+        railOriginTracks = false
+        railTrackedOrigin = nil
         hasReadPointerSinceArrival = false
         startRendering()
         scheduleRenderFallback()
@@ -2135,6 +2159,7 @@ final class HUD {
     private func restoreTheRailsOpeningPosition() {
         guard let rail = cardRail() else { return }
         observeTheRailsOrigin(of: rail)
+        trackTheRailsOriginToRest(rail)
         guard !railPositionRestored, debugAppearanceAtRest else { return }
         // The rail's frame changes while the card's own size springs to the
         // layer's height, and a correction made during that would be answered by
@@ -2236,17 +2261,44 @@ final class HUD {
         max(abs(origin.x - intended.x), abs(origin.y - intended.y)) > window
     }
 
-    /// Keeps the rail's position when the clip was written further than the residue reaches.
+    /// Keeps the rail's position from a write that is the person's.
+    ///
+    /// A write further than the residue reaches qualifies, and every write after
+    /// it is kept too, at any distance, until the clip holds still for a frame:
+    /// the row's reveal arrives in steps and its last ones are short. The record
+    /// keeps following the rail after the opening correction has been decided,
+    /// because a person who reaches a style then has still moved the rail.
     ///
     /// - Parameter rail: the card's rail.
     private func recordTheRailsOrigin(_ rail: NSScrollView) {
-        guard !isCorrectingRailOrigin, !railPositionRestored else { return }
-        guard Self.railWriteIsPersons(
-            origin: rail.contentView.bounds.origin,
+        guard !isCorrectingRailOrigin else { return }
+        let origin = rail.contentView.bounds.origin
+        guard railOriginTracks || Self.railWriteIsPersons(
+            origin: origin,
             intended: railIntendedOrigin,
             window: Self.railResidueWindow
         ) else { return }
-        railIntendedOrigin = rail.contentView.bounds.origin
+        railIntendedOrigin = origin
+        if !railOriginTracks {
+            railOriginTracks = true
+            railTrackedOrigin = nil
+        }
+    }
+
+    /// Ends the following once a frame passes without a write to the clip.
+    ///
+    /// The origin is read once per frame and held beside the frame before it: a
+    /// frame that wrote the clip moved it, and a frame that did not left it where
+    /// the last write put it.
+    ///
+    /// - Parameter rail: the card's rail.
+    private func trackTheRailsOriginToRest(_ rail: NSScrollView) {
+        guard railOriginTracks else { return }
+        let origin = rail.contentView.bounds.origin
+        if let previous = railTrackedOrigin, previous == origin {
+            railOriginTracks = false
+        }
+        railTrackedOrigin = origin
     }
 
     private func advanceSpectrum(target: AudioSpectrumFrame, dt: Double) {

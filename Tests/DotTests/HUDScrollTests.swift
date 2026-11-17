@@ -778,47 +778,94 @@ final class HUDScrollTests: XCTestCase {
         var reveal: CGFloat = 0
         XCTAssertTrue(
             waitUntil(timeout: 4) {
-                guard !hud.debugAppearanceAtRest else { return false }
                 reveal = max(reveal, clip.bounds.origin.x)
                 return reveal > HUD.railResidueWindow
             },
             "the row never revealed the style the selected version carries, so the rail's position is unknown"
         )
-        var atRest = clip.bounds.origin.x
-        XCTAssertTrue(
-            waitUntil(timeout: 4) {
-                atRest = clip.bounds.origin.x
-                return hud.debugAppearanceAtRest
-            },
-            "the card's appearance never came to rest, so the rail's position is unknown"
-        )
+        // The landing is the clip origin on the last frame before the correction,
+        // which is the frame before it decides.
+        let landing = sampleTheLanding(hud, rail)
         XCTAssertTrue(
             waitForRailToRest(hud, rail),
             "the card's appearance never came to rest, so the rail's position is unknown"
         )
         let final = clip.bounds.origin.x
         let target = hud.debugRailIntendedOrigin.x
-        print("round 3 styled version: reveal=\(reveal) target=\(target) atRest=\(atRest) final=\(final)")
-        XCTAssertGreaterThan(
-            reveal,
-            HUD.railResidueWindow,
-            "the row never revealed the style the selected version carries, so its position is unknown"
+        print(
+            "rr2 styled version: reveal=\(reveal) landing=\(landing) target=\(target) final=\(final)"
         )
+        assertTheRailCameToRestOn(final, landing: landing, hud: hud)
         XCTAssertGreaterThan(
             target,
             50,
             "the card did not record the style the row revealed, so the rail has no target"
         )
-        // The rail's clip settles on whole device pixels and `reveal` is read
-        // while the appearance is still transforming it, so the two differ by up
-        // to the pixel the rail rounds to. The position the correction answers
-        // to is the card's record of the row's scroll, and the rail has to end on
-        // it rather than on its first style.
+    }
+
+    /// The record follows a reveal to its last step, however short the steps are.
+    ///
+    /// The row's reveal is an eased scroll, so its last steps are each shorter
+    /// than the residue's reach. A threshold alone would leave the record on the
+    /// step that crossed it, and the opening correction would then pull the rail
+    /// back by the rest of the travel. One write past the threshold qualifies the
+    /// ones after it, and they are followed, at any distance, until the clip
+    /// holds still for a frame.
+    func testTheRecordFollowsARevealsLastSteps() throws {
+        try WindowCapture.requireFullMotion()
+        let card = overflowingCard()
+        let hud = HUD(offscreen: true)
+        hud.dwell = 60
+        hud.showTranscript(text: card.original, delivery: .copied, elapsed: "0:04")
+        hud.setRewrite(card)
+        hud.debugPointer(inside: true)
+        defer {
+            hud.hide()
+            spin(for: 0.4)
+        }
+
+        let rail = try XCTUnwrap(waitForRail(hud), "the card's style rail was not found")
+        let clip = rail.contentView
+        XCTAssertFalse(
+            hud.debugAppearanceAtRest,
+            "the card arrived before the reveal, so the steps did not meet the appearance"
+        )
+        // The first step is further than the residue and qualifies, and it also
+        // proves the card is reading the clip. The four after it are one point
+        // each, shorter than the window, and each is written on its own frame the
+        // way an eased scroll writes them.
+        var origin: CGFloat = 100
+        XCTAssertTrue(
+            waitUntil(timeout: 4) {
+                clip.scroll(to: NSPoint(x: origin, y: 0))
+                rail.reflectScrolledClipView(clip)
+                return hud.debugRailIntendedOrigin.x == origin
+            },
+            "the card never recorded the row's first step"
+        )
+        // One step per frame: the card's presence moves on every frame, so
+        // waiting for it to change is waiting for a frame, and every frame gets
+        // its step the way an eased scroll writes one.
+        var presence = hud.debugPresence
+        let deadline = Date().addingTimeInterval(4)
+        for _ in 0 ..< 4 {
+            while hud.debugPresence == presence, Date() < deadline {
+                RunLoop.main.run(
+                    mode: .default,
+                    before: min(deadline, Date().addingTimeInterval(0.01))
+                )
+            }
+            presence = hud.debugPresence
+            origin += 1
+            clip.scroll(to: NSPoint(x: origin, y: 0))
+            rail.reflectScrolledClipView(clip)
+        }
+        print("rr2 last steps: origin=\(origin) record=\(hud.debugRailIntendedOrigin.x)")
         XCTAssertEqual(
-            final,
-            target,
-            accuracy: 0.25,
-            "the opening correction moved the rail off the style the row revealed"
+            hud.debugRailIntendedOrigin.x,
+            origin,
+            accuracy: 1e-6,
+            "the record stopped short of the reveal's last step"
         )
     }
 
@@ -922,30 +969,21 @@ final class HUDScrollTests: XCTestCase {
         XCTAssertEqual(moves, 1, "the early next-version arrow did not run")
 
         XCTAssertTrue(
-            waitForRailToSettle(hud, rail),
-            "the rail never stopped moving, so its resting position is unknown"
+            waitUntil(timeout: 4) { hud.debugRailIntendedOrigin.x > 50 },
+            "the card never recorded the style the early arrow revealed"
         )
-        // The arrow's target is the position the card took the row's reveal as,
-        // which is the position the person asked for: the correction must leave
-        // the rail on it.
-        let target = hud.debugRailIntendedOrigin.x
-        XCTAssertGreaterThan(
-            target,
-            50,
-            "the card did not record the style the arrow revealed, so its target is unknown"
+        // The row is laid out again when the version arrives, so the rail and its
+        // clip are read again after the click.
+        let railAfter = try XCTUnwrap(waitForRail(hud), "the card's style rail was lost after the click")
+        let clipAfter = railAfter.contentView
+        let landing = sampleTheLanding(hud, railAfter)
+        XCTAssertTrue(
+            waitForRailToRest(hud, railAfter),
+            "the card's appearance never came to rest, so the rail's position is unknown"
         )
-        print("round 3 early arrow: target=\(target) final=\(clip.bounds.origin.x)")
-        XCTAssertGreaterThan(
-            clip.bounds.origin.x,
-            50,
-            "the opening correction pulled the rail back from the style the early arrow revealed"
-        )
-        XCTAssertEqual(
-            clip.bounds.origin.x,
-            target,
-            accuracy: 0.25,
-            "the opening correction moved the rail off the style the early arrow revealed"
-        )
+        let final = clipAfter.bounds.origin.x
+        print("rr2 early arrow: landing=\(landing) final=\(final)")
+        assertTheRailCameToRestOn(final, landing: landing, hud: hud)
     }
 
     /// A version arrow's reveal survives the opening correction.
@@ -1023,15 +1061,18 @@ final class HUDScrollTests: XCTestCase {
         }
         XCTAssertEqual(moves, 1, "the next-version arrow did not run")
 
-        XCTAssertTrue(
-            waitForRailToSettle(hud, rail),
-            "the rail never stopped moving, so its resting position is unknown"
+        let landing = try XCTUnwrap(
+            waitForRailToSettle(hud),
+            "the rail never settled on the style the arrow revealed"
         )
-        XCTAssertGreaterThan(
-            clip.bounds.origin.x,
-            50,
-            "the opening correction pulled the rail back from the style the arrow revealed"
-        )
+        // The row is laid out again when the version arrives, so the rail and
+        // its clip are read again after the click: the ones captured before it
+        // can belong to the row the click replaced.
+        let railAfter = try XCTUnwrap(waitForRail(hud), "the card's style rail was lost after the click")
+        let clipAfter = railAfter.contentView
+        let final = clipAfter.bounds.origin.x
+        print("rr2 arrow click: landing=\(landing) final=\(final)")
+        assertTheRailCameToRestOn(final, landing: landing, hud: hud)
     }
 
     /// A rail wheel is applied by the card, and the local monitor stops the
@@ -1474,33 +1515,95 @@ final class HUDScrollTests: XCTestCase {
     ///   - seconds: the deadline.
     /// - Returns: whether the rail came to rest within the deadline.
     @discardableResult
-    private func waitForRailToSettle(
-        _ hud: HUD,
-        _ rail: NSScrollView,
-        within seconds: TimeInterval = 4
-    ) -> Bool {
-        // Longer than the 0.18 s ease-out the reveal scrolls with, so a rail
-        // still travelling can never be mistaken for one that has stopped.
-        let stillness: TimeInterval = 0.3
+    /// Waits for a reveal to arrive and for the rail to come to rest on it.
+    ///
+    /// The state is read rather than timed: the card has to have recorded a
+    /// position past the threshold, its record has to have stopped following the
+    /// reveal's steps, the appearance has to be at rest, and the clip has to sit
+    /// within a quarter point of the record. The seconds are a failure limit, not
+    /// a wait.
+    ///
+    /// - Parameters:
+    ///   - hud: the card.
+    ///   - within: the failure limit.
+    /// - Returns: the clip origin on the last frame the reveal wrote, or `nil` if
+    ///   the rail never arrived.
+    private func waitForRailToSettle(_ hud: HUD, within seconds: TimeInterval = 4) -> CGFloat? {
         let deadline = Date().addingTimeInterval(seconds)
-        var origin = rail.contentView.bounds.origin
-        var stillSince = Date()
-        repeat {
+        while Date() < deadline, hud.debugRailIntendedOrigin.x <= 50 {
+            RunLoop.main.run(
+                mode: .default,
+                before: min(deadline, Date().addingTimeInterval(0.02))
+            )
+        }
+        var landing: CGFloat?
+        while Date() < deadline {
             hud.debugRootView.layoutSubtreeIfNeeded()
-            let current = rail.contentView.bounds.origin
-            if current != origin {
-                origin = current
-                stillSince = Date()
+            let rail = HUD.chipRowScrollView(in: hud.debugRootView)
+            let origin = rail?.contentView.bounds.origin.x ?? 0
+            if hud.debugRailFollowsWrites {
+                landing = origin
             } else if hud.debugAppearanceAtRest,
-                      Date().timeIntervalSince(stillSince) >= stillness {
-                return true
+                      abs(origin - hud.debugRailIntendedOrigin.x) <= 0.25 {
+                return landing ?? origin
             }
             RunLoop.main.run(
                 mode: .default,
                 before: min(deadline, Date().addingTimeInterval(0.02))
             )
-        } while Date() < deadline
-        return false
+        }
+        return nil
+    }
+
+    /// The clip origin on the last frame before the correction decides.
+    ///
+    /// The correction runs once per appearance and reads the clip in the frame it
+    /// decides on, so the frame before that is the last position it can answer
+    /// to. The reading is taken between run-loop turns while the card still
+    /// reports the correction as undecided.
+    ///
+    /// - Parameters:
+    ///   - hud: the card.
+    ///   - rail: its rail.
+    /// - Returns: the clip origin on the last frame the correction could read.
+    private func sampleTheLanding(_ hud: HUD, _ rail: NSScrollView) -> CGFloat {
+        var landing = rail.contentView.bounds.origin.x
+        let deadline = Date().addingTimeInterval(4)
+        while Date() < deadline, !hud.debugRailPositionRestored {
+            landing = rail.contentView.bounds.origin.x
+            RunLoop.main.run(
+                mode: .default,
+                before: min(deadline, Date().addingTimeInterval(0.01))
+            )
+        }
+        return landing
+    }
+
+    /// Asserts the rail rests on the landing, to the pixel the clip can hold.
+    ///
+    /// The clip's origin settles on whole device pixels, so the rail can differ
+    /// from the frame the correction read by up to one of them.
+    ///
+    /// - Parameters:
+    ///   - final: where the rail came to rest.
+    ///   - landing: the clip origin on the last frame before the correction.
+    ///   - hud: the card, for the display it is on.
+    private func assertTheRailCameToRestOn(
+        _ final: CGFloat,
+        landing: CGFloat,
+        hud: HUD,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let pixel = 1 / hud.debugPanel.backingScaleFactor
+        XCTAssertEqual(
+            final,
+            landing,
+            accuracy: pixel + 0.05,
+            "the rail came to rest away from the landing, by more than one device pixel of the panel",
+            file: file,
+            line: line
+        )
     }
 
     /// Asserts the style an arrow reveals sits far enough along the rail that
