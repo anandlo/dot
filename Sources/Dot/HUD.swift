@@ -142,17 +142,18 @@ final class HUD {
     private var hideTask: Task<Void, Never>?
     private var levelProvider: (() -> Double)?
     private var spectrumProvider: (() -> AudioSpectrumFrame)?
-    private var spectrumRing: [AudioSpectrumFrame] = Array(repeating: .zero, count: VoiceMeter.historyLength)
-    private var spectrumSmoothed: AudioSpectrumFrame = .zero
-    private var spectrumClock: Double = 0
-    /// The window the five bands are drawn on, per band.
+    /// The spectrum the card draws: the per-voice window, the per-band filter and
+    /// the ring whose entries carry the tick they were measured on.
+    private var spectrum = VisualizerSpectrum()
+    /// The ring the styles read, oldest first.
     ///
     /// The recorder's bands are a fixed measurement of the microphone, and every
-    /// speaker reads on it the same way; this is what turns them into a picture
-    /// of this voice, from its own quietest band to its own loudest, so the grid
-    /// moves across its whole range instead of lighting a row of dots at the
-    /// level a fixed scale happens to put ordinary speech.
-    private var spectrumScale = SpectrumScale()
+    /// speaker reads on it the same way; the window ``VisualizerSpectrum`` holds is
+    /// what turns them into a picture of this voice, from its own quietest band to
+    /// its own loudest, so the grid moves across its whole range instead of
+    /// lighting a row of dots at the level a fixed scale happens to put ordinary
+    /// speech.
+    private var spectrumRing: [AudioSpectrumFrame] { spectrum.ring }
     private var isPreviewingVisualizer = false
     /// The envelope history of the meter, kept between frames.
     ///
@@ -454,10 +455,7 @@ final class HUD {
         // instead of at the level a blind meter guessed from one frame.
         meter.setCalibration(calibration)
         meter.seed(floor: calibration?.noiseFloorDBFS)
-        spectrumRing = Array(repeating: .zero, count: VoiceMeter.historyLength)
-        spectrumSmoothed = .zero
-        spectrumClock = 0
-        spectrumScale.reset()
+        spectrum.reset()
         reveal = 0
         model.reveal = 0
         setMode(mode, size: HUDState.recordingCard.size)
@@ -651,28 +649,21 @@ final class HUD {
         meter.setCalibration(nil)
         let now = CACurrentMediaTime()
         recordingStartedAt = now
-        meter.reset()
-        spectrumRing = Array(repeating: .zero, count: VoiceMeter.historyLength)
-        spectrumSmoothed = .zero
-        spectrumClock = 0
-        spectrumScale.reset()
-        // Pre-seed the meter with two seconds of the demonstration, so a
-        // scrolling visualizer immediately shows a full, moving voice trace
-        // instead of filling up from an empty history. The frames are the
-        // script's own, at the moment the preview's clock is about to start, so
-        // the trace opens on the take it goes on to draw rather than on a
-        // second, different voice.
-        let opening = Self.previewPhase(now: now, startedAt: recordingStartedAt)
-        var simTime = now - 2.0
-        while simTime < now {
-            let moment = Self.wrapped(opening + (simTime - now), loop: DictationScript.loop)
-            let voice = DictationScript.level(at: moment)
-            // One scale for the seeded frames and the live ones: the shape the
-            // preview opens with is the shape it goes on to draw.
-            meter.push(decibels: Self.previewDecibels(voice), now: simTime)
-            advanceSpectrum(target: DictationScript.bands(at: moment), dt: 1.0 / 60.0)
-            simTime += 1.0 / 60.0
-        }
+        spectrum.reset()
+        // The opening two seconds are walked by the same feed the Settings tile
+        // draws with, on this card's own meter and this card's own spectrum, so a
+        // scrolling visualizer immediately shows a full, moving voice trace instead
+        // of filling up from an empty history, and the trace it opens on is the
+        // take the live frames below go on to draw rather than a second, different
+        // voice measured by a second, different path.
+        let feed = VisualizerFeed(
+            meter: meter,
+            from: now - 2,
+            level: { time in DictationScript.level(at: Self.previewPhase(now: time, startedAt: now)) },
+            bands: { time in DictationScript.bands(at: Self.previewPhase(now: time, startedAt: now)) }
+        )
+        feed.advance(to: now)
+        spectrum = feed.spectrum
         setMode(
             .recording(elapsed: "0:02"),
             size: CGSize(width: HUDState.recordingWidth, height: HUDState.recordingHeight)
@@ -731,7 +722,7 @@ final class HUD {
     /// `-58`, which is the same scale a microphone is drawn on: the meter's
     /// window is what turns it into the shape the card shows.
     private static func previewDecibels(_ level: Double) -> Double {
-        -58 + min(1, max(0, level)) * 50
+        VisualizerFeed.decibels(for: level)
     }
 
     /// Tells the launch card which service dictation goes to, and a masked hint
@@ -1993,7 +1984,7 @@ final class HUD {
                 // sounding: the top row lifts as a word with an `s` in it passes.
                 // They used to be the level multiplied by four sine waves, which
                 // moved four times faster than the voice and read as a machine.
-                advanceSpectrum(target: DictationScript.bands(at: previewTime), dt: dt)
+                advanceSpectrum(target: DictationScript.bands(at: previewTime), dt: dt, now: now)
                 updateRecording(elapsed: HUDClock.string(for: now - recordingStartedAt + 2))
             } else {
                 // The recorder reports the RMS of the last block of audio; the
@@ -2007,7 +1998,7 @@ final class HUD {
                 meter.push(decibels: AudioLevel.decibels(rms), now: now)
                 model.level = meter.envelope
                 let rawSpec = spectrumProvider?() ?? .zero
-                advanceSpectrum(target: rawSpec, dt: dt)
+                advanceSpectrum(target: rawSpec, dt: dt, now: now)
                 updateRecording(elapsed: HUDClock.string(for: now - recordingStartedAt))
             }
         } else {
@@ -2301,30 +2292,14 @@ final class HUD {
         railTrackedOrigin = origin
     }
 
-    private func advanceSpectrum(target: AudioSpectrumFrame, dt: Double) {
+    private func advanceSpectrum(target: AudioSpectrumFrame, dt: Double, now: TimeInterval) {
         // The bands arrive on the recorder's fixed scale, where ordinary speech
-        // never reaches the top. The window of this voice is applied first, so
-        // the grid is drawn between the quietest and the loudest this speaker's
-        // bands have been, and the smoothing below is what settles it.
-        let scaled = spectrumScale.normalise(target, dt: dt)
-        func step(_ cur: Double, _ tgt: Double) -> Double {
-            let tau = tgt > cur ? 0.014 : 0.03
-            let c = 1.0 - exp(-max(0, dt) / tau)
-            return cur + (tgt - cur) * c
-        }
-        spectrumSmoothed = AudioSpectrumFrame(bands: (
-            step(spectrumSmoothed.bands.0, scaled.bands.0),
-            step(spectrumSmoothed.bands.1, scaled.bands.1),
-            step(spectrumSmoothed.bands.2, scaled.bands.2),
-            step(spectrumSmoothed.bands.3, scaled.bands.3),
-            step(spectrumSmoothed.bands.4, scaled.bands.4)
-        ))
-        spectrumClock += dt * VoiceMeter.sampleRate
-        while spectrumClock >= 1.0 {
-            spectrumClock -= 1.0
-            spectrumRing.removeFirst()
-            spectrumRing.append(spectrumSmoothed)
-        }
+        // never reaches the top. ``VisualizerSpectrum`` applies the window of this
+        // voice first, so the grid is drawn between the quietest and the loudest
+        // this speaker's bands have been, and the filter there is what settles it.
+        // The entry is stamped with the tick the meter's own history is closed on,
+        // which is the tick a style looks a measurement up by.
+        spectrum.advance(target: target, writtenSamples: meter.writtenSamples, dt: dt)
     }
 
     /// Moves the card to a state, restarting the content reveal when the kind

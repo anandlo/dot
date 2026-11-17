@@ -434,11 +434,11 @@ final class MatrixRenderTests: XCTestCase {
         let tick = min(run.rings.count - 1, Int(1.5 * VoiceMeter.sampleRate) - 1)
         let cells = Self.cellStats(ring: run.rings[tick], cols: cols)
         print(String(
-            format: "real-like at 1.5 s: shining %.1f%% dark %.1f%% d p10 %.2f p50 %.2f p90 %.2f",
-            100 * cells.shine, 100 * cells.dark, cells.p10, cells.median, cells.p90
+            format: "real-like at 1.5 s: shining %.1f%% dim %.1f%% (dark %.1f%%) d p10 %.2f p50 %.2f p90 %.2f",
+            100 * cells.shine, 100 * cells.dim, 100 * cells.dark, cells.p10, cells.median, cells.p90
         ))
-        XCTAssertGreaterThanOrEqual(cells.dark, 0.30, "the grid has no unlit cells")
-        XCTAssertLessThanOrEqual(cells.dark, 0.70, "the grid is mostly dark")
+        XCTAssertGreaterThanOrEqual(cells.dim, 0.30, "the grid has no dim cells")
+        XCTAssertLessThanOrEqual(cells.dim, 0.70, "the grid is mostly dim")
         XCTAssertGreaterThanOrEqual(cells.shine, 0.10, "the grid has nothing shining")
         XCTAssertLessThanOrEqual(cells.shine, 0.45, "the grid is one field of light")
 
@@ -2567,8 +2567,8 @@ extension MatrixRenderTests {
     static func cellStats(
         ring: [AudioSpectrumFrame],
         cols: Int
-    ) -> (shine: Double, lit: Double, dark: Double, p10: Double, median: Double, p90: Double) {
-        guard !ring.isEmpty else { return (0, 0, 0, 0, 0, 0) }
+    ) -> (shine: Double, lit: Double, dark: Double, dim: Double, p10: Double, median: Double, p90: Double) {
+        guard !ring.isEmpty else { return (0, 0, 0, 0, 0, 0, 0) }
         var displays: [Double] = []
         for column in 0..<cols {
             for row in 0..<MatrixLattice.rows {
@@ -2581,6 +2581,9 @@ extension MatrixRenderTests {
             Double(displays.filter { $0 > MatrixLattice.shineOnset }.count) / total,
             Double(displays.filter { $0 > MatrixLattice.litOnset }.count) / total,
             Double(displays.filter { $0 <= MatrixLattice.litOnset }.count) / total,
+            Double(displays.filter {
+                $0 <= MatrixLattice.litOnset + MatrixLattice.litRamp / 2
+            }.count) / total,
             percentile(displays, 0.10),
             percentile(displays, 0.50),
             percentile(displays, 0.90)

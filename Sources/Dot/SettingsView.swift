@@ -2833,6 +2833,68 @@ enum VisualizerTile {
     static func spectrum(at time: Double) -> [AudioSpectrumFrame] {
         DictationScript.spectrumHistory(endingAt: time)
     }
+
+    /// The view a visualizer swatch draws, from the one feed every preview uses.
+    ///
+    /// The swatch and the island's own preview are the same picture of the same
+    /// performance, so they hand ``HUDWaveform`` the same four values: the feed is
+    /// advanced to the moment, and its history, its stamped spectrum ring, its
+    /// phase and its clock are what the style is drawn from.
+    ///
+    /// - Parameters:
+    ///   - visualizer: the style to draw.
+    ///   - feed: the demonstration's feed, advanced here to the moment.
+    ///   - time: where in the demonstration the tile is drawing.
+    ///   - halfHeights: the row the styles that use one are drawn against.
+    /// - Returns: the waveform view.
+    static func waveform(
+        _ visualizer: HUDVisualizer,
+        from feed: VisualizerFeed,
+        at time: Double,
+        halfHeights: [CGFloat]
+    ) -> HUDWaveform {
+        feed.advance(to: time)
+        return HUDWaveform(
+            visualizer: visualizer,
+            halfHeights: halfHeights,
+            history: feed.history,
+            spectrumHistory: feed.ring,
+            phase: feed.phase,
+            time: feed.time,
+            level: 0.68,
+            pulse: 0.25
+        )
+    }
+}
+
+/// The feeds the visualizer tiles draw from, one per style.
+///
+/// A feed holds the demonstration's own clock, so it is kept between frames: one
+/// rebuilt in a body would reseed its two seconds of the script on every frame,
+/// and one shared by two tiles would let each of them advance the other's
+/// performance.
+@MainActor
+private enum VisualizerFeeds {
+    private static var feeds: [HUDVisualizer: VisualizerFeed] = [:]
+
+    /// The feed a running tile draws from.
+    static func feed(for visualizer: HUDVisualizer) -> VisualizerFeed {
+        if let feed = feeds[visualizer] { return feed }
+        let feed = VisualizerFeed()
+        feeds[visualizer] = feed
+        return feed
+    }
+
+    /// The one moment every tile that is not running is frozen at.
+    ///
+    /// It is the demonstration advanced to ``VisualizerTile/stillTime`` once and
+    /// kept, so the four still tiles are four styles of one frame rather than four
+    /// frames of their own.
+    static let still: VisualizerFeed = {
+        let feed = VisualizerFeed(from: VisualizerTile.stillTime - 2)
+        feed.advance(to: VisualizerTile.stillTime)
+        return feed
+    }()
 }
 
 /// A miniature preview swatch showing one visualizer style.
@@ -2854,11 +2916,12 @@ private struct VisualizerSwatch: View {
     /// fewer choices, so the chosen tile keeps its frame and stops its clock.
     let isAnimating: Bool
 
-    /// How fast the demonstration is drawn. Thirty frames a second is the pace
-    /// of the card's own drawing: the preview is a small picture of a voice, and
-    /// at twelve frames a second the syllables of a dictation at a hundred and
-    /// forty words a minute fell between frames.
-    private static let frameInterval: TimeInterval = 1.0 / 30
+    /// How fast the demonstration is drawn.
+    ///
+    /// It is the card's own sixty frames a second, because the feed advances in
+    /// sixtieths: a tile drawn at thirty would show every other frame of the same
+    /// performance, and a grid measured on it would be a grid the card never draws.
+    private static let frameInterval: TimeInterval = 1.0 / 60
 
     /// Where inside the script the swatch's clock starts, in seconds.
     ///
@@ -2884,10 +2947,10 @@ private struct VisualizerSwatch: View {
 
             if isAnimating {
                 TimelineView(.animation(minimumInterval: Self.frameInterval)) { timeline in
-                    content(at: moment(for: timeline.date))
+                    content(from: VisualizerFeeds.feed(for: visualizer), at: moment(for: timeline.date))
                 }
             } else {
-                content(at: VisualizerTile.stillTime)
+                content(from: VisualizerFeeds.still, at: VisualizerTile.stillTime)
             }
         }
         .frame(height: 52)
@@ -2904,18 +2967,17 @@ private struct VisualizerSwatch: View {
         return elapsed.truncatingRemainder(dividingBy: VisualizerTile.loop)
     }
 
-    private func content(at time: Double) -> some View {
-        let history = VisualizerTile.history(at: time)
-        let spectrum = VisualizerTile.spectrum(at: time)
-        return HUDWaveform(
-            visualizer: visualizer,
-            halfHeights: Self.sampleHeights,
-            history: history,
-            spectrumHistory: spectrum,
-            phase: DictationScript.phase(at: time),
-            time: time,
-            level: 0.68,
-            pulse: 0.25
+    /// The tile's picture of the demonstration at a moment.
+    ///
+    /// - Parameters:
+    ///   - feed: the demonstration's feed, advanced here to the moment.
+    ///   - time: where in the demonstration the tile is drawing.
+    private func content(from feed: VisualizerFeed, at time: Double) -> some View {
+        VisualizerTile.waveform(
+            visualizer,
+            from: feed,
+            at: time,
+            halfHeights: Self.sampleHeights
         )
         .frame(height: 22)
         .padding(.horizontal, 10)

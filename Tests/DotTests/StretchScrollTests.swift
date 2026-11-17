@@ -43,7 +43,6 @@ final class StretchScrollTests: XCTestCase {
     ) -> [HUDWaveform.Stretch.Bar] {
         HUDWaveform.Stretch.bars(
             history: history,
-            ceiling: ceiling,
             phase: phase,
             time: time,
             reveal: 1,
@@ -234,7 +233,7 @@ final class StretchScrollTests: XCTestCase {
                 // A window that has been closed for longer than one frame is drawn
                 // at its own level; only the newest bar and the live edge carry the
                 // spring, and it is the spring that swings past the top.
-                XCTAssertEqual(bar.value, 0.85, accuracy: 1e-9, "the loud window is drawn at the take's top")
+                XCTAssertEqual(bar.value, 1, accuracy: 1e-9, "the loud window is drawn at its own level")
                 let behind = row.filter { !$0.isLive && $0.window != newest }
                 XCTAssertEqual(
                     behind.map(\.value).max() ?? 0,
@@ -664,9 +663,20 @@ final class StretchScrollTests: XCTestCase {
             var voiced: [Double: WindowCapture.Pixels] = [:]
             for moment in moments {
                 let snapshot = VisualizerRedesignTests.previewSnapshot(at: moment)
+                // The loud frame is driven at the demonstration's own energy
+                // explicitly. It used to be whatever the take's peak normalisation
+                // made of it, and the absolute level removed that normalisation; 0.85
+                // is the bottom of the 0.85...0.93 band the demonstration's loudest
+                // syllable is drawn at and the old effective level, so the fixture
+                // never measures an easier picture than the one it replaced.
+                var history = snapshot.history
+                if moment == 6.96 {
+                    let peak = history.max() ?? 0
+                    if peak > 0 { history = history.map { $0 * (0.85 / peak) } }
+                }
                 voiced[moment] = try capture(
                     backdrop.colour,
-                    of: glassCard(snapshot.history, time: moment, ceiling: snapshot.ceiling),
+                    of: glassCard(history, time: moment, ceiling: snapshot.ceiling),
                     size: size
                 )
             }
@@ -741,6 +751,30 @@ final class StretchScrollTests: XCTestCase {
                     )
                 }
             }
+
+            // Print only, no assertion: the same ratio at the median per-file peak
+            // display energy of the six real-speech files under the absolute
+            // mapping (Round 6 measured 0.8072; see report-B5B6.md, Round 6).
+            // The mask is the waveform's own pixels at that energy.
+            let speechPeak = 0.8072
+            let peakSnapshot = VisualizerRedesignTests.previewSnapshot(at: 6.96)
+            var peakHistory = peakSnapshot.history
+            if let peak = peakHistory.max(), peak > 0 {
+                peakHistory = peakHistory.map { $0 * (speechPeak / peak) }
+            }
+            let peakPicture = try capture(
+                backdrop.colour,
+                of: glassCard(peakHistory, time: 6.96, ceiling: peakSnapshot.ceiling),
+                size: size
+            )
+            let peakMask = waveformMask(peakPicture, quiet, ink)
+            let (peakInk, peakBackdrop) = maskedPercentiles(peakPicture, quiet, peakMask)
+            let peakRatio = (max(peakInk, peakBackdrop) + 0.05) / (min(peakInk, peakBackdrop) + 0.05)
+            print(String(
+                format: "STRETCH glass %@ at the median speech peak %.4f: mask %d px, ink %.4f, "
+                    + "local backdrop %.4f, ratio %.3f:1 (no assertion)",
+                backdrop.name, speechPeak, peakMask.count, peakInk, peakBackdrop, peakRatio
+            ))
 
             guard let directory = VisualizerRedesignTests.evidence else { continue }
             try write(quiet, named: "stretch-glass-\(backdrop.name)-silence.png", to: directory)
