@@ -96,7 +96,7 @@ Escape cancels a recording. **⌥⌘V** pastes the last transcript again. **⌃�
 - **Menu bar.** Switch engine, microphone and language, paste or copy the last transcript, and toggle auto-paste, fast record and launch at login.
 - **Fast record.** Off by default. When on, a click on the menu bar dot starts and stops a recording; right-click still opens the menu.
 - **Microphone.** Choose the input in **Settings → General → Input**. The level meter learns each microphone's room level from your recordings and starts there; Reset forgets one device.
-- **Appearance.** Glass or Black card material, system, light or dark windows, and five visualizers: Stretch, Filament, Silk, Matrix and Halo Edge. The card's dwell time is a setting too.
+- **Appearance.** Glass or Black card material, system, light or dark windows, and five visualizers: Wave, Filament, Ribbons, Dot matrix and Orbit. The card's dwell time is a setting too.
 - **Updates.** Check for Updates reads GitHub Releases and links to the release page. Dot does not download or install an update by itself.
 - **No account, no backend.** No sign-in, no telemetry, no analytics and no server of ours.
 
