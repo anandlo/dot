@@ -618,6 +618,8 @@ final class SettingsSelectionTests: XCTestCase {
             return !entries.isEmpty
         }
         XCTAssertTrue(firstTyped, "the first typing pause asked nothing")
+        let firstSettled = await waitFor { harness.credentials.status.title != "Checking" }
+        XCTAssertTrue(firstSettled, "the status stayed on Checking after the first typing pause")
         XCTAssertEqual(
             harness.credentials.status.title,
             "Verified",
@@ -630,6 +632,8 @@ final class SettingsSelectionTests: XCTestCase {
             return entries.count >= 2
         }
         XCTAssertTrue(secondTyped, "the second typing pause asked nothing")
+        let secondSettled = await waitFor { harness.credentials.status.title != "Checking" }
+        XCTAssertTrue(secondSettled, "the status stayed on Checking after the second typing pause")
 
         XCTAssertEqual(
             counter.value,
