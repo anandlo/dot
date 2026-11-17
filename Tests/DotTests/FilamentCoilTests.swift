@@ -120,7 +120,6 @@ final class FilamentCoilTests: XCTestCase {
         Filament.heatProfile(
             history: snapshot.history,
             spectrum: snapshot.spectrum,
-            ceiling: snapshot.ceiling,
             reveal: 1,
             reduceMotion: reduceMotion
         )
@@ -565,8 +564,10 @@ extension FilamentCoilTests {
     /// C5: silence is an ember, the crest is white, and a pause is reported.
     ///
     /// A filament is never nothing: with no current in it the wire is a dull red
-    /// that the person can see the shape of. At the loudest moment of the take it is
-    /// white and its core stroke is drawn.
+    /// that the person can see the shape of. The wire runs from a visible ember in
+    /// silence to a bright orange-white on the demonstration's loudest syllable;
+    /// white itself is reserved for input near 0 dBFS, which AbsoluteLevelTests
+    /// asserts.
     func testC5TheRangeRunsFromAnEmberToWhite() throws {
         let quiet = Self.silence
         let quietHeat = Self.heat(quiet)
@@ -614,7 +615,8 @@ extension FilamentCoilTests {
         ))
         let gap = Self.heat(Self.script(at: Self.pause))
         print(String(format: "C5 pause (%.2f s): heat max %.4f, mean %.4f", Self.pause, gap.max() ?? 0, Filament.mean(gap)))
-        XCTAssertGreaterThanOrEqual(peak, 0.90, "the loudest moment is at only \(peak)")
+        XCTAssertGreaterThanOrEqual(peak, 0.85, "the loudest moment is at only \(peak)")
+        XCTAssertLessThanOrEqual(peak, 0.93, "the loudest moment is past the demonstration's range at \(peak)")
         XCTAssertFalse(core.isEmpty, "the white-hot core was not drawn at the loudest moment")
     }
 }
@@ -660,9 +662,8 @@ extension FilamentCoilTests {
     /// Unchanged from the filament's F3: the lag is the same filter, and it is read
     /// through the envelope path the card uses.
     func testC7TheWireHeatsFastAndCoolsSlowly() {
-        let ceiling = 0.85
         func envelope(_ values: [Double]) -> Double {
-            Filament.envelopeHeat(values, ceiling: ceiling, reduceMotion: false)
+            Filament.envelopeHeat(values, reduceMotion: false)
         }
         let rise = (1...8).map { ticks in
             (ticks: ticks, value: envelope([Double](repeating: 0, count: 48 - ticks) + [Double](repeating: 1, count: ticks)))
