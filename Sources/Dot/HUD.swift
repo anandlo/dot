@@ -905,6 +905,12 @@ final class HUD {
         contentSpring.isResting && (reduceMotion ? reduceFade.isResting : emergeSpring.isResting)
     }
 
+    /// The position the person last gave the rail, as the opening correction reads it.
+    ///
+    /// The headless test reads it to prove the card took the scroll the row ran
+    /// for itself as the person's; the app never does.
+    var debugRailIntendedOrigin: CGPoint { railIntendedOrigin }
+
     /// Moves the card's appearance by a known amount of time.
     ///
     /// The appearance runs on the frames the render loop delivers and spends
@@ -2212,16 +2218,35 @@ final class HUD {
         }
     }
 
+    /// Whether a write to the rail's clip is a position the person chose.
+    ///
+    /// The appearance's residue moves the rail by at most the window on either
+    /// axis, so a write that carries it further on either one is a position of
+    /// its own. The rail scrolls sideways only and its clip's height never
+    /// moves, so the answer is the larger of the two axes' travel: a write that
+    /// moves the rail across counts even though nothing else moved.
+    ///
+    /// - Parameters:
+    ///   - origin: where the clip was written to.
+    ///   - intended: the position the person last wrote, or `.zero` when they
+    ///     wrote none.
+    ///   - window: the residue's reach, in points, from ``railResidueWindow``.
+    /// - Returns: whether the write is the person's position.
+    static func railWriteIsPersons(origin: CGPoint, intended: CGPoint, window: CGFloat) -> Bool {
+        max(abs(origin.x - intended.x), abs(origin.y - intended.y)) > window
+    }
+
     /// Keeps the rail's position when the clip was written further than the residue reaches.
     ///
     /// - Parameter rail: the card's rail.
     private func recordTheRailsOrigin(_ rail: NSScrollView) {
         guard !isCorrectingRailOrigin, !railPositionRestored else { return }
-        let origin = rail.contentView.bounds.origin
-        guard abs(origin.x - railIntendedOrigin.x) > Self.railResidueWindow,
-              abs(origin.y - railIntendedOrigin.y) > Self.railResidueWindow
-        else { return }
-        railIntendedOrigin = origin
+        guard Self.railWriteIsPersons(
+            origin: rail.contentView.bounds.origin,
+            intended: railIntendedOrigin,
+            window: Self.railResidueWindow
+        ) else { return }
+        railIntendedOrigin = rail.contentView.bounds.origin
     }
 
     private func advanceSpectrum(target: AudioSpectrumFrame, dt: Double) {

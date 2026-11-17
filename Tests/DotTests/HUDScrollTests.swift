@@ -387,14 +387,16 @@ final class HUDScrollTests: XCTestCase {
         )
     }
 
-    /// A wheel of half a point is the person's, and the card keeps it.
+    /// A wheel of one device pixel is the person's, and the card keeps it.
     ///
     /// The card corrects the residue its appearance leaves in the rail's clip.
     /// A wheel that moved the rail is not that residue, however little it
-    /// moved: the correction is turned off for the card, so a nudge smaller
-    /// than the residue's reach is not swallowed by it. The wheel here is sent
-    /// while the card is still arriving, and the rail is read once it has
-    /// rested.
+    /// moved: the position it wrote is the correction's target, so a nudge
+    /// smaller than the residue's reach is not swallowed by it. The wheel here
+    /// is one device pixel of the display the card is on, which is the smallest
+    /// travel AppKit can hold in the clip's origin: half a point at 2x and a
+    /// point at 1x. It is sent while the card is still arriving, and the rail is
+    /// read once it has rested.
     func testASmallWheelBeforeTheCardRestsSurvivesTheOpeningCorrection() throws {
         try WindowCapture.requireFullMotion()
         let card = overflowingCard()
@@ -422,24 +424,26 @@ final class HUDScrollTests: XCTestCase {
         let band = HUD.rewriteChipRowFrame(cardFrame: cardFrame, card: card)
         let point = CGPoint(x: band.midX, y: band.midY)
         // The rail is at its opening position, so the wheel's own travel is the
-        // whole of the displacement it is given.
+        // whole of the displacement it is given. One device pixel is the least
+        // travel the clip's origin can hold.
         clip.scroll(to: .zero)
         rail.reflectScrolledClipView(clip)
-        let halfPoint = DeliveredScrollEvent(
+        let pixel = 1 / hud.debugPanel.backingScaleFactor
+        let nudge = DeliveredScrollEvent(
             window: hud.debugPanel,
             windowNumber: hud.debugPanel.windowNumber,
             location: hud.debugPanel.convertPoint(fromScreen: point),
-            deltaX: -0.5,
+            deltaX: -pixel,
             deltaY: 0,
             phase: .began,
             timestamp: ProcessInfo.processInfo.systemUptime
         )
-        hud.debugHandleScrollEvent(halfPoint, at: point)
+        hud.debugHandleScrollEvent(nudge, at: point)
         XCTAssertEqual(
             clip.bounds.origin.x,
-            0.5,
+            pixel,
             accuracy: 1e-6,
-            "the half-point wheel did not move the rail"
+            "the one-pixel wheel did not move the rail"
         )
 
         XCTAssertTrue(
@@ -448,8 +452,8 @@ final class HUDScrollTests: XCTestCase {
         )
         XCTAssertGreaterThan(
             clip.bounds.origin.x,
-            0.25,
-            "the opening correction swallowed the wheel's half point"
+            0.5 * pixel,
+            "the opening correction swallowed the wheel's pixel"
         )
         XCTAssertLessThanOrEqual(
             clip.bounds.origin.x,
@@ -458,9 +462,9 @@ final class HUDScrollTests: XCTestCase {
         )
         XCTAssertEqual(
             clip.bounds.origin.x,
-            0.5,
+            pixel,
             accuracy: 0.01,
-            "the opening correction did not leave the rail on the wheel's half point"
+            "the opening correction did not leave the rail on the wheel's pixel"
         )
     }
 
@@ -488,6 +492,56 @@ final class HUDScrollTests: XCTestCase {
             2.0,
             HUD.railResidueWindow,
             "the window does not reach the largest residue the appearance was measured at"
+        )
+    }
+
+    /// A write to the rail is the person's when it carries the rail further than the residue can.
+    ///
+    /// The rail scrolls sideways only and its clip's height never moves, so a
+    /// write that carries it across has to count even though the other axis did
+    /// not move at all. The numbers sit either side of the window the correction
+    /// reads.
+    func testARailWriteIsThePersonsOnlyPastTheResidue() {
+        let window = HUD.railResidueWindow
+        XCTAssertTrue(
+            HUD.railWriteIsPersons(
+                origin: CGPoint(x: 174.5, y: 0),
+                intended: .zero,
+                window: window
+            ),
+            "the row's reveal of a style was not taken as the person's position"
+        )
+        XCTAssertTrue(
+            HUD.railWriteIsPersons(
+                origin: CGPoint(x: 2.6, y: 0),
+                intended: .zero,
+                window: window
+            ),
+            "a write past the window was not taken as the person's position"
+        )
+        XCTAssertFalse(
+            HUD.railWriteIsPersons(
+                origin: CGPoint(x: 2.4, y: 0),
+                intended: .zero,
+                window: window
+            ),
+            "a write inside the window was taken as the person's position"
+        )
+        XCTAssertTrue(
+            HUD.railWriteIsPersons(
+                origin: CGPoint(x: 0, y: 3),
+                intended: .zero,
+                window: window
+            ),
+            "a write that moved the rail on its other axis was not taken as the person's position"
+        )
+        XCTAssertFalse(
+            HUD.railWriteIsPersons(
+                origin: CGPoint(x: 2, y: 2),
+                intended: .zero,
+                window: window
+            ),
+            "a write inside the window on both axes was taken as the person's position"
         )
     }
 
@@ -646,6 +700,9 @@ final class HUDScrollTests: XCTestCase {
         )
         let band = HUD.rewriteChipRowFrame(cardFrame: cardFrame, card: selected)
         let point = CGPoint(x: band.midX, y: band.midY)
+        // One device pixel is the least travel the clip's origin can hold, so it
+        // is the amount this nudge carries: half a point at 2x and a point at 1x.
+        let pixel = 1 / hud.debugPanel.backingScaleFactor
         var held = 0
         for _ in 0 ..< 6 where held < 2 {
             clip.scroll(to: .zero)
@@ -655,7 +712,7 @@ final class HUDScrollTests: XCTestCase {
                     window: hud.debugPanel,
                     windowNumber: hud.debugPanel.windowNumber,
                     location: hud.debugPanel.convertPoint(fromScreen: point),
-                    deltaX: -0.5,
+                    deltaX: -pixel,
                     deltaY: 0,
                     phase: .began,
                     timestamp: ProcessInfo.processInfo.systemUptime
@@ -682,13 +739,86 @@ final class HUDScrollTests: XCTestCase {
         )
         XCTAssertGreaterThan(
             clip.bounds.origin.x,
-            0.25,
+            0.5 * pixel,
             "the opening correction pulled the rail off the version the action selected"
         )
         XCTAssertLessThanOrEqual(
             clip.bounds.origin.x,
             1.5,
             "the rail left the residue window before the correction could be tested"
+        )
+    }
+
+    /// A card opened on a version that carries a style keeps the style the row revealed.
+    ///
+    /// The row opens centred on the style of the version the card arrives with,
+    /// which is a scroll the row runs itself while the card is still arriving,
+    /// so the card never sees the call that makes it. That scroll is the
+    /// person's position, and the opening correction has to leave the rail on
+    /// it. The reveal is read as the largest origin the rail takes before the
+    /// appearance stops, which is the one position on the rail the card did not
+    /// write.
+    func testAStyledVersionOpensTheRailOnItsStyleAndKeepsIt() throws {
+        try WindowCapture.requireFullMotion()
+        var card = overflowingCard()
+        card.append(id: 1, style: card.choices[4], text: "A shorter version of the words.", warning: nil)
+        card.select(versionID: 1)
+        let hud = HUD(offscreen: true)
+        hud.dwell = 60
+        hud.showTranscript(text: card.original, delivery: .copied, elapsed: "0:04")
+        hud.setRewrite(card)
+        hud.debugPointer(inside: true)
+        defer {
+            hud.hide()
+            spin(for: 0.4)
+        }
+
+        let rail = try XCTUnwrap(waitForRail(hud), "the card's style rail was not found")
+        let clip = rail.contentView
+        var reveal: CGFloat = 0
+        XCTAssertTrue(
+            waitUntil(timeout: 4) {
+                guard !hud.debugAppearanceAtRest else { return false }
+                reveal = max(reveal, clip.bounds.origin.x)
+                return reveal > HUD.railResidueWindow
+            },
+            "the row never revealed the style the selected version carries, so the rail's position is unknown"
+        )
+        var atRest = clip.bounds.origin.x
+        XCTAssertTrue(
+            waitUntil(timeout: 4) {
+                atRest = clip.bounds.origin.x
+                return hud.debugAppearanceAtRest
+            },
+            "the card's appearance never came to rest, so the rail's position is unknown"
+        )
+        XCTAssertTrue(
+            waitForRailToRest(hud, rail),
+            "the card's appearance never came to rest, so the rail's position is unknown"
+        )
+        let final = clip.bounds.origin.x
+        let target = hud.debugRailIntendedOrigin.x
+        print("round 3 styled version: reveal=\(reveal) target=\(target) atRest=\(atRest) final=\(final)")
+        XCTAssertGreaterThan(
+            reveal,
+            HUD.railResidueWindow,
+            "the row never revealed the style the selected version carries, so its position is unknown"
+        )
+        XCTAssertGreaterThan(
+            target,
+            50,
+            "the card did not record the style the row revealed, so the rail has no target"
+        )
+        // The rail's clip settles on whole device pixels and `reveal` is read
+        // while the appearance is still transforming it, so the two differ by up
+        // to the pixel the rail rounds to. The position the correction answers
+        // to is the card's record of the row's scroll, and the rail has to end on
+        // it rather than on its first style.
+        XCTAssertEqual(
+            final,
+            target,
+            accuracy: 0.25,
+            "the opening correction moved the rail off the style the row revealed"
         )
     }
 
@@ -795,10 +925,26 @@ final class HUDScrollTests: XCTestCase {
             waitForRailToSettle(hud, rail),
             "the rail never stopped moving, so its resting position is unknown"
         )
+        // The arrow's target is the position the card took the row's reveal as,
+        // which is the position the person asked for: the correction must leave
+        // the rail on it.
+        let target = hud.debugRailIntendedOrigin.x
+        XCTAssertGreaterThan(
+            target,
+            50,
+            "the card did not record the style the arrow revealed, so its target is unknown"
+        )
+        print("round 3 early arrow: target=\(target) final=\(clip.bounds.origin.x)")
         XCTAssertGreaterThan(
             clip.bounds.origin.x,
             50,
             "the opening correction pulled the rail back from the style the early arrow revealed"
+        )
+        XCTAssertEqual(
+            clip.bounds.origin.x,
+            target,
+            accuracy: 0.25,
+            "the opening correction moved the rail off the style the early arrow revealed"
         )
     }
 
