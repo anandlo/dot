@@ -44,11 +44,10 @@ public enum HUDRewriteLayout {
     ///
     /// Eleven and a half, the size the row was drawn at before the typeface
     /// changed. It was dropped to ten and a quarter only to fit a wider face,
-    /// and Switzer at 11.5 draws the seven short styles' chips and the gaps
-    /// between them at 484.0 points (510.0 with the row's trailing room)
-    /// against the card's 528, and the five shipped styles at 373.0 (399.0 with
-    /// the room). The type needs no longer give way, so the point and a quarter
-    /// stayed.
+    /// and the face at 11.5 draws the five shipped styles' chips and the gaps
+    /// between them at 382.0 points (408.0 with the row's trailing room)
+    /// against the card's 528. The type needs no longer give way, so the point
+    /// and a quarter stayed.
     public static let chipFontSize: CGFloat = 11.5
     /// The size of the dot in the faithfulness badge, in points.
     public static let badgeDotSize: CGFloat = 6

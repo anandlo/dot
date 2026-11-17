@@ -41,7 +41,7 @@ jobs:
             exit 1
           fi
 
-      # Switzer may be embedded in the app but not redistributed, so it is not
+      # Satoshi may be embedded in the app but not redistributed, so it is not
       # in the repository. The script checks the pinned SHA-256 and fails the
       # step on a download or checksum error.
       - name: Fetch the typeface

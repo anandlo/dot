@@ -1109,11 +1109,11 @@ struct AssistantPage: View {
         // the em sum the font reports is not the line the text view lays out: a
         // field sized from that shows part of the next line.
         let lineHeight = font.ascender.rounded() - font.descender.rounded() + font.leading
-        // Rounded up to a whole point: Switzer draws a 12.5 point line at
-        // 16.125, so twelve lines come to 193.5 and the clip view AppKit builds
-        // from a half point rounds down and cuts the twelfth line by half a
-        // point. A whole point of height puts the clip on 194, which holds all
-        // twelve and no more than the half point of blank line box above the
+        // Rounded up to a whole point: the face draws a 12.5 point line at
+        // 17.313, so twelve lines come to 207.75 and the clip view AppKit builds
+        // from a fraction rounds down and cuts the twelfth line by a quarter of
+        // a point. A whole point of height puts the clip on 208, which holds all
+        // twelve and no more than the quarter point of blank line box above the
         // thirteenth.
         return DotTextEditor.verticalClipInset * 2
             + DotTextEditor.textInset.height
