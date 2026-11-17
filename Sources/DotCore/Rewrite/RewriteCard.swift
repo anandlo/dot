@@ -1,5 +1,22 @@
 import Foundation
 
+/// One card's contribution to the archive: the words, the instant they were
+/// delivered, and the completed rewrites made from them.
+public struct RewriteArchiveRecord: Equatable, Sendable {
+    /// The transcript the versions are of.
+    public let text: String
+    /// When that transcript was delivered.
+    public let takenAt: Date
+    /// The completed rewrites, in the order they were asked for.
+    public let versions: [RewriteVersion]
+
+    public init(text: String, takenAt: Date, versions: [RewriteVersion]) {
+        self.text = text
+        self.takenAt = takenAt
+        self.versions = versions
+    }
+}
+
 /// The rewrite layer of the transcript card.
 ///
 /// It is a value, and the HUD draws it: the card has one shape and one set of
@@ -55,6 +72,16 @@ public struct RewriteCard: Equatable, Sendable {
     /// The words the take was made of. Every generation uses these, and every
     /// version is a function of them.
     public var original: String
+    /// When those words were delivered, or `nil` when this card was not built
+    /// from a delivery.
+    ///
+    /// It is the day the archive files the card's rewrites under. It travels
+    /// with the card rather than being looked up afterwards because the history
+    /// keeps the first date it saw for a sentence: a take delivered again on
+    /// another day would otherwise have its rewrite filed under the earlier
+    /// one. A card built for a preview, or one whose words came from the
+    /// history, has no delivery of its own.
+    public var takenAt: Date?
     /// The styles the card offers, built-ins first.
     public var choices: [RewriteStyle]
     /// Where the layer is.
@@ -91,6 +118,7 @@ public struct RewriteCard: Equatable, Sendable {
     public init(
         original: String,
         choices: [RewriteStyle],
+        takenAt: Date? = nil,
         phase: Phase = .offered,
         versions: [RewriteVersion]? = nil,
         selectedVersionID: Int = 0,
@@ -105,6 +133,7 @@ public struct RewriteCard: Equatable, Sendable {
     ) {
         let resolved = versions ?? [RewriteVersion.original(text: original)]
         self.original = original
+        self.takenAt = takenAt
         self.choices = choices
         self.phase = phase
         self.versions = resolved.isEmpty
@@ -121,6 +150,19 @@ public struct RewriteCard: Equatable, Sendable {
         self.deliveryDestination = deliveryDestination
         self.canUndo = canUndo
         self.lastNavigation = lastNavigation
+    }
+
+    /// What this card contributes to the archive, when it contributes.
+    ///
+    /// `nil` when there is nothing to file: no completed version, or no delivery
+    /// to file it under. The instant is the card's own, so the rewrite of a
+    /// sentence delivered today is filed today even when the same sentence was
+    /// first delivered a week ago.
+    public var archiveRecord: RewriteArchiveRecord? {
+        guard let takenAt else { return nil }
+        let completed = versions.filter { !$0.isOriginal }
+        guard !completed.isEmpty else { return nil }
+        return RewriteArchiveRecord(text: original, takenAt: takenAt, versions: completed)
     }
 
     // MARK: - The selection

@@ -361,6 +361,66 @@ public struct ProviderConfig: Codable, Sendable, Equatable {
     }
 }
 
+/// Whether Dot keeps a Markdown copy of what it delivers, and where.
+///
+/// The archive is a second copy written for a person to read and search, not
+/// the record Dot itself uses: the history stays the only thing the app reads
+/// back, and an archive that cannot be written never costs a transcript.
+///
+/// Every field is read on its own, so a block a hand edit damaged falls back
+/// to the shipped default without taking the rest of the configuration with
+/// it.
+public struct TranscriptArchiveSettings: Codable, Equatable, Sendable {
+    /// Whether a delivered transcript and its rewrites are written to the
+    /// folder.
+    public var enabled: Bool
+    /// The folder the person chose, or `nil` for
+    /// ``TranscriptArchiveFolder/defaultURL(home:)``.
+    public var folderPath: String?
+    /// A plain bookmark of the chosen folder.
+    ///
+    /// A path alone stops naming the folder as soon as it is moved or renamed;
+    /// a bookmark follows the folder itself. It is a plain bookmark rather than
+    /// a security-scoped one because Dot is not sandboxed, so only the
+    /// resolution it gives is wanted, not a grant.
+    public var folderBookmark: Data?
+
+    /// The settings a configuration without them has: off, and the default
+    /// folder.
+    public static let `default` = TranscriptArchiveSettings(
+        enabled: false,
+        folderPath: nil,
+        folderBookmark: nil
+    )
+
+    /// Creates the archive settings.
+    public init(enabled: Bool = false, folderPath: String? = nil, folderBookmark: Data? = nil) {
+        self.enabled = enabled
+        self.folderPath = folderPath
+        self.folderBookmark = folderBookmark
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case folderPath
+        case folderBookmark
+    }
+
+    /// Reads the block, keeping every field it can.
+    ///
+    /// A field of the wrong type is dropped rather than thrown: the bookmark of
+    /// a folder that was written by a build of another platform must not cost
+    /// the person the switch they turned on.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let fallback = TranscriptArchiveSettings.default
+        self.enabled = ((try? container.decodeIfPresent(Bool.self, forKey: .enabled)) ?? nil)
+            ?? fallback.enabled
+        self.folderPath = (try? container.decodeIfPresent(String.self, forKey: .folderPath)) ?? nil
+        self.folderBookmark = (try? container.decodeIfPresent(Data.self, forKey: .folderBookmark)) ?? nil
+    }
+}
+
 /// Dot's configuration.
 ///
 /// The file lives at `~/Library/Application Support/Dot/config.json`. Every
@@ -447,6 +507,11 @@ public struct DotConfig: Codable, Sendable, Equatable {
     /// provider: the migration that retires dead providers deletes keys it
     /// does not know from that table, and assistant settings must survive it.
     public var assistant: AssistantConfiguration
+    /// Whether a Markdown copy of every delivered take is kept.
+    ///
+    /// Off by default. The archive is a second copy for the person to read, so
+    /// it is opt-in and it is written after the history, never instead of it.
+    public var transcriptArchive: TranscriptArchiveSettings
 
     /// The configuration Dot starts with.
     public static let `default` = DotConfig(
@@ -471,7 +536,8 @@ public struct DotConfig: Codable, Sendable, Equatable {
         outputGrammarTargets: [:],
         microphoneCalibration: [:],
         assistantHotkey: .defaultAssistant,
-        assistant: .default
+        assistant: .default,
+        transcriptArchive: .default
     )
 
     /// The settings the providers start with.
@@ -534,7 +600,8 @@ public struct DotConfig: Codable, Sendable, Equatable {
         outputGrammarTargets: [String: DictationTarget] = [:],
         microphoneCalibration: [String: MicrophoneCalibration] = [:],
         assistantHotkey: Hotkey = .defaultAssistant,
-        assistant: AssistantConfiguration = .default
+        assistant: AssistantConfiguration = .default,
+        transcriptArchive: TranscriptArchiveSettings = .default
     ) {
         self.provider = provider
         self.providers = providers
@@ -558,6 +625,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         self.microphoneCalibration = microphoneCalibration
         self.assistantHotkey = assistantHotkey
         self.assistant = assistant
+        self.transcriptArchive = transcriptArchive
     }
 
     /// The folder the configuration lives in, relative to the home directory.
@@ -734,6 +802,13 @@ extension DotConfig {
             AssistantConfiguration.self,
             forKey: .assistant
         )) ?? nil) ?? fallback.assistant
+        // The archive block is read the tolerant way for the same reason, and a
+        // block of the wrong shape falls back whole: a number where the block
+        // belongs is a hand edit, not a reason to lose the endpoints above.
+        self.transcriptArchive = ((try? container.decodeIfPresent(
+            TranscriptArchiveSettings.self,
+            forKey: .transcriptArchive
+        )) ?? nil) ?? fallback.transcriptArchive
     }
 }
 
