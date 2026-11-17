@@ -52,6 +52,8 @@ public struct DeepgramProvider: Provider {
 
     private let session: URLSession
     private let timeout: TimeInterval
+    /// How long the one request that proves the key may take.
+    private let verificationTimeout: TimeInterval
 
     /// Creates a Deepgram provider.
     public init(
@@ -67,7 +69,8 @@ public struct DeepgramProvider: Provider {
         keyterms: String? = nil,
         zeroDataRetention: Bool = true,
         timeout: TimeInterval = 120,
-        session: URLSession = OpenAICompatibleProvider.makeSession()
+        session: URLSession = OpenAICompatibleProvider.makeSession(),
+        verificationTimeout: TimeInterval = CredentialVerifier.timeout
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
@@ -82,6 +85,7 @@ public struct DeepgramProvider: Provider {
         self.zeroDataRetention = zeroDataRetention
         self.timeout = timeout
         self.session = session
+        self.verificationTimeout = verificationTimeout
     }
 
     /// Builds the `/listen` endpoint URL with query parameters for the given model and language.
@@ -135,6 +139,15 @@ public struct DeepgramProvider: Provider {
         }
         components.queryItems = (components.queryItems ?? []) + items
         return components.url ?? baseEndpoint
+    }
+
+    /// The URL the projects list is read from, and the one a check calls.
+    ///
+    /// The projects endpoint sits at the API root, not under the `/listen` path,
+    /// so a base URL that names `/listen` is read one level up.
+    public var projectsURL: URL {
+        let root = baseURL.lastPathComponent == "listen" ? baseURL.deletingLastPathComponent() : baseURL
+        return root.appendingPathComponent("projects")
     }
 
     private static func normalizedLanguage(_ tag: String) -> String {
@@ -227,5 +240,28 @@ public struct DeepgramProvider: Provider {
             return ProviderErrorText.sanitized(message)
         }
         return nil
+    }
+}
+
+extension DeepgramProvider: CredentialVerifying {
+    /// The projects request that proves the key.
+    ///
+    /// Deepgram documents `GET https://api.deepgram.com/v1/projects` with
+    /// `Authorization: Token <key>`: the cheapest read that answers whether the
+    /// key is good, and the same header every transcription sends.
+    func credentialRequest() -> URLRequest? {
+        guard let apiKey = CredentialVerifier.credential(apiKey) else { return nil }
+        return CredentialVerifier.request(
+            url: projectsURL,
+            headers: ["Authorization": "Token \(apiKey)"],
+            timeout: verificationTimeout
+        )
+    }
+
+    public func verifyCredentials() async -> CredentialCheck {
+        guard let request = credentialRequest() else {
+            return CredentialVerifier.missingKey(displayName)
+        }
+        return await CredentialVerifier.check(request, session: session, providerID: id)
     }
 }

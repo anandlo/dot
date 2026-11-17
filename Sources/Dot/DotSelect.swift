@@ -133,7 +133,7 @@ struct DotSelect<Value: Hashable>: View {
             label: label,
             title: currentOption?.title ?? placeholder,
             rows: rows,
-            selectedIndex: selectedIndex,
+            selectedIndex: { selectedIndex },
             width: width ?? DotSelectMetrics.settingsColumn,
             fillsWidth: fillsWidth,
             isEnabled: isEnabled
@@ -170,7 +170,13 @@ private struct DotSelectTrigger: View {
     let label: String
     let title: String
     let rows: [DotSelectRow]
-    let selectedIndex: Int?
+    /// The row the selection points at, read when the list opens.
+    ///
+    /// The trigger is drawn from the body the page last evaluated, and a binding
+    /// can change without this view being handed the new value. The row the list
+    /// opens on is read here, at the click, so the list can never open on the row
+    /// the selection used to hold.
+    let selectedIndex: () -> Int?
     let width: CGFloat
     let fillsWidth: Bool
     let isEnabled: Bool
@@ -295,7 +301,7 @@ private struct DotSelectTrigger: View {
         let opened = DotSelectListController.shared.present(
             anchor: anchor,
             rows: rows,
-            selectedIndex: selectedIndex,
+            selectedIndex: selectedIndex(),
             title: label,
             scheme: colorScheme,
             onSelect: onSelect,

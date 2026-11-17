@@ -383,6 +383,56 @@ enum UIPreview {
             to: directory.appendingPathComponent("settings-provider-azure.png")
         )
 
+        // The status label beside the service picker in every state it can
+        // hold, in both appearances. The states are handed to the page rather
+        // than asked of a service, so a render makes no request.
+        // The four states a keyed service can answer need a stored key: the key
+        // field then shows the row's own saved-key state, the placeholder that
+        // asks for a replacement and the control that deletes the stored item.
+        // "Needs setup" is the same row with no key, and "Unavailable" is the
+        // on-device row, which is the only provider that can say it.
+        // The time a check is shown with is fixed, so the picture does not depend
+        // on when it was drawn.
+        let checkedAt = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let credentialStates: [(name: String, status: SpeechCredentialStatus, keyed: Bool, onDevice: Bool)] = [
+            ("checking", .checking, true, false),
+            ("verified", .settled(.verified, checkedAt: checkedAt), true, false),
+            ("rejected", .settled(.rejected(status: 401), checkedAt: checkedAt), true, false),
+            ("service-error", .settled(.serviceError(status: 503, host: "the service"), checkedAt: checkedAt), true, false),
+            ("unreachable", .settled(.unreachable("Can't reach the service."), checkedAt: checkedAt), true, false),
+            ("needs-setup", .settled(.needsSetup("Add an API key for this service."), checkedAt: checkedAt), false, false),
+            ("not-saved", .notSaved("The Keychain did not give the key back."), true, false),
+            ("unavailable", .settled(.unavailable("Needs macOS 26 or newer."), checkedAt: checkedAt), false, true),
+        ]
+        for state in credentialStates {
+            for scheme in [ColorScheme.light, .dark] {
+                var config = sampleConfig
+                if state.onDevice {
+                    ProviderPreset.apple.apply(to: &config)
+                } else {
+                    ProviderPreset.openAI.apply(to: &config)
+                }
+                config.appearance = appearance(for: scheme)
+                let rows = MenuBuilder.providerRows(config: config) { id in
+                    state.keyed && id == ProviderIdentifier.openAI
+                }
+                let suffix = scheme == .dark ? "-dark" : ""
+                try writeHosted(
+                    WindowPreview(size: size) {
+                        settingsPreview(
+                            config: config,
+                            providers: rows,
+                            tab: 1,
+                            credential: state.status
+                        )
+                    },
+                    size: size,
+                    scheme: scheme,
+                    to: directory.appendingPathComponent("settings-provider-\(state.name)\(suffix).png")
+                )
+            }
+        }
+
         // The About page with the update row in each state it can hold. The
         // states are handed to the view rather than asked for, so a render
         // never reaches GitHub.
@@ -827,31 +877,101 @@ enum UIPreview {
         assistantStyleSelection: AssistantPage.StyleSelection? = nil,
         voices: [VoiceDescriptor]? = nil,
         connectors: [ConnectorSummary]? = nil,
+        credential: SpeechCredentialStatus? = nil,
         height: CGFloat? = nil
     ) -> some View {
-        SettingsView(
-            config: Binding.constant(config),
+        SettingsPreviewHost(
+            config: config,
             providers: providers,
             tab: tab,
-            onChange: {},
-            onSetAPIKey: { _, _ in nil },
-            onTest: { _ in true },
-            onChangeShortcut: {},
-            onChangePasteShortcut: {},
-            onOpenWelcome: {},
-            aboutUpdatePreview: aboutUpdate,
-            modelPreview: models
+            aboutUpdate: aboutUpdate,
+            models: models,
+            assistantKeys: assistantKeys,
+            assistantConnection: assistantConnection,
+            assistantDiscoveredModels: assistantDiscoveredModels,
+            assistantStyleSelection: assistantStyleSelection,
+            voices: voices,
+            connectors: connectors,
+            credential: credential,
+            height: height
         )
-        .environment(\.settingsHeadless, true)
-        .environment(\.settingsDefaultInputUID, "DotRenderBuiltInMicrophone")
-        .environment(\.settingsVersionOverride, "1.0")
-        .environment(\.settingsHeightOverride, height)
-        .environment(\.assistantKeyedProviders, assistantKeys)
-        .environment(\.assistantConnectionPreview, assistantConnection)
-        .environment(\.assistantDiscoveredModelsPreview, assistantDiscoveredModels)
-        .environment(\.assistantStyleSelectionPreview, assistantStyleSelection)
-        .environment(\.settingsVoiceOptions, voices)
-        .environment(\.settingsConnectorSummaries, connectors)
+    }
+
+    /// A settings window that owns its configuration for the length of a render.
+    ///
+    /// The store is a `@StateObject`, so the page draws one configuration for as
+    /// long as the render holds the view, exactly as the window does.
+    private struct SettingsPreviewHost: View {
+        @StateObject private var store: ConfigStore
+
+        let providers: [MenuProvider]
+        let tab: Int
+        let aboutUpdate: AboutUpdateState?
+        let models: [AvailableModel]?
+        let assistantKeys: Set<String>?
+        let assistantConnection: AssistantConnectionState?
+        let assistantDiscoveredModels: [DiscoveredModel]?
+        let assistantStyleSelection: AssistantPage.StyleSelection?
+        let voices: [VoiceDescriptor]?
+        let connectors: [ConnectorSummary]?
+        let credential: SpeechCredentialStatus?
+        let height: CGFloat?
+
+        init(
+            config: DotConfig,
+            providers: [MenuProvider],
+            tab: Int,
+            aboutUpdate: AboutUpdateState?,
+            models: [AvailableModel]?,
+            assistantKeys: Set<String>?,
+            assistantConnection: AssistantConnectionState?,
+            assistantDiscoveredModels: [DiscoveredModel]?,
+            assistantStyleSelection: AssistantPage.StyleSelection?,
+            voices: [VoiceDescriptor]?,
+            connectors: [ConnectorSummary]?,
+            credential: SpeechCredentialStatus?,
+            height: CGFloat?
+        ) {
+            _store = StateObject(wrappedValue: ConfigStore(config: config))
+            self.providers = providers
+            self.tab = tab
+            self.aboutUpdate = aboutUpdate
+            self.models = models
+            self.assistantKeys = assistantKeys
+            self.assistantConnection = assistantConnection
+            self.assistantDiscoveredModels = assistantDiscoveredModels
+            self.assistantStyleSelection = assistantStyleSelection
+            self.voices = voices
+            self.connectors = connectors
+            self.credential = credential
+            self.height = height
+        }
+
+        var body: some View {
+            SettingsView(
+                store: store,
+                providers: providers,
+                tab: tab,
+                onChange: {},
+                onSetAPIKey: { _, _ in nil },
+                onChangeShortcut: {},
+                onChangePasteShortcut: {},
+                onOpenWelcome: {},
+                aboutUpdatePreview: aboutUpdate,
+                modelPreview: models
+            )
+            .environment(\.settingsHeadless, true)
+            .environment(\.settingsDefaultInputUID, "DotRenderBuiltInMicrophone")
+            .environment(\.settingsVersionOverride, "1.0")
+            .environment(\.settingsHeightOverride, height)
+            .environment(\.settingsCredentialPreview, credential)
+            .environment(\.assistantKeyedProviders, assistantKeys)
+            .environment(\.assistantConnectionPreview, assistantConnection)
+            .environment(\.assistantDiscoveredModelsPreview, assistantDiscoveredModels)
+            .environment(\.assistantStyleSelectionPreview, assistantStyleSelection)
+            .environment(\.settingsVoiceOptions, voices)
+            .environment(\.settingsConnectorSummaries, connectors)
+        }
     }
 
     /// Renders the history window into `directory`.

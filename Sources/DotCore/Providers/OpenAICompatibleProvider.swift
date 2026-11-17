@@ -33,6 +33,8 @@ public struct OpenAICompatibleProvider: Provider {
     public let responseFormat: String?
     /// Optional timestamp granularity ("word", "segment", "both") when response_format is "verbose_json".
     public let timestampsGranularity: String?
+    /// How long the one request that proves the key may take.
+    public let verificationTimeout: TimeInterval
 
     /// The provider can use an API key.
     public var requiresCredential: Bool { true }
@@ -54,6 +56,7 @@ public struct OpenAICompatibleProvider: Provider {
     ///   - responseFormat: optional response format.
     ///   - timestampsGranularity: optional timestamp granularity.
     ///   - timeout: how long one request may take.
+    ///   - verificationTimeout: how long the check of the key may take.
     public init(
         id: String = ProviderIdentifier.openAI,
         baseURL: URL,
@@ -64,7 +67,8 @@ public struct OpenAICompatibleProvider: Provider {
         responseFormat: String? = nil,
         timestampsGranularity: String? = nil,
         timeout: TimeInterval = 120,
-        session: URLSession = OpenAICompatibleProvider.makeSession()
+        session: URLSession = OpenAICompatibleProvider.makeSession(),
+        verificationTimeout: TimeInterval = CredentialVerifier.timeout
     ) {
         self.id = id
         self.baseURL = baseURL
@@ -76,6 +80,7 @@ public struct OpenAICompatibleProvider: Provider {
         self.timestampsGranularity = timestampsGranularity
         self.timeout = timeout
         self.session = session
+        self.verificationTimeout = verificationTimeout
     }
 
     /// The default session: no caching, no cookies.
@@ -256,5 +261,33 @@ extension Data {
         append(Data("Content-Type: \(contentType)\r\n\r\n".utf8))
         append(data)
         append(Data("\r\n".utf8))
+    }
+}
+
+extension OpenAICompatibleProvider: CredentialVerifying {
+    /// The models request that proves the endpoint and the key.
+    ///
+    /// `GET {baseURL}/models` is the call OpenAI documents for listing models,
+    /// and it is the smallest one that answers whether the address, the key and
+    /// the account all work. The header is the one this provider sends its audio
+    /// with, so the check cannot disagree with the request it stands for.
+    func credentialRequest() -> URLRequest {
+        var headers: [String: String] = [:]
+        if let apiKey = CredentialVerifier.credential(apiKey) {
+            headers[authStyle.header] = authStyle.value(for: apiKey)
+        }
+        return CredentialVerifier.request(
+            url: modelsURL,
+            headers: headers,
+            timeout: verificationTimeout
+        )
+    }
+
+    public func verifyCredentials() async -> CredentialCheck {
+        await CredentialVerifier.check(
+            credentialRequest(),
+            session: session,
+            providerID: id
+        )
     }
 }

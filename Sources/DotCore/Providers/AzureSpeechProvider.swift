@@ -27,6 +27,41 @@ public struct AzureSpeechProvider: Provider {
     public static func endpointURL(region: String, mode: String) -> URL {
         URL(string: "https://\(region).stt.speech.microsoft.com/speech/recognition/\(mode)/cognitiveservices/v1")!
     }
+    /// The endpoint that exchanges a subscription key for a token.
+    ///
+    /// The documented regional form is
+    /// `https://<region>.api.cognitive.microsoft.com/sts/v1.0/issueToken`. A
+    /// resource with a custom subdomain answers on its own host, and the STT
+    /// endpoint this provider posts audio to names its region in its host, so
+    /// all three shapes are understood. Any other stored endpoint is the user's
+    /// own address, and the token path is added to that origin so the check
+    /// asks the address the audio is sent to.
+    ///
+    /// - Parameters:
+    ///   - baseURL: the stored endpoint, when the configuration names one.
+    ///   - region: the configured region, used when the endpoint names none.
+    /// - Returns: the URL a check posts the key to.
+    public static func tokenURL(baseURL: URL?, region: String) -> URL {
+        let path = "/sts/v1.0/issueToken"
+        func regional(_ name: String) -> URL {
+            URL(string: "https://\(name).api.cognitive.microsoft.com\(path)")!
+        }
+        guard let baseURL, let host = baseURL.host?.lowercased(), !host.isEmpty else {
+            return regional(region)
+        }
+        if host.hasSuffix(".stt.speech.microsoft.com") {
+            let named = host.split(separator: ".").first.map(String.init) ?? region
+            return regional(named)
+        }
+        var components = URLComponents()
+        components.scheme = baseURL.scheme ?? "https"
+        components.host = host
+        components.port = host.hasSuffix(".cognitiveservices.azure.com")
+            || host.hasSuffix(".api.cognitive.microsoft.com") ? nil : baseURL.port
+        components.path = path
+        return components.url ?? regional(region)
+    }
+
     /// Default recognition mode for conversational dialogue.
     public static let defaultRecognitionMode = "conversation"
     /// The endpoint Dot ships: the default region in conversation mode.
@@ -106,6 +141,8 @@ public struct AzureSpeechProvider: Provider {
 
     private let session: URLSession
     private let timeout: TimeInterval
+    /// How long the one request that proves the key may take.
+    private let verificationTimeout: TimeInterval
 
     /// Creates an Azure Speech provider.
     public init(
@@ -118,7 +155,8 @@ public struct AzureSpeechProvider: Provider {
         zeroDataRetention: Bool = true,
         apiKey: String? = nil,
         timeout: TimeInterval = 120,
-        session: URLSession = OpenAICompatibleProvider.makeSession()
+        session: URLSession = OpenAICompatibleProvider.makeSession(),
+        verificationTimeout: TimeInterval = CredentialVerifier.timeout
     ) {
         self.baseURL = baseURL
         self.region = region.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -138,6 +176,7 @@ public struct AzureSpeechProvider: Provider {
         self.apiKey = apiKey
         self.timeout = timeout
         self.session = session
+        self.verificationTimeout = verificationTimeout
     }
 
     /// Whether the service is ready: an API key must be provided.
@@ -302,5 +341,30 @@ public struct AzureSpeechProvider: Provider {
             return ProviderErrorText.sanitized(message)
         }
         return nil
+    }
+}
+
+extension AzureSpeechProvider: CredentialVerifying {
+    /// The token request that proves the subscription key.
+    ///
+    /// Azure documents `POST https://<region>.api.cognitive.microsoft.com/sts/v1.0/issueToken`
+    /// with `Ocp-Apim-Subscription-Key` and an empty body. A 2xx answer means the
+    /// key is good, which is exactly what a transcription would need from the
+    /// same key.
+    func credentialRequest() -> URLRequest? {
+        guard let apiKey = CredentialVerifier.credential(apiKey) else { return nil }
+        return CredentialVerifier.request(
+            url: Self.tokenURL(baseURL: baseURL, region: region),
+            method: "POST",
+            headers: ["Ocp-Apim-Subscription-Key": apiKey],
+            timeout: verificationTimeout
+        )
+    }
+
+    public func verifyCredentials() async -> CredentialCheck {
+        guard let request = credentialRequest() else {
+            return CredentialVerifier.missingKey(displayName)
+        }
+        return await CredentialVerifier.check(request, session: session, providerID: id)
     }
 }

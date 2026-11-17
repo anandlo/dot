@@ -101,6 +101,58 @@ final class ProviderModelCatalogTests: XCTestCase {
         XCTAssertTrue(ProviderModelCatalog.isExplicitNonASRModel("mimo-v2.6-pro-ultraspeed"))
     }
 
+    /// A dictation-only key may transcribe but not read the model list.
+    ///
+    /// The list must not collapse to empty when the read is refused: the Scribe
+    /// models ship with the app, and they are exactly what that key can use.
+    func testElevenLabsFallsBackToItsBuiltInListWhenTheModelsReadIsRefused() async throws {
+        let server = try StubServer(
+            responses: [.init(status: 401, json: #"{"detail":{"status":"missing_permissions"}}"#)]
+        )
+        let session = stubSession()
+        defer { session.invalidateAndCancel() }
+        let models = await ProviderModelCatalog.fetchModels(
+            for: ProviderIdentifier.elevenLabs,
+            baseURL: URL(string: "http://127.0.0.1:\(server.port)/v1")!,
+            apiKey: "sk-test-0123456789",
+            session: session
+        )
+        let builtIn = ElevenLabsProvider.supportedModels.map {
+            AvailableModel(id: $0.id, name: $0.title, detail: $0.detail)
+        }
+        XCTAssertEqual(models, builtIn, "a refused list left the picker with nothing to offer")
+        XCTAssertFalse(models.isEmpty)
+    }
+
+    /// The fallback is for a list that could not be read, not a replacement for
+    /// one that was.
+    func testElevenLabsKeepsTheListItCouldRead() async throws {
+        let server = try StubServer(
+            responses: [.init(
+                status: 200,
+                json: #"[{"model_id":"scribe_v3","name":"Scribe v3","can_do_transcription":true}]"#
+            )]
+        )
+        let session = stubSession()
+        defer { session.invalidateAndCancel() }
+        let models = await ProviderModelCatalog.fetchModels(
+            for: ProviderIdentifier.elevenLabs,
+            baseURL: URL(string: "http://127.0.0.1:\(server.port)/v1")!,
+            apiKey: "sk-test-0123456789",
+            session: session
+        )
+        XCTAssertEqual(models.map(\.id), ["scribe_v3"])
+    }
+
+    private func stubSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        configuration.urlCache = nil
+        configuration.timeoutIntervalForRequest = 2
+        configuration.timeoutIntervalForResource = 2
+        return URLSession(configuration: configuration)
+    }
+
     func testOpenAICompatibleFilteringExcludesTTSAndChat() {
         let json = """
         {
