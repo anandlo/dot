@@ -144,7 +144,7 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     }
 
     func testTheServiceThatCannotBeReachedIsReported() async throws {
-        let port = Int.random(in: 49_000...65_000)
+        let port = try ClosedPort.make()
         let provider = OpenAICompatibleProvider(
             baseURL: URL(string: "http://127.0.0.1:\(port)/v1")!
         )
