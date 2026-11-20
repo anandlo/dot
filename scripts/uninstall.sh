@@ -13,7 +13,6 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Dot"
 INSTALLED_APP="/Applications/$APP_NAME.app"
 LABEL="$AGENT_LABEL"
-AGENT="$HOME/Library/LaunchAgents/$LABEL.plist"
 UID_VALUE="$(id -u)"
 
 log() { printf '%s\n' "$*"; }
