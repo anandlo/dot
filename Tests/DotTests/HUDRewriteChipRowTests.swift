@@ -946,8 +946,8 @@ final class HUDRewriteChipRowTests: XCTestCase {
             0.02,
             "the control draws the card's surface under the faded strip, so the mask had nothing to dissolve"
         )
-        // An idle chip draws its label at `HUDTheme.ink2` (alpha 0.55) over a
-        // fill of alpha 0.055, so a column through a glyph reads about 0.54 and
+        // An idle chip draws its label at `HUDTheme.ink2` (alpha 0.70) over a
+        // fill of alpha 0.055, so a column through a glyph reads about 0.69 and
         // a column through the fill reads 0.055. Four tenths is glyph ink.
         XCTAssertGreaterThan(
             glyphBefore,

@@ -53,7 +53,7 @@ struct VoicesPage: View {
                     onConnect: connect,
                     onDelete: deleteKey,
                     subtitle: note?.detail,
-                    subtitleTone: note?.tone.color ?? DotTheme.ink3
+                    subtitleTone: note?.tone.color ?? DotTheme.ink2
                 )
             }
             SettingsDivider()

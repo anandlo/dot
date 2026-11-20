@@ -39,7 +39,7 @@ enum HUDTheme {
     /// The primary text and the waveform.
     static let ink = inkBase.opacity(0.95)
     /// The secondary text.
-    static let ink2 = inkBase.opacity(0.55)
+    static let ink2 = inkBase.opacity(0.70)
     /// The tertiary text.
     static let ink3 = inkBase.opacity(0.38)
 
@@ -225,7 +225,7 @@ enum HUDTheme {
     /// | regular | 5.39 | 4.67        | 3.70  | 13.05 | 4.08  |
     /// | clear   | 5.78 | 4.86        | 3.20  | 13.53 | 3.94  |
     ///
-    /// The table was measured with the clock at ``ink2``'s 0.55, before
+    /// The table was measured with the clock at 0.55, before
     /// ``clockInkOpacity`` was raised; the label's box keeps the first figure of
     /// the clock inside its right edge, which moved the bands cell to 3.93 at the
     /// shipped clock ink.
@@ -293,7 +293,7 @@ enum HUDTheme {
     /// The opacity of the clock's ink on the glass material.
     ///
     /// The clock is the quietest glyph the card draws, and the glass leaves it on
-    /// whatever the backdrop is. At ``ink2``'s 0.55 it read 2.06 to 1 on the
+    /// whatever the backdrop is. At 0.55 it read 2.06 to 1 on the
     /// white page at the shipped glass, under the 3 to 1 a small figure needs, so
     /// the glass card draws the clock at this opacity. The steps that were
     /// measured on the white page, one render each:
@@ -310,8 +310,7 @@ enum HUDTheme {
     ///
     /// 0.90 is the smallest step that clears 3 to 1. At it the clock reads 5.49
     /// on the wave, 4.72 on the pale sky, 3.06 on the white page, 12.32 on the
-    /// dark page and 4.12 on the bands. The black card's clock is ``ink2`` and is
-    /// untouched, so its renders are the same picture they were.
+    /// dark page and 4.12 on the bands. The black card's clock is ``ink2``.
     static let clockInkOpacity: Double = 0.90
 
     /// The opacity of the transcript header's status ink on the glass material.
