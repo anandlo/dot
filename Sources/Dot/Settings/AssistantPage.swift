@@ -969,7 +969,7 @@ struct AssistantPage: View {
                     .fill(pill.isOn ? DotTheme.switchOn : DotTheme.ink3.opacity(0.35))
                     .frame(width: 6, height: 6)
                 Text(pill.title)
-                    .font(DotType.font(12, .medium))
+                    .font(DotType.font(12, .semibold))
                     .foregroundStyle(DotTheme.ink)
             }
             .padding(.horizontal, 10)
@@ -999,7 +999,7 @@ struct AssistantPage: View {
             addStyle()
         } label: {
             Text("+ Add style")
-                .font(DotType.font(12, .medium))
+                .font(DotType.font(12, .semibold))
                 .foregroundStyle(DotTheme.ink)
                 .padding(.horizontal, 10)
                 .frame(height: 26)
@@ -1091,7 +1091,7 @@ struct AssistantPage: View {
     /// - Parameter lines: how many lines the field shows before it scrolls.
     /// - Returns: the height, in points.
     static func promptEditorHeight(lines: Int) -> CGFloat {
-        let font = DotType.nsFont(12.5, .regular)
+        let font = DotType.nsFont(12.5, .medium)
         // The height one line is drawn at. The layout manager rounds the ascent
         // and the descent to whole points and adds the leading unrounded, so
         // the em sum the font reports is not the line the text view lays out: a
@@ -1125,7 +1125,7 @@ struct AssistantPage: View {
                 if isCustomized {
                     Button("Reset") { resetBuiltInInstruction(for: id) }
                         .buttonStyle(DotPressStyle())
-                        .font(DotType.font(12, .medium))
+                        .font(DotType.font(12, .semibold))
                         .foregroundStyle(DotTheme.ink)
                         .accessibilityLabel("Reset \(id.title) prompt")
                 }
@@ -1197,7 +1197,7 @@ struct AssistantPage: View {
     private func deleteButton(help: String, action: @escaping () -> Void) -> some View {
         Button(role: .destructive, action: action) {
             Image(systemName: "trash")
-                .font(DotType.font(12, .medium))
+                .font(DotType.font(12, .semibold))
                 .foregroundStyle(DotTheme.coral)
                 .frame(width: 26, height: 26, alignment: .trailing)
                 .padding(.trailing, -2)
@@ -1920,7 +1920,7 @@ struct AssistantKeyRow: View {
                 if hasStoredKey {
                     Button(role: .destructive, action: onDelete) {
                         Image(systemName: "trash")
-                            .font(DotType.font(12, .medium))
+                            .font(DotType.font(12, .semibold))
                             .foregroundStyle(DotTheme.coral)
                             .frame(width: 26, height: 26, alignment: .trailing)
                             // The symbol's own side bearing would otherwise end

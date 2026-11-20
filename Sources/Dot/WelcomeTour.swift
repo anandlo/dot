@@ -408,7 +408,7 @@ private struct PasteScene: View {
             HStack(spacing: 0) {
                 if !typedText.isEmpty {
                     Text(typedText)
-                        .font(DotType.font(14, .regular))
+                        .font(DotType.font(14, .medium))
                         .foregroundStyle(DotTheme.ink)
                 }
                 Rectangle()
@@ -513,7 +513,7 @@ struct WelcomeTourPage: View {
                     .foregroundStyle(DotTheme.ink)
                     .accessibilityAddTraits(.isHeader)
                 Text(step.detail(mode: recordingMode))
-                    .font(DotType.font(13.5, .regular))
+                    .font(DotType.font(13.5, .medium))
                     .foregroundStyle(DotTheme.ink2)
             }
             .padding(.top, 36)
@@ -525,7 +525,7 @@ struct WelcomeTourPage: View {
             HStack {
                 Button("Skip") { onSkip() }
                     .buttonStyle(DotPressStyle())
-                    .font(DotType.font(13, .medium))
+                    .font(DotType.font(13, .semibold))
                     .foregroundStyle(DotTheme.ink3)
                     .frame(width: 170, alignment: .leading)
 

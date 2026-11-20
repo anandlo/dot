@@ -91,9 +91,9 @@ enum DotType {
     /// lowercase advance is 0.955 of Switzer's, both read from the two files at
     /// the same weight, while its word space is 1.385 times Switzer's, so a line
     /// of real copy comes out wider than the letter-run ratio predicts. Measured
-    /// over the thirty longest fixed strings in the app, 1.01 keeps every one of
-    /// them inside -3.13 to +1.95 percent of the width the interface was laid
-    /// out at, and lifts the drawn x-height from 0.911 to 0.921 of the old one.
+    /// over the thirty longest fixed strings in the app, at the weight each site
+    /// draws it, 1.01 keeps every one of them inside -1.23 to +2.92 percent of
+    /// the width the interface was laid out at, and lifts the drawn x-height from 0.911 to 0.921 of the old one.
     /// The system fallback is not scaled: it stands in for the face the layout
     /// was measured against, so scaling it would move the one path the factor
     /// does not need to touch.

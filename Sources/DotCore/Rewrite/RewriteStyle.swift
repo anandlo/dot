@@ -51,7 +51,7 @@ public enum RewriteStyleID: String, Codable, Sendable, CaseIterable {
     /// The one sentence Settings puts under the title.
     public var subtitle: String {
         switch self {
-        case .prompt: "Turns a spoken request into a structured task for a coding agent, using only what you said."
+        case .prompt: "Turns what you said into a structured task for a coding agent, adding nothing."
         case .concise: "Shorter and plain, with every fact kept."
         case .plain: "Simpler words, same meaning."
         case .casual: "Natural, everyday chat messages and DMs."

@@ -1582,7 +1582,7 @@ struct DotSelectListRow: View {
                     .truncationMode(.tail)
                 if let detail = row.detail {
                     Text(detail)
-                        .font(DotType.font(11, .regular))
+                        .font(DotType.font(11, .medium))
                         .foregroundStyle(DotTheme.ink2)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -1609,7 +1609,7 @@ struct DotSelectListRow: View {
     private var symbolView: some View {
         if let symbol = row.symbol {
             Image(systemName: symbol)
-                .font(DotType.font(13, .regular))
+                .font(DotType.font(13, .medium))
                 .foregroundStyle(DotTheme.ink2)
         } else {
             Color.clear

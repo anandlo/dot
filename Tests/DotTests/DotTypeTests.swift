@@ -294,7 +294,7 @@ final class DotTypeTests: XCTestCase {
     /// a ratio of the same line in the system face that has to stay inside the
     /// band below. The band is the one the face was picked in; a republished
     /// file that pushed the face past it would invalidate every width in the HUD
-    /// and the settings page. Satoshi is drawn 5 percent larger than the
+    /// and the settings page. Satoshi is drawn 1 percent larger than the
     /// requested size, and at that size it lands just under the system face.
     func testTheRegularAdvanceIsAShadeNarrowerThanTheSystemFace() throws {
         let sentence = "Can you send Priya the updated notes"
@@ -328,51 +328,51 @@ final class DotTypeTests: XCTestCase {
     /// chosen in, so a face, a weight ladder or an optical factor that moves one
     /// of them out of the band below has moved the product.
     private static let measured: [MeasuredString] = [
-    MeasuredString(text: "Punctuation and line breaks match the app you dictate into. History keeps your original words.", size: 11.0, weight: 400, tabular: true, switzer: 458.30),
-    MeasuredString(text: "Clicking the icon starts and stops recording instead of opening the menu.", size: 11.0, weight: 400, tabular: true, switzer: 356.53),
-    MeasuredString(text: "The endpoint decides how long it keeps the audio. Dot keeps none.", size: 11.0, weight: 400, tabular: true, switzer: 325.71),
-    MeasuredString(text: "The service needs no key. Turning it on is the whole setup.", size: 11.0, weight: 400, tabular: true, switzer: 283.07),
-    MeasuredString(text: "Add the address of this service, then turn it on.", size: 11.0, weight: 400, tabular: true, switzer: 225.24),
-    MeasuredString(text: "Hesitations, stutters and false starts are removed.", size: 11.0, weight: 400, tabular: true, switzer: 243.78),
-    MeasuredString(text: "Flags PII, PHI, card numbers and offensive language.", size: 11.0, weight: 400, tabular: true, switzer: 256.56),
-    MeasuredString(text: "Tags such as (laughter) and (applause) are kept.", size: 11.0, weight: 400, tabular: true, switzer: 236.34),
-    MeasuredString(text: "Audio and transcripts are not kept for training.", size: 11.0, weight: 400, tabular: true, switzer: 223.70),
-    MeasuredString(text: "When off, transcripts are copied to the clipboard.", size: 11.0, weight: 400, tabular: true, switzer: 238.84),
-    MeasuredString(text: "Dates, times, currency, emails and phone numbers.", size: 11.0, weight: 400, tabular: true, switzer: 251.41),
-    MeasuredString(text: "Speakers are labelled agent and customer.", size: 11.0, weight: 400, tabular: true, switzer: 209.91),
-    MeasuredString(text: "Up to 32 speakers in multi-person audio.", size: 11.0, weight: 400, tabular: true, switzer: 197.53),
-    MeasuredString(text: "Hesitations such as uh and um are kept.", size: 11.0, weight: 400, tabular: true, switzer: 194.92),
-    MeasuredString(text: "ElevenLabs does not log or keep audio.", size: 11.0, weight: 400, tabular: true, switzer: 190.98),
-    MeasuredString(text: "Formatting to prefer, such as ISO dates.", size: 11.0, weight: 400, tabular: true, switzer: 192.53),
-    MeasuredString(text: "Sent with each request to help spelling.", size: 11.0, weight: 400, tabular: true, switzer: 191.84),
-    MeasuredString(text: "Based on 12 recordings with this microphone", size: 11.0, weight: 400, tabular: true, switzer: 222.45),
-    MeasuredString(text: "Deleting and sending always ask.", size: 11.0, weight: 400, tabular: true, switzer: 164.14),
-    MeasuredString(text: "Common apps are formatted automatically", size: 13.0, weight: 400, tabular: false, switzer: 249.28),
-    MeasuredString(text: "Send long recordings in parts of", size: 13.0, weight: 400, tabular: false, switzer: 183.87),
-    MeasuredString(text: "Level meter calibration", size: 13.0, weight: 400, tabular: false, switzer: 133.51),
-    MeasuredString(text: "Before an app changes something", size: 13.0, weight: 400, tabular: false, switzer: 199.64),
-    MeasuredString(text: "Your words appear as you talk. Press the shortcut again to stop.", size: 13.5, weight: 400, tabular: false, switzer: 381.52),
-    MeasuredString(text: "Your words appear as you talk. Let go of the shortcut to stop.", size: 13.5, weight: 400, tabular: false, switzer: 361.57),
-    MeasuredString(text: "Requires ⌘, ⌥ or ⌃. A function key can be used alone.", size: 12.0, weight: 400, tabular: false, switzer: 288.32),
-    MeasuredString(text: "Finished recordings appear here.", size: 11.5, weight: 400, tabular: false, switzer: 170.86),
-    MeasuredString(text: "Nothing matches this search.", size: 11.5, weight: 400, tabular: false, switzer: 150.19),
-    MeasuredString(text: "No styles. Use + Add style to create one.", size: 12.5, weight: 500, tabular: false, switzer: 224.62),
-    MeasuredString(text: "Verbose JSON with timestamps", size: 12.5, weight: 400, tabular: true, switzer: 177.75),
+    MeasuredString(text: "Punctuation and line breaks match the app you dictate into. History keeps your original words.", size: 11.0, weight: 500, tabular: true, switzer: 464.37),
+    MeasuredString(text: "Clicking the icon starts and stops recording instead of opening the menu.", size: 11.0, weight: 500, tabular: true, switzer: 360.94),
+    MeasuredString(text: "The endpoint decides how long it keeps the audio. Dot keeps none.", size: 11.0, weight: 500, tabular: true, switzer: 329.44),
+    MeasuredString(text: "The service needs no key. Turning it on is the whole setup.", size: 11.0, weight: 500, tabular: true, switzer: 286.60),
+    MeasuredString(text: "Add the address of this service, then turn it on.", size: 11.0, weight: 500, tabular: true, switzer: 228.39),
+    MeasuredString(text: "Hesitations, stutters and false starts are removed.", size: 11.0, weight: 500, tabular: true, switzer: 247.53),
+    MeasuredString(text: "Flags PII, PHI, card numbers and offensive language.", size: 11.0, weight: 500, tabular: true, switzer: 259.66),
+    MeasuredString(text: "Tags such as (laughter) and (applause) are kept.", size: 11.0, weight: 500, tabular: true, switzer: 239.33),
+    MeasuredString(text: "Audio and transcripts are not kept for training.", size: 11.0, weight: 500, tabular: true, switzer: 227.02),
+    MeasuredString(text: "When off, transcripts are copied to the clipboard.", size: 11.0, weight: 500, tabular: true, switzer: 241.95),
+    MeasuredString(text: "Dates, times, currency, emails and phone numbers.", size: 11.0, weight: 500, tabular: true, switzer: 254.29),
+    MeasuredString(text: "Speakers are labelled agent and customer.", size: 11.0, weight: 500, tabular: true, switzer: 212.37),
+    MeasuredString(text: "Up to 32 speakers in multi-person audio.", size: 11.0, weight: 500, tabular: true, switzer: 199.64),
+    MeasuredString(text: "Hesitations such as uh and um are kept.", size: 11.0, weight: 500, tabular: true, switzer: 197.14),
+    MeasuredString(text: "ElevenLabs does not log or keep audio.", size: 11.0, weight: 500, tabular: true, switzer: 192.97),
+    MeasuredString(text: "Formatting to prefer, such as ISO dates.", size: 11.0, weight: 500, tabular: true, switzer: 195.07),
+    MeasuredString(text: "Sent with each request to help spelling.", size: 11.0, weight: 500, tabular: true, switzer: 194.43),
+    MeasuredString(text: "Based on 12 recordings with this microphone", size: 11.0, weight: 500, tabular: true, switzer: 224.93),
+    MeasuredString(text: "Deleting and sending always ask.", size: 11.0, weight: 500, tabular: true, switzer: 166.16),
+    MeasuredString(text: "Common apps are formatted automatically", size: 13.0, weight: 500, tabular: false, switzer: 252.27),
+    MeasuredString(text: "Send long recordings in parts of", size: 13.0, weight: 500, tabular: false, switzer: 186.06),
+    MeasuredString(text: "Level meter calibration", size: 13.0, weight: 500, tabular: false, switzer: 135.32),
+    MeasuredString(text: "Before an app changes something", size: 13.0, weight: 500, tabular: false, switzer: 201.63),
+    MeasuredString(text: "Your words appear as you talk. Press the shortcut again to stop.", size: 13.5, weight: 500, tabular: false, switzer: 386.56),
+    MeasuredString(text: "Your words appear as you talk. Let go of the shortcut to stop.", size: 13.5, weight: 500, tabular: false, switzer: 366.30),
+    MeasuredString(text: "Requires ⌘, ⌥ or ⌃. A function key can be used alone.", size: 12.0, weight: 500, tabular: false, switzer: 291.06),
+    MeasuredString(text: "Finished recordings appear here.", size: 11.5, weight: 500, tabular: false, switzer: 172.81),
+    MeasuredString(text: "Nothing matches this search.", size: 11.5, weight: 500, tabular: false, switzer: 152.07),
+    MeasuredString(text: "No styles. Use + Add style to create one.", size: 12.5, weight: 600, tabular: false, switzer: 227.58),
+    MeasuredString(text: "Verbose JSON with timestamps", size: 12.5, weight: 500, tabular: true, switzer: 180.07),
     ]
 
     /// Every fixed string is still drawn inside the band the layout was chosen in.
     ///
     /// The band is two-sided and each side guards one failure.
     ///
-    /// The ceiling is +2 percent, and what it catches is a lost weight axis:
-    /// Satoshi's default instance is Black, so a resolution that never writes
-    /// `wght` draws about 10 percent wider and every string here lands far past
-    /// the ceiling rather than a little past it.
+    /// The ceiling is +3.5 percent, and what it catches is a lost weight axis:
+    /// Satoshi's default instance is Black (900), so a resolution that never
+    /// writes `wght` reads +6.0 to +9.1 percent and the 700 instance up to +5.8,
+    /// while the widest correct string, the shortcut hint whose ⌘ ⌥ ⌃ fall back
+    /// to Lucida Grande, reads +2.92.
     ///
-    /// The floor is -3.5 percent, and what it catches is a lost optical factor:
-    /// the same strings at factor 1.00 read -4.08 percent, so dropping the factor
-    /// fails the floor while the chosen 1.01 reads -3.13 percent at its widest
-    /// and stays inside.
+    /// The floor is -1.7 percent, and what it catches is a lost optical factor:
+    /// the same strings at factor 1.00 read down to -2.21 percent, while the
+    /// chosen 1.01 reads -1.23 at its narrowest and stays inside.
     ///
     /// The measurement is of the face, at the size and weight each site asks
     /// for, without the tracking the tabular sites add: that tracking is a
@@ -397,13 +397,13 @@ final class DotTypeTests: XCTestCase {
         XCTAssertEqual(offsets.count, 30)
         XCTAssertGreaterThanOrEqual(
             offsets.first?.1 ?? 0,
-            -3.5,
+            -1.7,
             "a fixed string is narrower than the layout allows: \(offsets.first?.0 ?? "") at "
                 + "\(offsets.first?.1 ?? 0) percent, which is what a lost optical factor reads"
         )
         XCTAssertLessThanOrEqual(
             offsets.last?.1 ?? 0,
-            2,
+            3.5,
             "a fixed string is wider than the layout allows: \(offsets.last?.0 ?? "") at "
                 + "\(offsets.last?.1 ?? 0) percent, which is what a lost weight axis reads"
         )

@@ -25,7 +25,7 @@ struct StatusChip: View {
                     .frame(width: 6, height: 6)
             }
             Text(title)
-                .font(DotType.font(11.5, .regular))
+                .font(DotType.font(11.5, .medium))
                 .foregroundStyle(textTone)
         }
         .accessibilityElement(children: .combine)
