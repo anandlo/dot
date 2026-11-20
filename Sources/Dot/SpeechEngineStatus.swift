@@ -438,7 +438,7 @@ struct SpeechCredentialLabel: View {
                 }
                 .id(PulseIdentity(checking: status.isChecking, reducedMotion: motionReduced))
             Text(status.title)
-                .font(DotType.font(11.5, .medium))
+                .font(DotType.font(11.5, .semibold))
                 .foregroundStyle(status.tone)
                 .lineLimit(1)
         }

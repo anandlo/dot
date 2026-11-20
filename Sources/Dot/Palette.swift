@@ -164,7 +164,7 @@ struct PaletteView: View {
 
             TextField("Search dictations", text: $model.query)
                 .textFieldStyle(.plain)
-                .font(DotType.font(13, .regular))
+                .font(DotType.font(13, .medium))
                 .foregroundStyle(DotTheme.ink)
                 .focused($searchFocused)
                 .accessibilityLabel("Search dictations")
@@ -176,7 +176,7 @@ struct PaletteView: View {
                     focusSearch()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(DotType.font(12, .medium))
+                        .font(DotType.font(12, .semibold))
                         .foregroundStyle(DotTheme.ink3.opacity(0.6))
                 }
                 .buttonStyle(DotPressStyle())
@@ -232,14 +232,14 @@ struct PaletteView: View {
                 // One line per transcript: a row is a way to recognise the
                 // words, and the whole transcript is what gets inserted.
                 Text(row.preview)
-                    .font(DotType.font(12.5, .regular))
+                    .font(DotType.font(12.5, .medium))
                     .foregroundStyle(DotTheme.ink)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if let age = row.age {
                     Text(age)
-                        .font(DotType.tabularFont(10, .medium))
+                        .font(DotType.tabularFont(10, .semibold))
                         .foregroundStyle(DotTheme.ink3)
                         .frame(minWidth: 46, alignment: .trailing)
                 }
@@ -313,7 +313,7 @@ struct PaletteView: View {
             }
             Spacer(minLength: 0)
             Text("Newest first")
-                .font(DotType.font(10, .regular))
+                .font(DotType.font(10, .medium))
                 .foregroundStyle(DotTheme.ink3)
         }
         .padding(.horizontal, 14)
@@ -337,7 +337,7 @@ struct PaletteView: View {
                         .strokeBorder(DotTheme.keycapBorder, lineWidth: 0.5)
                 )
             Text(action)
-                .font(DotType.font(10, .regular))
+                .font(DotType.font(10, .medium))
                 .foregroundStyle(DotTheme.ink3)
         }
     }

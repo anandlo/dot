@@ -38,7 +38,7 @@ final class SecretPrompt {
         caption.textColor = NSColor.labelColor
 
         let hint = NSTextField(labelWithString: explanation)
-        hint.font = DotType.nsFont(12, .regular)
+        hint.font = DotType.nsFont(12, .medium)
         hint.textColor = NSColor.secondaryLabelColor
         hint.alignment = .center
         hint.stringValue = explanation
@@ -47,7 +47,7 @@ final class SecretPrompt {
         field.isBezeled = true
         field.bezelStyle = .roundedBezel
         field.alignment = .left
-        field.font = DotType.nsFont(13, .regular)
+        field.font = DotType.nsFont(13, .medium)
         field.placeholderString = "API key"
 
         let stack = NSStackView(views: [caption, hint, field])

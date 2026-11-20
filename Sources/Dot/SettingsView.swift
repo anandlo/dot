@@ -273,7 +273,7 @@ struct SettingsView: View {
                     .foregroundStyle(isSelected ? DotTheme.sidebarSelectedIcon : DotTheme.ink3)
                     .frame(width: 16)
                 Text(page.title)
-                    .font(DotType.font(12.5, isSelected ? .semibold : .medium))
+                    .font(DotType.font(12.5, .semibold))
                     .foregroundStyle(isSelected ? DotTheme.sidebarSelectedText : DotTheme.ink2)
                 Spacer(minLength: 0)
             }
@@ -657,7 +657,7 @@ struct SettingsView: View {
                 Image(systemName: "plus")
                     .font(DotType.font(10, .semibold))
                 Text("Add app…")
-                    .font(DotType.font(12.5, .medium))
+                    .font(DotType.font(12.5, .semibold))
             }
             .foregroundStyle(DotTheme.ink2)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -745,7 +745,7 @@ struct SettingsView: View {
                 .frame(width: 155)
 
                 Text(dwellText)
-                    .font(DotType.tabularFont(12, .regular))
+                    .font(DotType.tabularFont(12, .medium))
                     .foregroundStyle(DotTheme.ink2)
                     .frame(width: 44, alignment: .trailing)
             }
@@ -843,7 +843,7 @@ struct SettingsView: View {
                             deleteKey(for: selectedPreset)
                         } label: {
                             Image(systemName: "trash")
-                                .font(DotType.font(12, .medium))
+                                .font(DotType.font(12, .semibold))
                                 .foregroundStyle(DotTheme.coral)
                                 .frame(width: 26, height: 26)
                                 .contentShape(Rectangle())
@@ -1073,7 +1073,7 @@ struct SettingsView: View {
         SettingsDivider()
         SettingsRow("Endpoint", subtitle: "Built from the region and the mode") {
             Text(config.settings(for: ProviderIdentifier.azure).baseURL ?? baseURLPlaceholder)
-                .font(DotType.tabularFont(11, .regular))
+                .font(DotType.tabularFont(11, .medium))
                 .foregroundStyle(DotTheme.ink2)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -3102,7 +3102,7 @@ private struct AppRemoveButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "minus.circle.fill")
-                .font(DotType.font(14, .regular))
+                .font(DotType.font(14, .medium))
                 .foregroundStyle(hovering ? DotTheme.ink2 : DotTheme.ink3)
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())

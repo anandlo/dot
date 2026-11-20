@@ -81,7 +81,7 @@ struct VoicesPage: View {
                     .frame(width: 155)
 
                     Text(speedLabel)
-                        .font(DotType.tabularFont(12, .regular))
+                        .font(DotType.tabularFont(12, .medium))
                         .foregroundStyle(DotTheme.ink2)
                         .frame(width: 44, alignment: .trailing)
 

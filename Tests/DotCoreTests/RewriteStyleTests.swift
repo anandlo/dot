@@ -119,7 +119,7 @@ final class RewriteStyleTests: XCTestCase {
         XCTAssertEqual(
             RewriteStyleID.shippedCases.map(\.subtitle),
             [
-                "Turns a spoken request into a structured task for a coding agent, using only what you said.",
+                "Turns what you said into a structured task for a coding agent, adding nothing.",
                 "Shorter and plain, with every fact kept.",
                 "Clear, direct, and respectful for work.",
                 "Natural, everyday chat messages and DMs.",

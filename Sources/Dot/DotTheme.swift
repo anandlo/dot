@@ -247,8 +247,8 @@ enum DotTheme {
 
     static var titleFont: Font { displayFont(22) }
     static var sectionFont: Font { DotType.font(15, .semibold) }
-    static var bodyFont: Font { DotType.font(13, .regular) }
-    static var smallFont: Font { DotType.font(11.5, .regular) }
+    static var bodyFont: Font { DotType.font(13, .medium) }
+    static var smallFont: Font { DotType.font(11.5, .medium) }
     /// The size of the line under a window title.
     static let subtitleSize: CGFloat = 11.5
     /// The line under a window title, which carries a count as often as a word.
@@ -256,14 +256,14 @@ enum DotTheme {
     /// The same size as ``smallFont``, set in the tabular face: the history
     /// header counts transcripts, and a count that changes has to stay in its
     /// column rather than shuffle its own digits.
-    static var subtitleFont: Font { DotType.tabularFont(subtitleSize, .regular) }
+    static var subtitleFont: Font { DotType.tabularFont(subtitleSize, .medium) }
     static var labelFont: Font { DotType.font(10.5, .semibold) }
     /// The name of a setting.
-    static var rowTitleFont: Font { DotType.font(12.5, .medium) }
+    static var rowTitleFont: Font { DotType.font(12.5, .semibold) }
     /// The line under a setting that says what it does. One size everywhere:
     /// the pages used to mix 10.5 and 11, which read as two ranks of the same
     /// thing.
-    static var rowDetailFont: Font { DotType.font(11, .regular) }
+    static var rowDetailFont: Font { DotType.font(11, .medium) }
     /// The caps label above a field or a card.
     static var fieldLabelFont: Font { DotType.font(9.5, .semibold) }
 
@@ -487,7 +487,7 @@ private struct DotSecondaryButtonBody: View {
 
     var body: some View {
         configuration.label
-            .font(DotType.font(12.5, .medium))
+            .font(DotType.font(12.5, .semibold))
             .foregroundStyle(isEnabled ? DotTheme.ink : DotTheme.ink3)
             .padding(.horizontal, 15)
             .padding(.vertical, 8)
@@ -641,7 +641,7 @@ struct DotKeycap: View {
 
     var body: some View {
         Text(text)
-            .font(DotType.tabularFont(12, .medium))
+            .font(DotType.tabularFont(12, .semibold))
             .foregroundStyle(DotTheme.ink)
             .padding(.horizontal, 9)
             // The same height as the quiet button beside it: a keycap and a
@@ -669,7 +669,7 @@ struct DotFieldStyle: ViewModifier {
     func body(content: Content) -> some View {
         content
             .textFieldStyle(.plain)
-            .font(DotType.font(12.5, .regular))
+            .font(DotType.font(12.5, .medium))
             .foregroundStyle(DotTheme.ink)
             .padding(.horizontal, 9)
             .padding(.vertical, 7)
@@ -1002,7 +1002,7 @@ private struct DotTextEditorRepresentable: NSViewRepresentable {
         textView.isRichText = false
         textView.allowsUndo = true
         textView.drawsBackground = false
-        textView.font = DotType.nsFont(fontSize, .regular)
+        textView.font = DotType.nsFont(fontSize, .medium)
         textView.textColor = NSColor(DotTheme.ink)
         textView.insertionPointColor = NSColor(DotTheme.ink)
         textView.isVerticallyResizable = true
@@ -1027,7 +1027,7 @@ private struct DotTextEditorRepresentable: NSViewRepresentable {
     func updateNSView(_ scrollView: DotTextEditorScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scrollView.documentView as? NSTextView else { return }
-        textView.font = DotType.nsFont(fontSize, .regular)
+        textView.font = DotType.nsFont(fontSize, .medium)
         textView.textColor = NSColor(DotTheme.ink)
         textView.insertionPointColor = NSColor(DotTheme.ink)
         textView.textContainerInset = DotTextEditor.textInset

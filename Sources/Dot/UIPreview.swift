@@ -1405,7 +1405,7 @@ private struct DotSelectOpenPreview: View {
             DotTheme.paper
             pageCard(triggerX: triggerX)
             Text(label)
-                .font(DotType.font(13, .regular))
+                .font(DotType.font(13, .medium))
                 .foregroundStyle(DotTheme.ink)
                 .offset(x: pageInset + rowInset, y: triggerY + 6)
             DotSelectTriggerPreview(title: title, width: triggerWidth)

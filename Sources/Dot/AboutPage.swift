@@ -114,13 +114,13 @@ struct AboutPage: View {
 
             HStack(spacing: 6) {
                 Text(AboutInfo.versionLine(version: version, build: build))
-                    .font(DotType.tabularFont(12, .regular))
+                    .font(DotType.tabularFont(12, .medium))
                     .foregroundStyle(DotTheme.ink3)
                     .textSelection(.enabled)
 
                 Button(action: copyVersion) {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(DotType.font(11, .medium))
+                        .font(DotType.font(11, .semibold))
                         .foregroundStyle(copied ? DotTheme.ink2 : DotTheme.ink3)
                         .frame(width: 18, height: 18)
                         .contentShape(Rectangle())
@@ -209,7 +209,7 @@ struct AboutPage: View {
                 HStack(spacing: 8) {
                     if let detail {
                         Text(detail)
-                            .font(DotType.font(11, .regular))
+                            .font(DotType.font(11, .medium))
                             .foregroundStyle(DotTheme.ink2)
                             .lineLimit(1)
                     }
@@ -228,7 +228,7 @@ struct AboutPage: View {
         Button(action: performUpdate) {
             SettingsRow("Check for updates", symbol: "arrow.triangle.2.circlepath") {
                 Text(updateStatusText)
-                    .font(DotType.tabularFont(11, .regular))
+                    .font(DotType.tabularFont(11, .medium))
                     .foregroundStyle(DotTheme.ink2)
                     .lineLimit(1)
             }
