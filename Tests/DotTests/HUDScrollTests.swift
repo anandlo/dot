@@ -883,22 +883,17 @@ final class HUDScrollTests: XCTestCase {
             },
             "the card never recorded the row's first step"
         )
-        // One step per frame: the card's presence moves on every frame, so
-        // waiting for it to change is waiting for a frame, and every frame gets
-        // its step the way an eased scroll writes one.
-        var presence = hud.debugPresence
-        let deadline = Date().addingTimeInterval(4)
+        hud.debugStopRenderLoop()
+        hud.debugPrimeRailTrackingFromTheRecord()
+        // One step per tracking frame: the render loop is stopped here, so each
+        // write gets exactly one of the card's own tracking frames. Waiting for
+        // the wall-clock loop instead lets a loaded machine deliver a frame with
+        // no write, which ends the follow before the last step.
         for _ in 0 ..< 4 {
-            while hud.debugPresence == presence, Date() < deadline {
-                RunLoop.main.run(
-                    mode: .default,
-                    before: min(deadline, Date().addingTimeInterval(0.01))
-                )
-            }
-            presence = hud.debugPresence
             origin += 1
             clip.scroll(to: NSPoint(x: origin, y: 0))
             rail.reflectScrolledClipView(clip)
+            hud.debugAdvanceRailTrackingFrame()
         }
         print("rr2 last steps: origin=\(origin) record=\(hud.debugRailIntendedOrigin.x)")
         XCTAssertEqual(

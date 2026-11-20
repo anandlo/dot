@@ -743,7 +743,7 @@ final class HUDRailWheelTests: XCTestCase {
     /// half a point at 2x.
     func testAGestureThroughTheOpeningResidueLandsOnThePersonsPosition() throws {
         for residue in [1.0, 0.5] {
-            let fixture = try makeFixture()
+            let fixture = try makeFixture(holdTheEntrance: true)
             defer { close(fixture) }
             XCTAssertFalse(
                 fixture.hud.debugAppearanceAtRest,
@@ -764,6 +764,7 @@ final class HUDRailWheelTests: XCTestCase {
                 ),
                 "the delivered vertical gesture was not swallowed"
             )
+            fixture.hud.debugHoldTheEntrance = false
             XCTAssertTrue(
                 waitForTheRailToSettle(fixture.hud),
                 "the card never came to rest with its opening correction decided"
@@ -784,7 +785,7 @@ final class HUDRailWheelTests: XCTestCase {
     /// position the clip already shows, but it is a logical movement and the
     /// card has to record it or the opening correction will take it back.
     func testAOnePixelWheelThroughItsOwnResidueBecomesThePersonsPosition() throws {
-        let fixture = try makeFixture()
+        let fixture = try makeFixture(holdTheEntrance: true)
         defer { close(fixture) }
         let pixel = 1 / fixture.hud.debugPanel.backingScaleFactor
         XCTAssertFalse(
@@ -821,6 +822,7 @@ final class HUDRailWheelTests: XCTestCase {
             accuracy: 1e-9,
             "the one-pixel wheel was not recorded as the person's position"
         )
+        fixture.hud.debugHoldTheEntrance = false
         XCTAssertTrue(
             waitForTheRailToSettle(fixture.hud),
             "the card never came to rest with its opening correction decided"
@@ -840,7 +842,7 @@ final class HUDRailWheelTests: XCTestCase {
     /// residue: the opening correction must return the rail to the wheel's
     /// position rather than keep the residue.
     func testAWheelEndsTheRevealFollowSoLaterResidueIsNotKept() throws {
-        let fixture = try makeFixture()
+        let fixture = try makeFixture(holdTheEntrance: true)
         defer { close(fixture) }
         XCTAssertGreaterThanOrEqual(
             railMaximum(fixture),
@@ -905,6 +907,7 @@ final class HUDRailWheelTests: XCTestCase {
             accuracy: 1e-9,
             "the in-window write overwrote the wheel's position"
         )
+        fixture.hud.debugHoldTheEntrance = false
         XCTAssertTrue(
             waitForTheRailToSettle(fixture.hud),
             "the card never came to rest with its opening correction decided"
@@ -1273,7 +1276,8 @@ final class HUDRailWheelTests: XCTestCase {
 
     private func makeFixture(
         choices: [RewriteStyle]? = nil,
-        actions: HUDActions = HUDActions()
+        actions: HUDActions = HUDActions(),
+        holdTheEntrance: Bool = false
     ) throws -> Fixture {
         _ = NSApplication.shared
         var card = RewriteCard(
@@ -1297,6 +1301,7 @@ final class HUDRailWheelTests: XCTestCase {
         let hud = HUD(offscreen: true)
         hud.dwell = 60
         hud.actions = actions
+        hud.debugHoldTheEntrance = holdTheEntrance
         hud.showTranscript(
             text: card.original,
             delivery: .copied,

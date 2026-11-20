@@ -937,6 +937,15 @@ final class HUD {
         railIntendedOrigin = origin
     }
 
+    /// Whether a test is holding the entrance short of its rest frame.
+    ///
+    /// The render loop keeps ticking while this is set, so the rail's observer
+    /// attaches, but the appearance stays away from rest and the opening
+    /// correction cannot decide. A fixture sets this before presenting a card
+    /// and clears it when the test wants the card to come to rest. The app
+    /// never sets it.
+    var debugHoldTheEntrance = false
+
     /// Moves the card's appearance by a known amount of time.
     ///
     /// The appearance runs on the frames the render loop delivers and spends
@@ -1021,6 +1030,29 @@ final class HUD {
     /// visibility fallback; the app never does.
     func debugStopRenderLoop() {
         renderLoop.stop()
+    }
+
+    /// Runs one frame of the rail's origin tracking without the render loop.
+    ///
+    /// The headless test writes a reveal's steps itself and needs one tracking
+    /// frame for each write. Waiting for the wall-clock loop lets a loaded
+    /// machine deliver a frame with no write, which ends the follow before the
+    /// last step. The app never calls this.
+    func debugAdvanceRailTrackingFrame() {
+        guard let rail = cardRail() else { return }
+        observeTheRailsOrigin(of: rail)
+        trackTheRailsOriginToRest(rail)
+    }
+
+    /// Starts a new reveal's run of tracking frames at the recorded position.
+    ///
+    /// The headless test has written the first step and wants the following
+    /// short steps to be measured from it. A wall-clock tick may already have
+    /// primed the follow, so this clears only that frame of history and keeps
+    /// the follow active. The app never calls this.
+    func debugPrimeRailTrackingFromTheRecord() {
+        railOriginTracks = true
+        railTrackedOrigin = nil
     }
 
     /// How much of the transcript's dwell is left, in seconds. `nil` when no
@@ -2111,6 +2143,25 @@ final class HUD {
         }
         contentSpring.advance(dt)
         model.content = min(max(contentSpring.value, 0), 1)
+
+        if debugHoldTheEntrance {
+            // Keep the card visibly arrived but one step short of rest, so the
+            // opening correction cannot decide while the render loop ticks.
+            let held = 0.99
+            if reduceMotion {
+                reduceFade.snap(to: held)
+                reduceFade.to(1)
+                emergeSpring.snap(to: held)
+                model.emergence = held
+                model.presence = held
+            } else {
+                emergeSpring.snap(to: held)
+                model.emergence = held
+                model.presence = held
+            }
+            contentSpring.snap(to: held)
+            model.content = held
+        }
 
         if model.presence >= 0.98, !hasReadPointerSinceArrival {
             hasReadPointerSinceArrival = true
