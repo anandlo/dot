@@ -269,7 +269,7 @@ final class GlassSurfaceTests: XCTestCase {
         )
     }
 
-    /// The black card's clock is the ink it always was.
+    /// The black card's clock is the secondary ink.
     ///
     /// The measured clock ink belongs to the glass material only: on the black
     /// card ``HUDTheme/clockInk(_:)`` has to be ``HUDTheme/ink2`` itself, or a
