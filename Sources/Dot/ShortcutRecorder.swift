@@ -52,7 +52,7 @@ final class ShortcutRecorder {
         caption.font = DotType.nsFont(15, .semibold)
         caption.textColor = NSColor.labelColor
 
-        hintLabel.font = DotType.nsFont(12, .regular)
+        hintLabel.font = DotType.nsFont(12, .medium)
         hintLabel.textColor = NSColor.secondaryLabelColor
         hintLabel.alignment = .center
         hintLabel.stringValue = "Requires ⌘, ⌥ or ⌃. A function key can be used alone."

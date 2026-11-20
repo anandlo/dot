@@ -337,7 +337,7 @@ enum DotSelectMetrics {
     /// Tabular: a title can be a number ("30 s", "50", a model name with digits
     /// in it), and the field and the list have to keep the same width whether
     /// that number changes or not.
-    static var titleFont: Font { DotType.tabularFont(titleSize, .regular) }
+    static var titleFont: Font { DotType.tabularFont(titleSize, .medium) }
 }
 
 /// The trigger's frame, in the coordinates a panel is placed in.

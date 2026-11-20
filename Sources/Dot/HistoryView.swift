@@ -68,7 +68,7 @@ struct HistoryView: View {
                     Image(systemName: "arrow.down")
                         .font(DotType.font(8.5, .bold))
                     Text("Newest first")
-                        .font(DotType.font(10, .medium))
+                        .font(DotType.font(10, .semibold))
                 }
                 .foregroundStyle(DotTheme.ink3.opacity(0.8))
                 .accessibilityHidden(true)
@@ -119,7 +119,7 @@ struct HistoryView: View {
 
             TextField("Search transcripts", text: $query)
                 .textFieldStyle(.plain)
-                .font(DotType.font(12.5, .regular))
+                .font(DotType.font(12.5, .medium))
                 .foregroundStyle(DotTheme.ink)
                 .focused($searchFocused)
                 .disabled(history.isEmpty)
@@ -132,7 +132,7 @@ struct HistoryView: View {
                     searchFocused = true
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(DotType.font(12, .medium))
+                        .font(DotType.font(12, .semibold))
                         .foregroundStyle(DotTheme.ink3.opacity(0.58))
                         .frame(width: 22, height: 22)
                         .overlay(
@@ -301,7 +301,7 @@ struct HistoryView: View {
                 .transition(.opacity)
             } else {
                 Image(systemName: "doc.on.doc")
-                    .font(DotType.font(11, .medium))
+                    .font(DotType.font(11, .semibold))
                     .foregroundStyle(hovered ? DotTheme.accent : DotTheme.ink3)
                     .frame(width: 27, height: 27)
                     .background(
@@ -356,7 +356,7 @@ struct HistoryView: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .strokeBorder(DotTheme.cardBorder, lineWidth: 1)
                 Image(systemName: "magnifyingglass")
-                    .font(DotType.font(17, .medium))
+                    .font(DotType.font(17, .semibold))
                     .foregroundStyle(DotTheme.accent)
             }
             .frame(width: 46, height: 46)
@@ -389,7 +389,7 @@ struct HistoryView: View {
                     onClear()
                 } label: {
                     Text("Clear history…")
-                        .font(DotType.font(12, .medium))
+                        .font(DotType.font(12, .semibold))
                         .foregroundStyle(
                             history.isEmpty
                                 ? DotTheme.ink3
@@ -423,9 +423,9 @@ struct HistoryView: View {
 
                 HStack(spacing: 5) {
                     Image(systemName: "lock.shield")
-                        .font(DotType.font(9.5, .medium))
+                        .font(DotType.font(9.5, .semibold))
                     Text("Kept on this Mac")
-                        .font(DotType.font(10, .regular))
+                        .font(DotType.font(10, .medium))
                 }
                 .foregroundStyle(DotTheme.ink3)
                 .accessibilityElement(children: .combine)

@@ -81,14 +81,14 @@ struct SettingsRow<Trailing: View>: View {
                             .accessibilityHidden(true)
                     } else if let symbol {
                         Image(systemName: symbol)
-                            .font(DotType.font(16, .regular))
+                            .font(DotType.font(16, .medium))
                             .foregroundStyle(DotTheme.ink2)
                             .frame(width: 20, alignment: .leading)
                             .accessibilityHidden(true)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title)
-                            .font(DotType.font(13, .regular))
+                            .font(DotType.font(13, .medium))
                             .foregroundStyle(titleTone)
                         if !wideSubtitle, let subtitle {
                             subtitleLine(subtitle)
@@ -120,7 +120,7 @@ struct SettingsRow<Trailing: View>: View {
     /// the words, and they keep their column when the number changes.
     private func subtitleLine(_ text: String) -> some View {
         Text(text)
-            .font(DotType.tabularFont(11, .regular))
+            .font(DotType.tabularFont(11, .medium))
             .foregroundStyle(subtitleTone)
             .fixedSize(horizontal: false, vertical: true)
     }
