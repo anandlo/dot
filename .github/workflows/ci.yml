@@ -36,7 +36,7 @@ jobs:
         with:
           name: dot-ci-failure
           path: |
-            ${{ runner.temp }}/dot-evidence
+            render-evidence
             test-*.log
             build.log
             bundle.log
@@ -132,15 +132,15 @@ jobs:
       - name: Run DotCoreTests under AddressSanitizer
         run: |
           set -uo pipefail
-          swift build --build-tests --sanitize=address 2>&1 | tee sanitizer-address-build.log
-          status="${PIPESTATUS[0]}"
-          if [ "$status" -ne 0 ]; then exit "$status"; fi
-          bin="$(swift build --build-tests --sanitize=address --show-bin-path)"
-          xcrun xctest "$bin/DotCoreTests.xctest" 2>&1 | tee sanitizer-address.log
-          status="${PIPESTATUS[0]}"
+          scratch="$RUNNER_TEMP/dot-asan"
+          swift build --build-tests --sanitize=address --scratch-path "$scratch" 2>&1 | tee sanitizer-address-build.log
+          build_status=${PIPESTATUS[0]}
+          if [ "$build_status" -ne 0 ]; then exit "$build_status"; fi
+          swift test --sanitize=address --filter '^DotCoreTests\.' --scratch-path "$scratch" 2>&1 | tee sanitizer-address.log
+          test_status=${PIPESTATUS[0]}
           failed=0
-          if [ "$status" -ne 0 ]; then
-            echo "::error::DotCoreTests under ASan exited with status $status"
+          if [ "$test_status" -ne 0 ]; then
+            echo "::error::DotCoreTests under ASan exited with status $test_status"
             failed=1
           fi
           python3 scripts/ci/check_test_log.py sanitizer-address.log --bundles DotCoreTests || failed=1
@@ -149,15 +149,15 @@ jobs:
       - name: Run DotCoreTests under ThreadSanitizer
         run: |
           set -uo pipefail
-          swift build --build-tests --sanitize=thread 2>&1 | tee sanitizer-thread-build.log
-          status="${PIPESTATUS[0]}"
-          if [ "$status" -ne 0 ]; then exit "$status"; fi
-          bin="$(swift build --build-tests --sanitize=thread --show-bin-path)"
-          xcrun xctest "$bin/DotCoreTests.xctest" 2>&1 | tee sanitizer-thread.log
-          status="${PIPESTATUS[0]}"
+          scratch="$RUNNER_TEMP/dot-tsan"
+          swift build --build-tests --sanitize=thread --scratch-path "$scratch" 2>&1 | tee sanitizer-thread-build.log
+          build_status=${PIPESTATUS[0]}
+          if [ "$build_status" -ne 0 ]; then exit "$build_status"; fi
+          swift test --sanitize=thread --filter '^DotCoreTests\.' --scratch-path "$scratch" 2>&1 | tee sanitizer-thread.log
+          test_status=${PIPESTATUS[0]}
           failed=0
-          if [ "$status" -ne 0 ]; then
-            echo "::error::DotCoreTests under TSan exited with status $status"
+          if [ "$test_status" -ne 0 ]; then
+            echo "::error::DotCoreTests under TSan exited with status $test_status"
             failed=1
           fi
           python3 scripts/ci/check_test_log.py sanitizer-thread.log --bundles DotCoreTests || failed=1

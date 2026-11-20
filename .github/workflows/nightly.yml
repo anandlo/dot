@@ -19,11 +19,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Run the test gate three times
+      - name: Run the first test gate
         uses: ./.github/actions/dot-gate
         with:
           bundle: "false"
-          test-runs: "3"
+          evidence-dir: ${{ runner.temp }}/dot-nightly/run-1
+          evidence-label: "Nightly run 1"
+
+      - name: Run the second test gate
+        uses: ./.github/actions/dot-gate
+        with:
+          bundle: "false"
+          evidence-dir: ${{ runner.temp }}/dot-nightly/run-2
+          evidence-label: "Nightly run 2"
+
+      - name: Run the third test gate
+        uses: ./.github/actions/dot-gate
+        with:
+          bundle: "false"
+          evidence-dir: ${{ runner.temp }}/dot-nightly/run-3
+          evidence-label: "Nightly run 3"
 
       - name: Upload failure evidence
         if: failure()
@@ -31,8 +46,7 @@ jobs:
         with:
           name: dot-nightly-failure
           path: |
-            ${{ runner.temp }}/dot-evidence
-            test-*.log
+            ${{ runner.temp }}/dot-nightly
             build.log
           retention-days: 7
           if-no-files-found: ignore

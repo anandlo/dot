@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check a serial SwiftPM XCTest log for complete bundles and allowed skips."""
+"""Check a serial SwiftPM XCTest log for complete bundle runs and allowed skips."""
 
 from __future__ import annotations
 
@@ -16,25 +16,45 @@ FLOORS = {"DotTests": 894, "DotCoreTests": 1300}
 SUMMARY_RE = re.compile(
     r"Executed\s+(?P<executed>\d+)\s+tests?"
     r"(?:,\s*with\s+(?P<skipped>\d+)\s+tests?\s+skipped)?"
-    r"(?:\s+and\s+(?P<and_failures>\d+)\s+failures?"
-    r"|,\s*with\s+(?P<with_failures>\d+)\s+failures?)?"
+    r"(?:,\s*with\s+(?P<with_failures>\d+)\s+failures?"
+    r"|\s+and\s+(?P<and_failures>\d+)\s+failures?)"
+    r"\s+\(\s*(?P<unexpected>\d+)\s+unexpected\s*\)"
+    r"\s+in\s+[\d.]+\s+\([\d.]+\s*\)\s+seconds?\s*$"
 )
 BUNDLE_START_RE = re.compile(r"Test Suite '(?P<name>[^']+)\.xctest' started")
 BUNDLE_END_RE = re.compile(
     r"Test Suite '(?P<name>[^']+)\.xctest' (?P<status>passed|failed)"
 )
 CASE_RE = re.compile(r"Test Case '-\[(?P<identifier>[^\]]+)\]'\s+(?P<action>\w+)")
-SKIP_WORD_RE = re.compile(r": Test skipped - ")
+
+
+@dataclass(frozen=True)
+class Summary:
+    executed: int
+    skipped: int
+    failures: int
+    unexpected: int
 
 
 @dataclass
-class BundleResult:
+class CaseRecord:
+    starts: int = 0
+    terminals: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class RunStats:
     name: str
-    executed: int = 0
-    skipped: int = 0
-    failures: int = 0
-    finished: bool = False
-    errors: list[str] = field(default_factory=list)
+    cases: dict[tuple[str, str, str], CaseRecord] = field(default_factory=dict)
+
+
+@dataclass
+class ParsedRun:
+    name: str
+    start: int
+    end: int
+    status: str
+    summary: Summary
 
 
 def parse_identifier(identifier: str) -> tuple[str, str, str] | None:
@@ -45,72 +65,132 @@ def parse_identifier(identifier: str) -> tuple[str, str, str] | None:
     return bundle, class_name, test_name.strip()
 
 
-def summary(line: str) -> tuple[int, int, int] | None:
+def summary(line: str) -> Summary | None:
     match = SUMMARY_RE.search(line)
     if match is None:
         return None
-    failures = match.group("and_failures") or match.group("with_failures") or "0"
-    return int(match.group("executed")), int(match.group("skipped") or 0), int(failures)
+    failures = match.group("and_failures") or match.group("with_failures")
+    if failures is None:
+        return None
+    return Summary(
+        executed=int(match.group("executed")),
+        skipped=int(match.group("skipped") or 0),
+        failures=int(failures),
+        unexpected=int(match.group("unexpected")),
+    )
+
+
+def next_nonempty_line(lines: list[str], after: int) -> tuple[int | None, str]:
+    for index in range(after + 1, len(lines)):
+        if lines[index].strip():
+            return index, lines[index]
+    return None, ""
 
 
 def load_allowlist(path: Path) -> set[tuple[str, str]]:
     entries: set[tuple[str, str]] = set()
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
-        if "/" in line:
-            class_name, test_name = line.split("/", 1)
-        else:
-            class_name, _, test_name = line.rpartition(".")
-        entries.add((class_name.strip(), test_name.strip()))
+        if "/" not in line:
+            raise ValueError(f"line {number} is not Bundle.Class/test: {line}")
+        qualified_class, test_name = line.split("/", 1)
+        if "." not in qualified_class:
+            raise ValueError(f"line {number} has no bundle prefix: {line}")
+        bundle, class_name = qualified_class.split(".", 1)
+        if not all(part.strip() for part in (bundle, class_name, test_name)):
+            raise ValueError(f"line {number} has an empty field: {line}")
+        entries.add((f"{bundle.strip()}.{class_name.strip()}", test_name.strip()))
     return entries
 
 
-def read_cases(lines: list[str], bundles: list[str]) -> tuple[dict, dict, dict, list[str]]:
-    started: dict[str, set[tuple[str, str, str]]] = {name: set() for name in bundles}
-    skipped: dict[str, set[tuple[str, str, str]]] = {name: set() for name in bundles}
-    failed: dict[str, set[tuple[str, str, str]]] = {name: set() for name in bundles}
-    failure_lines: list[str] = []
-    for line in lines:
-        match = CASE_RE.search(line)
-        if match is None:
-            continue
-        parsed = parse_identifier(match.group("identifier"))
-        if parsed is None or parsed[0] not in started:
-            continue
-        action = match.group("action")
-        if action == "started":
-            started[parsed[0]].add(parsed)
-        elif action == "skipped":
-            skipped[parsed[0]].add(parsed)
-        elif action == "failed":
-            failed[parsed[0]].add(parsed)
-            failure_lines.append(line.strip())
-    return started, skipped, failed, failure_lines
-
-
-def find_summary(lines: list[str], after: int) -> tuple[int, int, int] | None:
-    for line in lines[after : after + 4]:
-        parsed = summary(line)
-        if parsed is not None:
-            return parsed
-    return None
-
-
-def parse_combined(lines: list[str], bundles: list[str]) -> tuple[int, int, int] | None:
+def find_runs(lines: list[str]) -> tuple[list[ParsedRun], list[str]]:
+    runs: list[ParsedRun] = []
+    errors: list[str] = []
     for index, line in enumerate(lines):
-        if "Test Suite 'dotPackageTests.xctest' started" not in line:
+        start_match = BUNDLE_START_RE.search(line)
+        if start_match is None:
             continue
-        for end_index in range(index + 1, len(lines)):
-            if "Test Suite 'dotPackageTests.xctest' " not in lines[end_index]:
-                continue
-            if " passed" not in lines[end_index] and " failed" not in lines[end_index]:
-                continue
-            result = find_summary(lines, end_index)
-            if result is not None:
-                return result
-    return None
+        name = start_match.group("name")
+        end_match = None
+        end_index = None
+        for candidate_index in range(index + 1, len(lines)):
+            candidate = BUNDLE_END_RE.search(lines[candidate_index])
+            if candidate is not None and candidate.group("name") == name:
+                end_match = candidate
+                end_index = candidate_index
+                break
+        if end_match is None or end_index is None:
+            errors.append(f"{name} started but never printed a passed or failed line")
+            continue
+        _, candidate_line = next_nonempty_line(lines, end_index)
+        parsed = summary(candidate_line) if candidate_line else None
+        if parsed is None:
+            if candidate_line and "Executed" in candidate_line:
+                errors.append(
+                    f"{name} finished with a malformed Executed line: {candidate_line.strip()}"
+                )
+            else:
+                errors.append(f"{name} finished without an Executed line")
+            continue
+        runs.append(
+            ParsedRun(name, index, end_index, end_match.group("status"), parsed)
+        )
+    return runs, errors
+
+
+def scan_run(lines: list[str], run: ParsedRun, allowed: set[str]) -> tuple[RunStats, list[str]]:
+    stats = RunStats(name=run.name)
+    errors: list[str] = []
+    for line in lines[run.start + 1 : run.end]:
+        case_match = CASE_RE.search(line)
+        if case_match is None:
+            continue
+        identifier = case_match.group("identifier")
+        parsed = parse_identifier(identifier)
+        if parsed is None:
+            errors.append(f"{run.name} run has a malformed test case: {identifier}")
+            continue
+        if parsed[0] not in allowed:
+            errors.append(f"{run.name} run contains unexpected module {parsed[0]}: {identifier}")
+            continue
+        record = stats.cases.setdefault(parsed, CaseRecord())
+        action = case_match.group("action")
+        if action == "started":
+            record.starts += 1
+        elif action in ("passed", "failed", "skipped"):
+            record.terminals[action] = record.terminals.get(action, 0) + 1
+    for key, record in sorted(stats.cases.items()):
+        label = f"{key[0]}.{key[1]}/{key[2]}"
+        if record.starts != 1:
+            errors.append(f"{label} has {record.starts} started lines in {run.name} run")
+        terminals = sum(record.terminals.values())
+        if terminals != 1:
+            errors.append(f"{label} has {terminals} terminal lines in {run.name} run")
+    return stats, errors
+
+
+def run_counts(stats: RunStats) -> tuple[int, int, int, dict[str, tuple[int, int, int]]]:
+    per_bundle: dict[str, list[int]] = {}
+    executed = skipped = failures = 0
+    for (bundle, _, _), record in stats.cases.items():
+        started = 1 if record.starts == 1 else 0
+        was_skipped = 1 if record.terminals.get("skipped") == 1 else 0
+        was_failed = 1 if record.terminals.get("failed") == 1 else 0
+        executed += started
+        skipped += was_skipped
+        failures += was_failed
+        values = per_bundle.setdefault(bundle, [0, 0, 0])
+        values[0] += started
+        values[1] += was_skipped
+        values[2] += was_failed
+    return (
+        executed,
+        skipped,
+        failures,
+        {name: tuple(values) for name, values in per_bundle.items()},
+    )
 
 
 def check_log(
@@ -120,100 +200,109 @@ def check_log(
     floors: dict[str, int] | None = None,
 ) -> tuple[list[str], list[str], list[tuple[str, int, int, int, int]]]:
     floors = dict(FLOORS if floors is None else floors)
+    rows = [(name, 0, 0, 0, floors.get(name, 0)) for name in bundles]
+    try:
+        allowlist = load_allowlist(allowlist_path)
+    except ValueError as error:
+        return [f"invalid skip allowlist: {error}"], [], rows
+
     lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    allowlist = load_allowlist(allowlist_path)
-    started, skipped, failed, failure_lines = read_cases(lines, bundles)
-    combined = parse_combined(lines, bundles)
-    errors: list[str] = []
-    notices: list[str] = []
-    rows: list[tuple[str, int, int, int, int]] = []
+    runs, errors = find_runs(lines)
+    combined_runs = [run for run in runs if run.name == "dotPackageTests"]
+    split_runs = [run for run in runs if run.name != "dotPackageTests"]
 
-    for name in bundles:
-        result = BundleResult(name=name)
-        starts = [
-            index
-            for index, line in enumerate(lines)
-            if f"Test Suite '{name}.xctest' started" in line
-        ]
-        ends = [
-            (index, match)
-            for index, line in enumerate(lines)
-            for match in [BUNDLE_END_RE.search(line)]
-            if match is not None and match.group("name") == name
-        ]
-        if starts:
-            start = starts[-1]
-            later_ends = [(index, match) for index, match in ends if index > start]
-            if not later_ends:
-                errors.append(f"{name} started but never printed a passed or failed line")
-            else:
-                end_index, end_match = later_ends[0]
-                result.finished = True
-                if end_match.group("status") == "failed":
-                    errors.append(f"{name} bundle ended as failed")
-                parsed = find_summary(lines, end_index)
-                if parsed is None:
-                    errors.append(f"{name} finished without an Executed line")
-                else:
-                    result.executed, summary_skips, summary_failures = parsed
-                    result.failures += summary_failures
-                    if summary_skips != len(skipped[name]):
-                        notices.append(
-                            f"{name}: Executed line counts {summary_skips} skipped tests "
-                            f"but {len(skipped[name])} skip lines were found"
-                        )
-        elif combined is None:
-            errors.append(f"{name} did not start and no combined test bundle was found")
+    if combined_runs:
+        if len(combined_runs) != 1:
+            errors.append(f"expected one combined test run, found {len(combined_runs)}")
+        if split_runs:
+            errors.append("the log mixes combined and split test runs")
+    else:
+        for name in bundles:
+            count = sum(1 for run in split_runs if run.name == name)
+            if count != 1:
+                errors.append(f"expected one {name} run, found {count}")
+
+    scanned: list[tuple[ParsedRun, RunStats, tuple[int, int, int, dict[str, tuple[int, int, int]]]]] = []
+    for run in runs:
+        if run.name == "dotPackageTests":
+            allowed = set(bundles)
+        elif run.name in bundles:
+            allowed = {run.name}
         else:
-            result.executed = len(started[name])
-            if result.executed == 0:
-                errors.append(f"{name} has no test case lines in the combined bundle")
-            result.failures += combined[2]
-
-        result.skipped = len(skipped[name])
-        if failed[name]:
-            for identifier in sorted(failed[name]):
-                errors.append(
-                    f"{identifier[0]}.{identifier[1]} {identifier[2]} failed"
-                )
-            result.failures = max(result.failures, len(failed[name]))
-        if result.failures:
-            errors.append(f"{name} reported {result.failures} failure(s)")
-        floor = floors.get(name, 0)
-        if result.executed < floor:
+            allowed = set()
+        stats, scan_errors = scan_run(lines, run, allowed)
+        errors.extend(scan_errors)
+        counts = run_counts(stats)
+        executed, skipped, failures, _ = counts
+        if run.name not in bundles and run.name != "dotPackageTests" and executed:
+            errors.append(f"unexpected test run {run.name} contains {executed} tests")
+        if run.status == "failed":
+            errors.append(f"{run.name} bundle ended as failed")
+        if run.summary.unexpected:
+            errors.append(f"{run.name} reported {run.summary.unexpected} unexpected failure(s)")
+        if run.summary.executed != executed:
             errors.append(
-                f"{name} executed {result.executed} tests, below the floor of {floor}"
+                f"{run.name} Executed line counts {run.summary.executed} tests "
+                f"but the run contains {executed} started cases"
             )
-        rows.append((name, result.executed, result.skipped, result.failures, floor))
-
-    if combined is not None:
-        aggregate = sum(row[1] for row in rows)
-        if combined[0] != aggregate:
+        if run.summary.skipped != skipped:
             errors.append(
-                f"combined bundle executed {combined[0]} tests but the required bundles "
-                f"account for {aggregate}"
+                f"{run.name} Executed line counts {run.summary.skipped} skipped tests "
+                f"but the run contains {skipped} skip lines"
             )
-        if combined[2]:
-            errors.append(f"combined bundle reported {combined[2]} failure(s)")
+        if run.summary.failures != failures:
+            errors.append(
+                f"{run.name} Executed line counts {run.summary.failures} failures "
+                f"but the run contains {failures} failed cases"
+            )
+        scanned.append((run, stats, counts))
+        for key, record in stats.cases.items():
+            if record.terminals.get("failed"):
+                errors.append(f"{key[0]}.{key[1]} {key[2]} failed")
 
+    if combined_runs:
+        selected = [entry for entry in scanned if entry[0].name == "dotPackageTests"][:1]
+    else:
+        selected = [entry for entry in scanned if entry[0].name in bundles]
+    per_bundle: dict[str, list[int]] = {name: [0, 0, 0] for name in bundles}
+    started: dict[str, set[tuple[str, str, str]]] = {name: set() for name in bundles}
+    skipped_cases: dict[str, set[tuple[str, str, str]]] = {name: set() for name in bundles}
+    for _, stats, counts in selected:
+        for name in bundles:
+            values = counts[3].get(name, (0, 0, 0))
+            current = per_bundle[name]
+            current[0] += values[0]
+            current[1] += values[1]
+            current[2] += values[2]
+        for key, record in stats.cases.items():
+            if key[0] not in started:
+                continue
+            if record.starts:
+                started[key[0]].add(key)
+            if record.terminals.get("skipped"):
+                skipped_cases[key[0]].add(key)
+
+    notices: list[str] = []
+    rows = []
     for name in bundles:
-        for bundle, class_name, test_name in sorted(skipped[name]):
+        executed, skipped, failures = per_bundle[name]
+        if failures:
+            errors.append(f"{name} reported {failures} failure(s)")
+        floor = floors.get(name, 0)
+        if executed < floor:
+            errors.append(f"{name} executed {executed} tests, below the floor of {floor}")
+        rows.append((name, executed, skipped, failures, floor))
+        for bundle, class_name, test_name in sorted(skipped_cases[name]):
             key = (f"{bundle}.{class_name}", test_name)
-            if key not in allowlist and (class_name, test_name) not in allowlist:
+            if key not in allowlist:
                 errors.append(
                     f"unknown skipped test {bundle}.{class_name}/{test_name}; add it "
                     "to scripts/ci/skip-allowlist.txt"
                 )
         for bundle, class_name, test_name in sorted(started[name]):
-            if (f"{bundle}.{class_name}", test_name) not in allowlist:
-                continue
-            if (bundle, class_name, test_name) not in skipped[name]:
-                notices.append(
-                    f"allowlisted test {bundle}.{class_name}/{test_name} did not skip"
-                )
-
-    if failure_lines and not any(" failed" in error for error in errors):
-        errors.append("a test case failed: " + failure_lines[0])
+            key = (f"{bundle}.{class_name}", test_name)
+            if key in allowlist and (bundle, class_name, test_name) not in skipped_cases[name]:
+                notices.append(f"allowlisted test {bundle}.{class_name}/{test_name} did not skip")
     return errors, notices, rows
 
 
