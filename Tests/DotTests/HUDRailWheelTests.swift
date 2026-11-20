@@ -255,6 +255,12 @@ final class HUDRailWheelTests: XCTestCase {
         let fixture = try makeFixture()
         defer { close(fixture) }
         fixture.rail.horizontalLineScroll = 12
+        // The rail is placed at its first style so the travel below is read
+        // from a known position: while the opening correction has not been
+        // decided the card applies a wheel to the intended origin, so the
+        // record is placed with the clip.
+        injectResidue(0, into: fixture)
+        fixture.hud.debugSetRailIntendedOrigin(.zero)
         let before = railOffset(fixture)
         let event = try wheel(dy: -3, precise: false, units: .line, at: fixture.point)
         XCTAssertFalse(event.hasPreciseScrollingDeltas, "the event is not a line wheel")
@@ -724,6 +730,395 @@ final class HUDRailWheelTests: XCTestCase {
         )
     }
 
+    /// A gesture delivered while the card is arriving lands on the person's
+    /// position, not on the appearance's residue.
+    ///
+    /// The card's appearance leaves the rail's clip a residue inside its
+    /// content, and at the moment a gesture lands that residue is not a
+    /// position anybody chose. The card applies the travel to the position the
+    /// person last gave the rail, so a wheel of 30 points from a rail that
+    /// started at zero lands on 30 whatever residue the clip was carrying. The
+    /// residue is injected here rather than waited for, so the test covers both
+    /// scales the card is measured on: one device pixel is a point at 1x and
+    /// half a point at 2x.
+    func testAGestureThroughTheOpeningResidueLandsOnThePersonsPosition() throws {
+        for residue in [1.0, 0.5] {
+            let fixture = try makeFixture()
+            defer { close(fixture) }
+            XCTAssertFalse(
+                fixture.hud.debugAppearanceAtRest,
+                "the card arrived before the residue could be injected, so the gesture did not meet the appearance"
+            )
+            let intended = fixture.hud.debugRailIntendedOrigin.x
+            injectResidue(residue, into: fixture)
+            XCTAssertEqual(
+                railOffset(fixture),
+                residue,
+                accuracy: 1e-9,
+                "the injected residue did not reach the clip"
+            )
+            XCTAssertTrue(
+                fixture.hud.debugDeliverWheel(
+                    try wheel(dy: -30, phase: .began, at: fixture.point),
+                    at: fixture.point
+                ),
+                "the delivered vertical gesture was not swallowed"
+            )
+            XCTAssertTrue(
+                waitForTheRailToSettle(fixture.hud),
+                "the card never came to rest with its opening correction decided"
+            )
+            XCTAssertEqual(
+                railOffset(fixture),
+                intended + 30,
+                accuracy: 0.05,
+                "the gesture inherited the appearance's \(residue) point residue"
+            )
+        }
+    }
+
+    /// A one-pixel wheel through its own residue is still the person's choice.
+    ///
+    /// The appearance can leave exactly one device pixel on the clip while the
+    /// card intends the first style. A wheel of that same travel targets the
+    /// position the clip already shows, but it is a logical movement and the
+    /// card has to record it or the opening correction will take it back.
+    func testAOnePixelWheelThroughItsOwnResidueBecomesThePersonsPosition() throws {
+        let fixture = try makeFixture()
+        defer { close(fixture) }
+        let pixel = 1 / fixture.hud.debugPanel.backingScaleFactor
+        XCTAssertFalse(
+            fixture.hud.debugRailPositionRestored,
+            "the card decided the opening correction before the wheel could meet the residue"
+        )
+        injectResidue(pixel, into: fixture)
+        fixture.hud.debugSetRailIntendedOrigin(.zero)
+        XCTAssertEqual(
+            railOffset(fixture),
+            pixel,
+            accuracy: 1e-9,
+            "the clip does not carry exactly one device pixel of residue"
+        )
+        XCTAssertEqual(
+            fixture.hud.debugRailIntendedOrigin.x,
+            0,
+            accuracy: 1e-9,
+            "the card does not intend the first style while the clip carries the residue"
+        )
+        let event = ExactRailWheelEvent(
+            deltaX: -pixel,
+            deltaY: 0,
+            phase: .began,
+            timestamp: ProcessInfo.processInfo.systemUptime
+        )
+        XCTAssertTrue(
+            fixture.hud.debugDeliverWheel(event, at: fixture.point),
+            "the routed one-pixel wheel was left to a native view"
+        )
+        XCTAssertEqual(
+            fixture.hud.debugRailIntendedOrigin.x,
+            pixel,
+            accuracy: 1e-9,
+            "the one-pixel wheel was not recorded as the person's position"
+        )
+        XCTAssertTrue(
+            waitForTheRailToSettle(fixture.hud),
+            "the card never came to rest with its opening correction decided"
+        )
+        XCTAssertEqual(
+            railOffset(fixture),
+            pixel,
+            accuracy: 0.05,
+            "the opening correction swallowed the one-pixel wheel"
+        )
+    }
+
+    /// An explicit wheel ends the reveal follow, so later residue is corrected.
+    ///
+    /// A far write arms the card's short follow of a reveal. An explicit wheel
+    /// after it is the person's position, and a later in-window write is
+    /// residue: the opening correction must return the rail to the wheel's
+    /// position rather than keep the residue.
+    func testAWheelEndsTheRevealFollowSoLaterResidueIsNotKept() throws {
+        let fixture = try makeFixture()
+        defer { close(fixture) }
+        XCTAssertGreaterThanOrEqual(
+            railMaximum(fixture),
+            120,
+            "the rail cannot hold the far write and the wheel's travel"
+        )
+        XCTAssertFalse(
+            fixture.hud.debugRailPositionRestored,
+            "the card decided the opening correction before the reveal could be armed"
+        )
+        injectResidue(100, into: fixture)
+        XCTAssertEqual(
+            fixture.hud.debugRailIntendedOrigin.x,
+            100,
+            accuracy: 1e-9,
+            "the far write did not arm the card's follow"
+        )
+        XCTAssertTrue(
+            fixture.hud.debugRailFollowsWrites,
+            "the card was not following writes after the far write"
+        )
+        let event = ExactRailWheelEvent(
+            deltaX: -10,
+            deltaY: 0,
+            phase: .began,
+            timestamp: ProcessInfo.processInfo.systemUptime
+        )
+        XCTAssertTrue(
+            fixture.hud.debugDeliverWheel(event, at: fixture.point),
+            "the routed wheel was left to a native view"
+        )
+        XCTAssertEqual(
+            railOffset(fixture),
+            110,
+            accuracy: 1e-9,
+            "the wheel did not move the rail ten points from the far write"
+        )
+        XCTAssertEqual(
+            fixture.hud.debugRailIntendedOrigin.x,
+            110,
+            accuracy: 1e-9,
+            "the wheel did not record its landing position"
+        )
+        XCTAssertFalse(
+            fixture.hud.debugRailFollowsWrites,
+            "the explicit wheel did not end the reveal follow"
+        )
+        XCTAssertLessThanOrEqual(
+            1.0,
+            HUD.railResidueWindow(backingScale: 2),
+            "one point is not inside the residue window on a 2x display"
+        )
+        XCTAssertLessThanOrEqual(
+            1.0,
+            HUD.railResidueWindow(backingScale: 1),
+            "one point is not inside the residue window on a 1x display"
+        )
+        injectResidue(111, into: fixture)
+        XCTAssertEqual(
+            fixture.hud.debugRailIntendedOrigin.x,
+            110,
+            accuracy: 1e-9,
+            "the in-window write overwrote the wheel's position"
+        )
+        XCTAssertTrue(
+            waitForTheRailToSettle(fixture.hud),
+            "the card never came to rest with its opening correction decided"
+        )
+        XCTAssertEqual(
+            railOffset(fixture),
+            110,
+            accuracy: 0.05,
+            "the opening correction kept the residue instead of the wheel's position"
+        )
+    }
+
+    /// A wheel after an unobserved reveal starts from the revealed position.
+    ///
+    /// A style the row reveals before the card has recorded it can leave the
+    /// clip far from the intended origin while the opening correction is still
+    /// undecided. That distance is a position somebody chose, not appearance
+    /// residue, so a wheel has to continue from it.
+    func testAWheelOnAnUnobservedRevealKeepsTheRevealedPosition() throws {
+        _ = NSApplication.shared
+        var card = RewriteCard(
+            original: HUDPreview.longTranscript,
+            choices: longStyles()
+        )
+        let first = card.choices[0]
+        let second = card.choices[1]
+        card.append(id: 1, style: first, text: HUDPreview.longTranscript, warning: nil)
+        card.append(id: 2, style: second, text: HUDPreview.longTranscript, warning: nil)
+        let hud = HUD(offscreen: true)
+        hud.dwell = 60
+        hud.showTranscript(
+            text: card.original,
+            delivery: .copied,
+            elapsed: "4:18"
+        )
+        hud.setRewrite(card)
+        hud.debugPointer(inside: true)
+        defer {
+            hud.hide()
+            spin(for: 0.4)
+        }
+
+        // The frame clock is held at the rest frame on which the opening
+        // correction has not decided yet. The reveal is placed here rather
+        // than earlier in the entrance, so no later appearance frame can move
+        // the clip before the wheel is routed.
+        let restDeadline = Date().addingTimeInterval(4)
+        while Date() < restDeadline,
+              !(hud.debugAppearanceAtRest && !hud.debugRailPositionRestored) {
+            hud.debugRootView.layoutSubtreeIfNeeded()
+            RunLoop.main.run(
+                mode: .default,
+                before: min(restDeadline, Date().addingTimeInterval(0.002))
+            )
+        }
+        XCTAssertTrue(
+            hud.debugAppearanceAtRest,
+            "the card never came to rest with its opening correction undecided"
+        )
+        hud.debugRootView.layoutSubtreeIfNeeded()
+        let rail = try XCTUnwrap(
+            HUD.chipRowScrollView(in: hud.debugRootView),
+            "the card has no rail while its opening correction is undecided"
+        )
+        let size = HUD.transcriptSize(text: card.original, rewrite: card)
+        let cardFrame = HUDPlacement.cardFrame(
+            panelFrame: hud.debugPanel.frame,
+            cardSize: size,
+            topInset: HUD.shadowPadding
+        )
+        let band = HUD.rewriteChipRowFrame(cardFrame: cardFrame, card: card)
+        let point = CGPoint(x: band.midX, y: band.midY)
+        let maximum = max(
+            0,
+            (rail.documentView?.frame.width ?? 0) - rail.contentView.bounds.width
+        )
+        XCTAssertLessThanOrEqual(
+            130,
+            maximum,
+            "the rail cannot hold the revealed position and the wheel's travel"
+        )
+
+        rail.contentView.scroll(to: NSPoint(x: 100, y: 0))
+        rail.reflectScrolledClipView(rail.contentView)
+        hud.debugSetRailIntendedOrigin(.zero)
+        XCTAssertEqual(
+            rail.contentView.bounds.origin.x,
+            100,
+            accuracy: 1e-9,
+            "the revealed position did not reach the clip"
+        )
+        XCTAssertEqual(
+            hud.debugRailIntendedOrigin.x,
+            0,
+            accuracy: 1e-9,
+            "the card recorded the reveal before this wheel"
+        )
+        XCTAssertFalse(
+            hud.debugRailPositionRestored,
+            "the opening correction decided before the wheel could meet the undecided reveal"
+        )
+
+        let event = ExactRailWheelEvent(
+            deltaX: -30,
+            deltaY: 0,
+            phase: .began,
+            timestamp: ProcessInfo.processInfo.systemUptime
+        )
+        XCTAssertTrue(
+            hud.debugDeliverWheel(event, at: point),
+            "the routed wheel after the reveal was left to a native view"
+        )
+        XCTAssertEqual(
+            rail.contentView.bounds.origin.x,
+            130,
+            accuracy: 1e-9,
+            "the wheel reset the reveal instead of moving from it"
+        )
+        XCTAssertEqual(
+            hud.debugRailIntendedOrigin.x,
+            130,
+            accuracy: 1e-9,
+            "the wheel did not record the revealed position plus its travel"
+        )
+        XCTAssertTrue(
+            waitForTheRailToSettle(hud),
+            "the card never came to rest with its opening correction decided"
+        )
+        XCTAssertEqual(
+            rail.contentView.bounds.origin.x,
+            130,
+            accuracy: 0.05,
+            "the opening correction did not keep the reveal plus the wheel"
+        )
+    }
+
+    /// A logical x move clears a vertical residue already held by the clip.
+    ///
+    /// The style rail has no vertical travel to hold a y residue. A scroll view
+    /// with both ranges does, and it shows the full clip origin that has to be
+    /// compared before an AppKit write is skipped.
+    func testScrollRailComparesTheFullClipOriginBeforeSkippingTheWrite() {
+        let document = NSView(
+            frame: NSRect(x: 0, y: 0, width: 400, height: 200)
+        )
+        let clipRect = NSRect(x: 0, y: 0, width: 100, height: 50)
+        let scrollView = NSScrollView(frame: clipRect)
+        scrollView.documentView = document
+        scrollView.contentView.scroll(to: NSPoint(x: 1, y: 0.5))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        XCTAssertEqual(
+            scrollView.contentView.bounds.origin,
+            NSPoint(x: 1, y: 0.5),
+            "the vertical residue did not reach the clip"
+        )
+        XCTAssertTrue(
+            HUD.scrollRail(scrollView: scrollView, step: -1, base: 0),
+            "the logical x move was not accepted"
+        )
+        XCTAssertEqual(
+            scrollView.contentView.bounds.origin,
+            NSPoint(x: 1, y: 0),
+            "the scroll left the clip's vertical residue in place"
+        )
+    }
+
+    /// A three-pixel residue on a 1x display is the appearance's, and is corrected.
+    ///
+    /// The residue's reach is a function of the backing scale, so a three-pixel
+    /// residue is inside the window on a 1x display, where three pixels is
+    /// three points, and outside it on a 2x display, where the window is 2.5
+    /// points. The residue is left on the clip on the first frame on which the
+    /// appearance has stopped but the correction has not yet decided, which is
+    /// the frame the correction reads.
+    func testTheCorrectionRestoresAThreePixelResidueOnAOneXDisplay() throws {
+        let fixture = try makeFixture()
+        defer { close(fixture) }
+        try XCTSkipUnless(
+            fixture.hud.debugPanel.backingScaleFactor == 1,
+            "a three-pixel residue is only the appearance's on a 1x display"
+        )
+        let deadline = Date().addingTimeInterval(4)
+        while Date() < deadline,
+              !(fixture.hud.debugAppearanceAtRest && !fixture.hud.debugRailPositionRestored) {
+            fixture.hud.debugRootView.layoutSubtreeIfNeeded()
+            if !fixture.hud.debugRailPositionRestored {
+                injectResidue(3.0, into: fixture)
+            }
+            RunLoop.main.run(
+                mode: .default,
+                before: min(deadline, Date().addingTimeInterval(0.002))
+            )
+        }
+        XCTAssertTrue(
+            fixture.hud.debugAppearanceAtRest,
+            "the card's appearance never came to rest, so the correction could not be tested"
+        )
+        XCTAssertFalse(
+            fixture.hud.debugRailPositionRestored,
+            "the opening correction decided before the residue could be left for it"
+        )
+        injectResidue(3.0, into: fixture)
+        XCTAssertTrue(
+            waitForTheRailToSettle(fixture.hud),
+            "the card never came to rest with its opening correction decided"
+        )
+        XCTAssertEqual(
+            railOffset(fixture),
+            0,
+            accuracy: 0.05,
+            "the opening correction left a three-pixel residue on a 1x display"
+        )
+    }
+
     func testARailGestureNeverPagesVersionsOrScrollsTheBody() throws {
         var previous = 0
         var next = 0
@@ -960,6 +1355,46 @@ final class HUDRailWheelTests: XCTestCase {
         )
     }
 
+    /// Leaves a known residue in the rail's clip, as the appearance does.
+    ///
+    /// - Parameters:
+    ///   - x: the residue, in points.
+    ///   - fixture: the card and its rail.
+    private func injectResidue(_ x: CGFloat, into fixture: Fixture) {
+        fixture.rail.contentView.scroll(to: NSPoint(x: x, y: 0))
+        fixture.rail.reflectScrolledClipView(fixture.rail.contentView)
+        fixture.hud.debugRootView.layoutSubtreeIfNeeded()
+    }
+
+    /// Waits, bounded, for the appearance to rest and the opening correction to be decided.
+    ///
+    /// The correction decides on the second frame on which the springs are at
+    /// rest and the rail's frame is unchanged, so a rail that has come to rest
+    /// has not necessarily been corrected yet.
+    ///
+    /// - Parameters:
+    ///   - hud: the card.
+    ///   - seconds: the longest to wait.
+    /// - Returns: whether both happened inside the budget.
+    private func waitForTheRailToSettle(_ hud: HUD, within seconds: TimeInterval = 4) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        var settled = 0
+        while Date() < deadline {
+            hud.debugRootView.layoutSubtreeIfNeeded()
+            if hud.debugAppearanceAtRest, hud.debugRailPositionRestored {
+                settled += 1
+                if settled >= 2 { return true }
+            } else {
+                settled = 0
+            }
+            RunLoop.main.run(
+                mode: .default,
+                before: min(deadline, Date().addingTimeInterval(0.02))
+            )
+        }
+        return false
+    }
+
     private func setRail(_ fixture: Fixture, to x: CGFloat) {
         fixture.rail.contentView.scroll(to: NSPoint(x: x, y: 0))
         fixture.rail.reflectScrolledClipView(fixture.rail.contentView)
@@ -986,6 +1421,37 @@ final class HUDRailWheelTests: XCTestCase {
             RunLoop.main.run(mode: .default, before: min(deadline, Date().addingTimeInterval(0.01)))
         }
     }
+}
+
+/// A precise wheel whose point delta is not rounded to integer wheel units.
+private final class ExactRailWheelEvent: NSEvent {
+    private let exactDeltaX: CGFloat
+    private let exactDeltaY: CGFloat
+    private let exactPhase: NSEvent.Phase
+    private let exactTimestamp: TimeInterval
+
+    init(deltaX: CGFloat, deltaY: CGFloat, phase: NSEvent.Phase, timestamp: TimeInterval) {
+        exactDeltaX = deltaX
+        exactDeltaY = deltaY
+        exactPhase = phase
+        exactTimestamp = timestamp
+        super.init()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("unused")
+    }
+
+    override var type: NSEvent.EventType { .scrollWheel }
+    override var scrollingDeltaX: CGFloat { exactDeltaX }
+    override var scrollingDeltaY: CGFloat { exactDeltaY }
+    override var deltaX: CGFloat { exactDeltaX }
+    override var deltaY: CGFloat { exactDeltaY }
+    override var hasPreciseScrollingDeltas: Bool { true }
+    override var phase: NSEvent.Phase { exactPhase }
+    override var momentumPhase: NSEvent.Phase { [] }
+    override var isDirectionInvertedFromDevice: Bool { false }
+    override var timestamp: TimeInterval { exactTimestamp }
 }
 
 /// A row whose selection really moves, the way the card's model moves it.

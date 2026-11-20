@@ -289,6 +289,10 @@ final class HUDScrollTests: XCTestCase {
             waitForRailToRest(fixture.hud, rail),
             "the card's appearance never came to rest, so the rail's opening position is unknown"
         )
+        XCTAssertTrue(
+            waitForTheOpeningCorrection(fixture.hud),
+            "the card's opening correction was never decided, so the rail's resting position is unknown"
+        )
         let opened = clip.bounds.origin.x
         XCTAssertEqual(opened, 0, accuracy: 0.5, "the rail did not open on its first style")
 
@@ -371,6 +375,10 @@ final class HUDScrollTests: XCTestCase {
             waitForRailToRest(fixture.hud, rail),
             "the card's appearance never came to rest, so the rail's opening position is unknown"
         )
+        XCTAssertTrue(
+            waitForTheOpeningCorrection(fixture.hud),
+            "the card's opening correction was never decided, so the rail's resting position is unknown"
+        )
         let rested = clip.bounds.origin.x
         XCTAssertEqual(rested, 0, accuracy: 0.5, "the rail rested away from its first style")
 
@@ -450,6 +458,10 @@ final class HUDScrollTests: XCTestCase {
             waitForRailToRest(hud, rail),
             "the card's appearance never came to rest, so the wheel's survival is unknown"
         )
+        XCTAssertTrue(
+            waitForTheOpeningCorrection(hud),
+            "the card's opening correction was never decided, so the rail's resting position is unknown"
+        )
         XCTAssertGreaterThan(
             clip.bounds.origin.x,
             0.5 * pixel,
@@ -468,30 +480,46 @@ final class HUDScrollTests: XCTestCase {
         )
     }
 
-    /// The residue's reach is two points, and the window is that plus half a point.
+    /// The residue's reach follows the display scale, and the window adds half a point.
     ///
-    /// The appearance leaves the rail's clip inside its content by a residue
-    /// that is bounded in points rather than in device pixels: it measured 2.0
-    /// points on the hosted 1x runner and 2.0 points on a 2 px/pt display here,
-    /// which is four device pixels there. The window is therefore one value,
-    /// and the same on every display.
+    /// The appearance can leave three device pixels on the rail's clip, which is
+    /// three points at 1x and 1.5 points at 2x. The window is 3.5 points at 1x
+    /// and 2.5 points at higher scales, so it covers that residue on every
+    /// display the card is measured on.
     func testTheResidueWindowCoversTheMeasuredResidue() {
         XCTAssertEqual(
-            HUD.railResidueWindow,
-            2.5,
+            HUD.railResidueWindow(backingScale: 1),
+            3.5,
             accuracy: 1e-12,
-            "the window is the measured residue plus half a point of headroom"
+            "the 1x window is not three pixels plus half a point"
         )
         XCTAssertEqual(
-            HUD.railResidueWindow,
-            2.0 + 0.5,
+            HUD.railResidueWindow(backingScale: 2),
+            2.5,
             accuracy: 1e-12,
-            "the measured maximum residue is two points and the headroom is half a point"
+            "the 2x window is not the value the card shipped with"
+        )
+        XCTAssertEqual(
+            HUD.railResidueWindow(backingScale: 3),
+            2.5,
+            accuracy: 1e-12,
+            "the window shrank below the value the card shipped with at 3x"
         )
         XCTAssertLessThanOrEqual(
-            2.0,
-            HUD.railResidueWindow,
-            "the window does not reach the largest residue the appearance was measured at"
+            3.0,
+            HUD.railResidueWindow(backingScale: 1),
+            "the 1x window does not reach the three-pixel residue measured at 1x"
+        )
+        XCTAssertLessThanOrEqual(
+            1.0,
+            HUD.railResidueWindow(backingScale: 2),
+            "the 2x window does not reach the residue measured at 2x"
+        )
+        XCTAssertEqual(
+            HUD.railResidueWindow(backingScale: 0),
+            3.5,
+            accuracy: 1e-12,
+            "a zero scale was not held at the 1x window"
         )
     }
 
@@ -502,7 +530,7 @@ final class HUDScrollTests: XCTestCase {
     /// not move at all. The numbers sit either side of the window the correction
     /// reads.
     func testARailWriteIsThePersonsOnlyPastTheResidue() {
-        let window = HUD.railResidueWindow
+        let window = HUD.railResidueWindow(backingScale: 2)
         XCTAssertTrue(
             HUD.railWriteIsPersons(
                 origin: CGPoint(x: 174.5, y: 0),
@@ -557,7 +585,7 @@ final class HUDScrollTests: XCTestCase {
             HUD.railOpeningOrigin(
                 origin: CGPoint(x: 2.0, y: 0),
                 intended: .zero,
-                window: HUD.railResidueWindow,
+                window: HUD.railResidueWindow(backingScale: 2),
                 scrollRange: wide
             ),
             .zero,
@@ -567,7 +595,7 @@ final class HUDScrollTests: XCTestCase {
             HUD.railOpeningOrigin(
                 origin: CGPoint(x: 2.6, y: 0),
                 intended: .zero,
-                window: HUD.railResidueWindow,
+                window: HUD.railResidueWindow(backingScale: 2),
                 scrollRange: wide
             ),
             "a position outside the residue window was corrected"
@@ -576,7 +604,7 @@ final class HUDScrollTests: XCTestCase {
             HUD.railOpeningOrigin(
                 origin: CGPoint(x: 1.0, y: 0),
                 intended: CGPoint(x: 0.5, y: 0),
-                window: HUD.railResidueWindow,
+                window: HUD.railResidueWindow(backingScale: 2),
                 scrollRange: wide
             ),
             CGPoint(x: 0.5, y: 0),
@@ -586,7 +614,7 @@ final class HUDScrollTests: XCTestCase {
             HUD.railOpeningOrigin(
                 origin: CGPoint(x: 0.5, y: 0),
                 intended: CGPoint(x: 0.5, y: 0),
-                window: HUD.railResidueWindow,
+                window: HUD.railResidueWindow(backingScale: 2),
                 scrollRange: wide
             ),
             "a rail already on the person's position was written again"
@@ -595,7 +623,7 @@ final class HUDScrollTests: XCTestCase {
             HUD.railOpeningOrigin(
                 origin: CGPoint(x: 0, y: 1.0),
                 intended: .zero,
-                window: HUD.railResidueWindow,
+                window: HUD.railResidueWindow(backingScale: 2),
                 scrollRange: wide
             ),
             .zero,
@@ -705,8 +733,12 @@ final class HUDScrollTests: XCTestCase {
         let pixel = 1 / hud.debugPanel.backingScaleFactor
         var held = 0
         for _ in 0 ..< 6 where held < 2 {
+            // The rail is placed by hand here, so the card's record is placed
+            // with it: a gesture is applied to the intended origin while the
+            // opening correction has not been decided.
             clip.scroll(to: .zero)
             rail.reflectScrolledClipView(clip)
+            hud.debugSetRailIntendedOrigin(.zero)
             hud.debugHandleScrollEvent(
                 DeliveredScrollEvent(
                     window: hud.debugPanel,
@@ -736,6 +768,10 @@ final class HUDScrollTests: XCTestCase {
         XCTAssertTrue(
             waitForRailToRest(hud, rail),
             "the card's appearance never came to rest, so the rail's position is unknown"
+        )
+        XCTAssertTrue(
+            waitForTheOpeningCorrection(hud),
+            "the card's opening correction was never decided, so the rail's resting position is unknown"
         )
         XCTAssertGreaterThan(
             clip.bounds.origin.x,
@@ -779,7 +815,7 @@ final class HUDScrollTests: XCTestCase {
         XCTAssertTrue(
             waitUntil(timeout: 4) {
                 reveal = max(reveal, clip.bounds.origin.x)
-                return reveal > HUD.railResidueWindow
+                return reveal > HUD.railResidueWindow(for: rail)
             },
             "the row never revealed the style the selected version carries, so the rail's position is unknown"
         )
@@ -789,6 +825,10 @@ final class HUDScrollTests: XCTestCase {
         XCTAssertTrue(
             waitForRailToRest(hud, rail),
             "the card's appearance never came to rest, so the rail's position is unknown"
+        )
+        XCTAssertTrue(
+            waitForTheOpeningCorrection(hud),
+            "the card's opening correction was never decided, so the rail's resting position is unknown"
         )
         let final = clip.bounds.origin.x
         let target = hud.debugRailIntendedOrigin.x
@@ -981,6 +1021,10 @@ final class HUDScrollTests: XCTestCase {
             waitForRailToRest(hud, railAfter),
             "the card's appearance never came to rest, so the rail's position is unknown"
         )
+        XCTAssertTrue(
+            waitForTheOpeningCorrection(hud),
+            "the card's opening correction was never decided, so the rail's resting position is unknown"
+        )
         let final = clipAfter.bounds.origin.x
         print("rr2 early arrow: landing=\(landing) final=\(final)")
         assertTheRailCameToRestOn(final, landing: landing, hud: hud)
@@ -1024,6 +1068,10 @@ final class HUDScrollTests: XCTestCase {
         XCTAssertTrue(
             waitForRailToRest(hud, rail),
             "the card's appearance never came to rest, so the arrow cannot be clicked"
+        )
+        XCTAssertTrue(
+            waitForTheOpeningCorrection(hud),
+            "the card's opening correction was never decided, so the rail's resting position is unknown"
         )
         let clip = rail.contentView
         assertTheRevealedStyleSitsPastTheThreshold(
@@ -1112,6 +1160,13 @@ final class HUDScrollTests: XCTestCase {
         container.addSubview(probe)
         defer { probe.removeFromSuperview() }
         container.layoutSubtreeIfNeeded()
+        // The rail is placed at its first style so the travel below is read
+        // from a known position: while the opening correction has not been
+        // decided the card applies a wheel to the intended origin, so the
+        // record is placed with the clip.
+        clip.scroll(to: .zero)
+        rail.reflectScrolledClipView(clip)
+        hud.debugSetRailIntendedOrigin(.zero)
         let before = clip.bounds.origin.x
 
         let delivered = DeliveredScrollEvent(
@@ -1490,6 +1545,35 @@ final class HUDScrollTests: XCTestCase {
             )
         } while Date() < deadline
         return false
+    }
+
+    /// Waits, bounded, for the card's opening correction to be decided.
+    ///
+    /// A rail that has come to rest has not necessarily been corrected yet.
+    /// The correction decides on the second frame on which the appearance's
+    /// springs are at rest and the rail's frame is unchanged, and a starved
+    /// frame clock can put that frame after a rest wait returns. A test that
+    /// reads a rested position waits for the decision too, so what it reads is
+    /// the position the correction left rather than the residue the appearance
+    /// left on top of it.
+    ///
+    /// - Parameters:
+    ///   - hud: the card.
+    ///   - seconds: the longest to wait.
+    /// - Returns: whether the correction decided inside the budget.
+    private func waitForTheOpeningCorrection(
+        _ hud: HUD,
+        within seconds: TimeInterval = 4
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if hud.debugRailPositionRestored { return true }
+            RunLoop.main.run(
+                mode: .default,
+                before: min(deadline, Date().addingTimeInterval(0.02))
+            )
+        }
+        return hud.debugRailPositionRestored
     }
 
     /// Waits for the rail to stop moving after an arrow asked it to reveal a

@@ -924,6 +924,19 @@ final class HUD {
     /// for itself as the person's; the app never does.
     var debugRailIntendedOrigin: CGPoint { railIntendedOrigin }
 
+    /// Places the rail's intended origin for a test that positions the rail by hand.
+    ///
+    /// The card applies the person's travel to the intended origin while the
+    /// opening correction has not been decided, so a test that writes the clip
+    /// itself has to write the intended origin with it. Placing only the clip
+    /// leaves the card applying the next gesture to where it last intended,
+    /// which is a position the test never chose. The app never calls this.
+    ///
+    /// - Parameter origin: the position to take as the person's.
+    func debugSetRailIntendedOrigin(_ origin: CGPoint) {
+        railIntendedOrigin = origin
+    }
+
     /// Moves the card's appearance by a known amount of time.
     ///
     /// The appearance runs on the frames the render loop delivers and spends
@@ -1499,14 +1512,34 @@ final class HUD {
             // on both appliers.
             if let axis, let rail {
                 let scale = event.isPrecise ? 1 : rail.horizontalLineScroll
+                // While the card is arriving, a clip still inside the residue
+                // window is an appearance position, so travel is applied to
+                // the intended origin. A clip already outside that window is
+                // a reveal or a person's position even if the record has not
+                // seen it, and travel starts there. Once the opening
+                // correction has decided there is no residue to inherit, and
+                // the clip is the position.
+                let clipOrigin = rail.contentView.bounds.origin
+                let followClip = railPositionRestored || Self.railWriteIsPersons(
+                    origin: clipOrigin,
+                    intended: railIntendedOrigin,
+                    window: Self.railResidueWindow(for: rail)
+                )
+                let base = followClip ? nil : railIntendedOrigin.x
                 if Self.scrollRail(
                     scrollView: rail,
-                    step: axis.step(deltaX: event.deltaX, deltaY: event.deltaY) * scale
+                    step: axis.step(deltaX: event.deltaX, deltaY: event.deltaY) * scale,
+                    base: base
                 ) {
                     // A wheel that moved the rail is the person's position,
                     // however small: the opening correction puts the rail back
                     // on this rather than on its first style.
                     railIntendedOrigin = rail.contentView.bounds.origin
+                    // The explicit wheel ends any reveal follow, including the
+                    // one its own far write armed through the bounds observer,
+                    // so later in-window writes are residue, not the person's.
+                    railOriginTracks = false
+                    railTrackedOrigin = nil
                 }
             }
             return delivered
@@ -1732,31 +1765,47 @@ final class HUD {
         return best
     }
 
-    /// Moves the rail by one gesture's travel.
+    /// Moves the rail by one gesture's travel, from the position the person last gave it.
     ///
     /// The travel has already been read from the axis the gesture latched, and
     /// it already carries the person's natural-scrolling setting: a negative
     /// horizontal delta means the fingers went left, which reveals what is on
     /// the right, so the clip's origin increases. One step is the travel
-    /// subtracted from the current origin, held between the two ends of the
-    /// content. The rail never bounces: the end of the content is where the
-    /// gesture stops.
+    /// subtracted from the base, held between the two ends of the content. The
+    /// rail never bounces: the end of the content is where the gesture stops.
+    ///
+    /// The base is not always the live clip origin. While the card is arriving,
+    /// the appearance's frame transform has the clip a residue inside its
+    /// content, and that residue is not a position anybody chose: adding the
+    /// person's travel to it writes the residue into the position the card
+    /// records as the person's, and the opening correction then restores the
+    /// rail to the residue for the rest of the card's life. The caller
+    /// therefore passes the last origin the person or the card intended, which
+    /// is the clip origin once the opening correction has been decided and the
+    /// intended origin before that. See the rail branch of ``pointerEvent``.
     ///
     /// - Parameters:
     ///   - scrollView: the rail.
     ///   - step: the travel in points, with any line delta already converted.
-    /// - Returns: whether the rail moved.
+    ///   - base: the origin to apply the travel to, or `nil` to use the clip's
+    ///     origin as it stands.
+    /// - Returns: whether the rail's logical origin moved. The clip is written
+    ///   only when that movement's target differs from the live clip origin.
     @discardableResult
-    static func scrollRail(scrollView: NSScrollView, step: CGFloat) -> Bool {
+    static func scrollRail(scrollView: NSScrollView, step: CGFloat, base: CGFloat? = nil) -> Bool {
         guard step != 0 else { return false }
         let clip = scrollView.contentView
         let documentWidth = scrollView.documentView?.frame.width ?? 0
         let maximum = max(0, documentWidth - clip.bounds.width)
         guard maximum > 0 else { return false }
-        let x = min(max(clip.bounds.origin.x - step, 0), maximum)
-        guard x != clip.bounds.origin.x else { return false }
-        clip.scroll(to: NSPoint(x: x, y: 0))
-        scrollView.reflectScrolledClipView(clip)
+        let logicalOrigin = base ?? clip.bounds.origin.x
+        let x = min(max(logicalOrigin - step, 0), maximum)
+        guard x != logicalOrigin else { return false }
+        let target = CGPoint(x: x, y: 0)
+        if clip.bounds.origin != target {
+            clip.scroll(to: target)
+            scrollView.reflectScrolledClipView(clip)
+        }
         return true
     }
 
@@ -2091,12 +2140,43 @@ final class HUD {
     /// SwiftUI hands the card's appearance scale and offset to the scroll view
     /// it hosts as a frame transform, and AppKit answers each one by
     /// re-deriving the rail's clip bounds, which it leaves inside its content.
-    /// The residue is bounded in points, not in device pixels: it measured 2.0
-    /// points on the hosted 1x runner and 2.0 points here on a 2 px/pt display,
-    /// which is four device pixels there. Half a point of headroom over that
-    /// measured maximum is the window, and the same window holds at every
-    /// scale, so a display that puts more pixels in a point cannot shorten it.
-    static let railResidueWindow: CGFloat = 2.5
+    /// The residue is a small number of device pixels, so its reach in points
+    /// shrinks as the display puts more pixels in a point: measured here it is
+    /// one pixel, 0.9994 points at 1x and 0.4994 points at 2x, and the largest
+    /// seen on a 1x backing is three pixels, 3.0 points.
+    ///
+    /// The window is therefore a function of the backing scale. At 1x it is
+    /// 3.5 points, three pixels plus half a point of headroom, so the largest
+    /// residue measured there is still the appearance's and can still be
+    /// corrected. A constant 2.5 points would classify a three-pixel residue
+    /// as somebody's position and leave it, which is the failure this replaces.
+    /// From 2x up the window stays at 2.5 points, the value the card shipped
+    /// with: three pixels there is 1.5 points and the measured residue is one
+    /// pixel, so 2.5 points is already more than the residue can reach.
+    ///
+    /// A rail with no window is read as 2x, the scale of every display this
+    /// card has been measured on, and the caller is expected to fall back the
+    /// same way: see ``railResidueWindow(for:)``.
+    ///
+    /// - Parameter backingScale: the display's backing scale, in pixels per point.
+    /// - Returns: the residue's reach in points at that scale.
+    static func railResidueWindow(backingScale: CGFloat) -> CGFloat {
+        max(2.5, 3.5 / max(backingScale, 1))
+    }
+
+    /// The residue window of the display a rail is drawn on.
+    ///
+    /// The rail's window is the display it is composited on, and its backing
+    /// scale is the one AppKit rounds the clip's origin to. A rail that is not
+    /// in a window yet has no display to read, and is taken as 2x, the scale of
+    /// every display this card has been measured on; that fallback is the same
+    /// one ``railResidueWindow(backingScale:)`` documents.
+    ///
+    /// - Parameter rail: the card's rail.
+    /// - Returns: the residue's reach in points on that rail's display.
+    static func railResidueWindow(for rail: NSScrollView) -> CGFloat {
+        railResidueWindow(backingScale: rail.window?.backingScaleFactor ?? 2)
+    }
 
     /// Where the opening correction puts the rail, or `nil` when it leaves it.
     ///
@@ -2111,7 +2191,7 @@ final class HUD {
     ///   - origin: where the rail's clip is now.
     ///   - intended: the position the person last wrote, or `.zero` when they
     ///     wrote none.
-    ///   - window: the residue's reach, in points, from ``railResidueWindow``.
+    ///   - window: the residue's reach, in points, from ``railResidueWindow(backingScale:)``.
     ///   - scrollRange: how far the rail's document travels on each axis.
     /// - Returns: the origin to scroll to, held inside the document, or `nil`
     ///   to leave the rail where it is.
@@ -2170,7 +2250,7 @@ final class HUD {
         guard let origin = Self.railOpeningOrigin(
             origin: clip.bounds.origin,
             intended: railIntendedOrigin,
-            window: Self.railResidueWindow,
+            window: Self.railResidueWindow(for: rail),
             scrollRange: scrollRange
         ) else { return }
         isCorrectingRailOrigin = true
@@ -2246,7 +2326,7 @@ final class HUD {
     ///   - origin: where the clip was written to.
     ///   - intended: the position the person last wrote, or `.zero` when they
     ///     wrote none.
-    ///   - window: the residue's reach, in points, from ``railResidueWindow``.
+    ///   - window: the residue's reach, in points, from ``railResidueWindow(backingScale:)``.
     /// - Returns: whether the write is the person's position.
     static func railWriteIsPersons(origin: CGPoint, intended: CGPoint, window: CGFloat) -> Bool {
         max(abs(origin.x - intended.x), abs(origin.y - intended.y)) > window
@@ -2267,7 +2347,7 @@ final class HUD {
         guard railOriginTracks || Self.railWriteIsPersons(
             origin: origin,
             intended: railIntendedOrigin,
-            window: Self.railResidueWindow
+            window: Self.railResidueWindow(for: rail)
         ) else { return }
         railIntendedOrigin = origin
         if !railOriginTracks {
