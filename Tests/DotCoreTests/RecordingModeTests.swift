@@ -172,6 +172,38 @@ final class RecordingModeTests: XCTestCase {
         }
     }
 
+    func testTheMouseIsAlwaysHold() {
+        for configuredMode in RecordingMode.allCases {
+            XCTAssertEqual(
+                RecordKeyInteraction.action(for: .release, trigger: .mouse, configuredMode: configuredMode, phase: .recording),
+                .stop
+            )
+            XCTAssertEqual(
+                RecordKeyInteraction.action(for: .press, trigger: .mouse, configuredMode: configuredMode, phase: .idle),
+                .start
+            )
+            XCTAssertEqual(
+                RecordKeyInteraction.action(for: .press, trigger: .mouse, configuredMode: configuredMode, phase: .recording),
+                .stop
+            )
+            XCTAssertEqual(
+                RecordKeyInteraction.action(for: .press, trigger: .mouse, configuredMode: configuredMode, phase: .working),
+                .ignore
+            )
+        }
+    }
+
+    func testTheKeyboardKeepsTheChosenMode() {
+        XCTAssertEqual(
+            RecordKeyInteraction.action(for: .release, trigger: .keyboard, configuredMode: .toggle, phase: .recording),
+            .ignore
+        )
+        XCTAssertEqual(
+            RecordKeyInteraction.action(for: .release, trigger: .keyboard, configuredMode: .hold, phase: .recording),
+            .stop
+        )
+    }
+
     func testTheToggleLoopSurvivesARecordingThatWaits() {
         // A tap that outlives the microphone prompt: the release arrives while
         // the prompt is up, and the recording still has to run until the next

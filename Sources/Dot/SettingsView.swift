@@ -459,19 +459,6 @@ struct SettingsView: View {
                     width: nil
                 )
             }
-            if config.mouseTriggerButton != .off && !Paste.accessibilityGranted {
-                SettingsDivider()
-                SettingsRow(
-                    "Accessibility permission",
-                    subtitle: "The mouse button needs this permission to be heard."
-                ) {
-                    Button("Grant Access") {
-                        Paste.requestAccessibility()
-                        SystemAction.openAccessibilitySettings()
-                    }
-                    .buttonStyle(DotSecondaryButtonStyle())
-                }
-            }
         }
     }
 
@@ -482,11 +469,15 @@ struct SettingsView: View {
                 subtitle: "When off, transcripts are copied to the clipboard.",
                 isOn: autoPasteBinding
             )
-            if config.autoPaste && !Paste.accessibilityGranted {
+            if !Paste.accessibilityGranted,
+               let reason = Self.accessibilityReason(
+                   autoPaste: config.autoPaste,
+                   mouseButton: config.mouseTriggerButton
+               ) {
                 SettingsDivider()
                 SettingsRow(
                     "Accessibility permission",
-                    subtitle: "Pasting into another app needs this permission."
+                    subtitle: reason
                 ) {
                     Button("Grant Access") {
                         Paste.requestAccessibility()
@@ -3205,5 +3196,27 @@ extension EnvironmentValues {
     var settingsHeightOverride: CGFloat? {
         get { self[SettingsHeightKey.self] }
         set { self[SettingsHeightKey.self] = newValue }
+    }
+}
+
+extension SettingsView {
+    /// Why Dot needs Accessibility, or `nil` when nothing that is on needs it.
+    ///
+    /// Pasting and the mouse button ask for the same grant, so the page offers
+    /// one row for both and names whichever is on: two rows with one button
+    /// each would ask the person to grant the same thing twice.
+    nonisolated static func accessibilityReason(autoPaste: Bool, mouseButton: MouseTriggerButton) -> String? {
+        let needsPaste = autoPaste
+        let needsMouse = mouseButton != .off
+        switch (needsPaste, needsMouse) {
+        case (false, false):
+            return nil
+        case (true, false):
+            return "Pasting into another app needs this permission."
+        case (false, true):
+            return "The mouse button needs this permission to be heard."
+        case (true, true):
+            return "Pasting and the mouse button need this permission."
+        }
     }
 }

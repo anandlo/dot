@@ -320,13 +320,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         keyWatcher.onRelease = { [weak self] in
-            self?.recordKeyReleased()
+            self?.recordReleased(from: .keyboard)
         }
         mouseTrigger.onPress = { [weak self] in
-            self?.mousePressed()
+            self?.recordPressed(from: .mouse)
         }
         mouseTrigger.onRelease = { [weak self] in
-            self?.mouseReleased()
+            self?.recordReleased(from: .mouse)
         }
         keyWatcher.onBlocked = { [weak self] in
             self?.hotkeyBlocked()
@@ -909,65 +909,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func mousePressed() {
-        Log.shared.info("mouse.pressed", [
-            "button": .string(config.mouseTriggerButton.rawValue),
-        ])
-        if assistant.isTurnActive,
-           AssistantInteraction.action(for: .dictation, phase: assistantPhase) == .ignore {
-            Log.shared.info("mouse.ignored", ["reason": .string("an assistant turn is running")])
-            return
-        }
-        switch RecordKeyInteraction.action(
-            for: .press,
-            mode: .hold,
-            phase: phase
-        ) {
-        case .start:
-            startedFromMouse = true
-            startRecording(fromHotkey: false)
-        case .stop:
-            stopRecording()
-        case .ignore:
-            break
-        }
-    }
-
-    private func mouseReleased() {
-        guard RecordKeyInteraction.action(
-            for: .release,
-            mode: .hold,
-            phase: phase
-        ) == .stop else { return }
-        stopRecording()
-    }
-
-    /// The hot key was pressed.
+    /// The record key was pressed.
     ///
     /// The press is answered in both modes: it starts a recording when there is
     /// none, and it stops one when there is. The mode only decides what a
     /// *release* means, which is ``recordKeyReleased()``'s question.
-    private func hotkeyPressed() {
-        Log.shared.info("hotkey.pressed", [
-            "hotkey": .string(config.hotkey.label),
-            "mode": .string(config.recordingMode.rawValue),
-        ])
-        keyWatcher.noteHotkeyFired()
+    private func recordPressed(from trigger: RecordTrigger) {
+        switch trigger {
+        case .keyboard:
+            Log.shared.info("hotkey.pressed", [
+                "hotkey": .string(config.hotkey.label),
+                "mode": .string(config.recordingMode.rawValue),
+            ])
+            keyWatcher.noteHotkeyFired()
+        case .mouse:
+            Log.shared.info("mouse.pressed", [
+                "button": .string(config.mouseTriggerButton.rawValue),
+            ])
+        }
         // A dictation must not start on top of a question. The two keys write to
         // the same microphone, and the answer would arrive in the middle of a
         // second take.
         if assistant.isTurnActive,
            AssistantInteraction.action(for: .dictation, phase: assistantPhase) == .ignore {
-            Log.shared.info("hotkey.ignored", ["reason": .string("an assistant turn is running")])
+            let ignoredLog = (trigger == .keyboard) ? "hotkey.ignored" : "mouse.ignored"
+            Log.shared.info(ignoredLog, ["reason": .string("an assistant turn is running")])
             return
         }
         switch RecordKeyInteraction.action(
             for: .press,
-            mode: config.recordingMode,
+            trigger: trigger,
+            configuredMode: config.recordingMode,
             phase: phase
         ) {
         case .start:
-            startRecording(fromHotkey: true)
+            if trigger == .keyboard {
+                startRecording(fromHotkey: true)
+            } else {
+                startedFromMouse = true
+                startRecording(fromHotkey: false)
+            }
         case .stop:
             // The press stops the take in both modes. In hold mode this is the
             // fallback for a release the keyboard state could not read; in
@@ -1033,10 +1014,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// an instruction, so a recording started by a press keeps running until
     /// the next press, and the watcher is left running for the two things it
     /// still owes: the secure-input report and the release of the fallback.
-    private func recordKeyReleased() {
+    private func recordReleased(from trigger: RecordTrigger) {
         guard RecordKeyInteraction.action(
             for: .release,
-            mode: config.recordingMode,
+            trigger: trigger,
+            configuredMode: config.recordingMode,
             phase: phase
         ) == .stop else { return }
         stopRecording()
@@ -2871,7 +2853,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch identifier {
                 case GlobalHotkeyManager.recordIdentifier,
                      GlobalHotkeyManager.aliasIdentifier:
-                    self.hotkeyPressed()
+                    self.recordPressed(from: .keyboard)
                 case GlobalHotkeyManager.pasteIdentifier:
                     self.pasteLastTranscript()
                 case GlobalHotkeyManager.paletteIdentifier:
