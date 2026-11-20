@@ -1,75 +1,46 @@
 # Contributing to Dot
 
-Thank you for your interest in contributing to Dot! We welcome contributions, bug fixes, feature proposals, and improvements from the community.
+## Development setup
 
----
+Build with Xcode 26 or later. Dot targets macOS 14. Building requires the macOS 26 SDK or newer for APIs such as Apple Speech and Liquid Glass. Apple Speech is unavailable on macOS 14 and 15.
 
-## Development Setup
-
-### Prerequisites
-- macOS 14.0 (Sonoma) or macOS 15.0+ (Sequoia)
-- Xcode 15.0+ or Swift 6.0+ Command Line Tools
-- Git
-
-### Getting the Code
-```bash
+```sh
 git clone https://github.com/anandlo/dot.git
 cd dot
 ```
 
----
+## Build and test
 
-## Building and Testing
+The Satoshi font is fetched rather than committed. Fetch it before any build or test run:
 
-Dot uses standard Swift Package Manager tooling.
-
-```bash
-# Run all unit and integration tests
-swift test
-
-# Build debug binary
-swift build
-
-# Build release .app bundle
-./scripts/build.sh
-
-# Build DMG distribution package
-./scripts/release.sh
+```sh
+./scripts/fetch-fonts.sh
 ```
 
-All 330+ unit tests must pass cleanly before any code is merged.
+Then run:
 
----
+```sh
+swift build --build-tests
+swift test
+./scripts/build.sh
+```
 
-## Architecture Overview
+`swift build --build-tests` compiles the source and test targets. Fix any compiler warnings before opening a pull request. Run `swift test` without `--parallel`, because the suite is serial: some tests composite offscreen windows and time motion, and parallel processes disturb their measurements. `./scripts/build.sh` assembles and signs the local `build/Dot.app` bundle. Release packaging is separate and is not a contributor step.
 
-Dot is divided into two primary targets:
+## Architecture
 
-1. **`DotCore`**: Foundation library containing headless business logic, data models, audio recording interfaces (`Recorder`), configuration storage (`DotConfig`), provider client drivers (`ProviderRegistry`, `OpenAIProvider`, `DeepgramProvider`, `GroqProvider`, etc.), and Keychain credential management (`CredentialStore`).
-2. **`Dot`**: The native macOS application shell containing AppKit window controllers, menu bar management, the floating dynamic HUD (`HUDView`), Settings window (`SettingsView`), and the first-run onboarding tour (`WelcomeView`, `WelcomeTour`).
+- `DotCore`: shared library for configuration, credentials, provider and assistant clients, audio and transcript models, and other logic used by the app.
+- `Dot`: the macOS executable target, containing the menu bar, hotkeys, recorder, HUD, Settings, dictation palette, history, and rendering.
 
----
+## Contributions
 
-## Code Guidelines
+- Keep each pull request focused on one change and target `main`.
+- Match the existing Swift concurrency and AppKit or SwiftUI patterns. The package has no third-party dependencies; discuss one before adding it.
+- Write comments for non-obvious decisions and invariants.
+- Use synthetic data in logs and screenshots shared with an issue or pull request. Remove credentials, personal transcripts, and private audio before sharing.
 
-- **Native macOS Craftsmanship**: Dot adheres strictly to Apple's Human Interface Guidelines. Avoid non-standard UI paradigms.
-- **Zero Heavy Dependencies**: Avoid adding bulky third-party SPM packages. Dot is built on native Foundation, AppKit, AVFoundation, and SwiftUI.
-- **Strict Concurrency**: Code should conform to modern Swift concurrency (`async`/`await`, `@MainActor`, `Sendable`).
-- **Clean Documentation**: Code comments should explain design decisions and non-obvious invariants rather than redundant restatements of code. Avoid ephemeral bug notes or ad-hoc task comments.
-- **Privacy First**: Dot never phones home, collects telemetry, or leaks credentials. Secrets must remain strictly within macOS Keychain.
+## CI
 
----
+CI runs on pushes to `main` and pull requests targeting `main`. Its current checks fetch the font, require a warning-free `swift build --build-tests`, run serial `swift test`, and build the app bundle. The `Test & Build` check is required on `main`. A workflow triggered by a fork pull request can require maintainer approval before it starts; if `Test & Build` is waiting for approval, request that approval rather than treating the missing check as a pass.
 
-## Submitting Pull Requests
-
-1. Fork the repository and create your feature branch:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-2. Make your changes with focused, descriptive commits.
-3. Verify that all tests pass:
-   ```bash
-   swift test
-   ```
-4. Push your branch to GitHub and open a Pull Request against `main`.
-5. Provide a clear PR description explaining the motivation, changes made, and any manual verification performed.
+Run the build and test commands above locally before opening a pull request. State what you ran and any manual verification in the pull request description.
