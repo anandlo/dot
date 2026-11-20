@@ -2296,6 +2296,19 @@ struct HUDWaveform: View {
         static let litRamp: Double = 0.35
         /// The display value above which a dot counts as shining.
         static let shineOnset: Double = 0.55
+        /// The display value from which a dot carries a highlight.
+        ///
+        /// Below half heat a dot has no highlight. Above it the highlight grows
+        /// linearly, reaching its full ink at full heat. The glint keeps its own
+        /// onset; this threshold only governs the off-centre specular.
+        static let highlightOnset: Double = 0.5
+        /// The ink of a highlight at full heat.
+        static let highlightInk: Double = 0.75
+        /// The distance from the dot's centre to the highlight's centre, as a
+        /// share of the dot's diameter, measured along the diagonal.
+        static let highlightOffset: CGFloat = 0.18
+        /// The radius of the highlight, as a share of the dot's radius.
+        static let highlightRadius: CGFloat = 0.38
         /// The reach of a dot's halo, as a share of the pitch.
         ///
         /// It is `0.45` of the pitch, which ends the halo `0.05` of a pitch, a
@@ -2914,21 +2927,28 @@ struct HUDWaveform: View {
                 )
             }
 
-            // A lit lamp has one highlight, and it is what the eye reads as round
-            // rather than flat. It is inside the dot, off its centre, and it is the
-            // only porcelain the grid carries.
+            // A lamp above half heat has one highlight, strengthening to full ink
+            // at the top of its range. It is what the eye reads as round rather
+            // than flat. It is inside the dot, off its centre, and it is the only
+            // porcelain the grid carries.
             if highlight {
-                let sparkle = 0.38 * dot.radius
-                let offset = 0.22 * dot.radius
-                context.fill(
-                    Path(ellipseIn: CGRect(
-                        x: dot.centre.x - offset - sparkle,
-                        y: dot.centre.y - offset - sparkle,
-                        width: sparkle * 2,
-                        height: sparkle * 2
-                    )),
-                    with: .color(Self.matrixInk.opacity(0.75 * dot.display * dot.reveal * fade))
-                )
+                let ramp = min(1, max(0, (dot.display - MatrixLattice.highlightOnset)
+                    / (1 - MatrixLattice.highlightOnset)))
+                if ramp > 0 {
+                    let sparkle = MatrixLattice.highlightRadius * dot.radius
+                    let offset = MatrixLattice.highlightOffset * 2 * dot.radius / sqrt(2)
+                    context.fill(
+                        Path(ellipseIn: CGRect(
+                            x: dot.centre.x - offset - sparkle,
+                            y: dot.centre.y - offset - sparkle,
+                            width: sparkle * 2,
+                            height: sparkle * 2
+                        )),
+                        with: .color(Self.matrixInk.opacity(
+                            MatrixLattice.highlightInk * ramp * dot.reveal * fade
+                        ))
+                    )
+                }
             }
 
             // The glint: two crossed arms on a dot at the top of its range, for the
