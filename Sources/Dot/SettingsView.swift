@@ -448,6 +448,30 @@ struct SettingsView: View {
                     width: nil
                 )
             }
+            SettingsDivider()
+            SettingsRow("Mouse button", subtitle: "Hold to record. Dot takes over this button's click.") {
+                DotSelect(
+                    label: "Mouse button",
+                    options: MouseTriggerButton.allCases.map { button in
+                        DotSelectOption(value: button, title: button.title)
+                    },
+                    selection: mouseTriggerButtonBinding,
+                    width: nil
+                )
+            }
+            if config.mouseTriggerButton != .off && !Paste.accessibilityGranted {
+                SettingsDivider()
+                SettingsRow(
+                    "Accessibility permission",
+                    subtitle: "The mouse button needs this permission to be heard."
+                ) {
+                    Button("Grant Access") {
+                        Paste.requestAccessibility()
+                        SystemAction.openAccessibilitySettings()
+                    }
+                    .buttonStyle(DotSecondaryButtonStyle())
+                }
+            }
         }
     }
 
@@ -2336,6 +2360,16 @@ struct SettingsView: View {
             set: { value in
                 guard config.recordingMode != value else { return }
                 config.recordingMode = value
+            }
+        )
+    }
+
+    private var mouseTriggerButtonBinding: Binding<MouseTriggerButton> {
+        Binding(
+            get: { config.mouseTriggerButton },
+            set: { value in
+                guard config.mouseTriggerButton != value else { return }
+                config.mouseTriggerButton = value
             }
         )
     }

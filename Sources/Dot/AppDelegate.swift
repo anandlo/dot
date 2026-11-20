@@ -148,6 +148,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var frontmostNameAtPress: String?
     /// Whether the recording was asked for by the hot key.
     private var startedFromHotkey = false
+    /// Whether the recording was asked for by the mouse button.
+    private var startedFromMouse = false
+    /// The mouse button trigger that consumes the assigned button's events.
+    private let mouseTrigger = MouseButtonTrigger()
+    /// The mouse button the tap is currently built for, so a change restarts it.
+    private var appliedMouseButton: MouseTriggerButton = .off
     /// Why the take that is running was started.
     ///
     /// It is set by whichever shortcut opened the microphone and read when the
@@ -316,6 +322,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keyWatcher.onRelease = { [weak self] in
             self?.recordKeyReleased()
         }
+        mouseTrigger.onPress = { [weak self] in
+            self?.mousePressed()
+        }
+        mouseTrigger.onRelease = { [weak self] in
+            self?.mouseReleased()
+        }
         keyWatcher.onBlocked = { [weak self] in
             self?.hotkeyBlocked()
         }
@@ -334,6 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keyWatcher.watch(keyCode: config.hotkey.keyCode)
         cancelWatcher.watch(keyCode: Self.escapeKeyCode, reportsUnannouncedPresses: true)
         registerHotkeys()
+        applyMouseTrigger()
         installTestTrigger()
         startProviderRefresh()
         // The provider is built once the credential cache is warm, not here:
@@ -366,6 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcriptionTask?.cancel()
         recorder.cancel()
         keyWatcher.stop()
+        mouseTrigger.stop()
         cancelWatcher.stop()
         hotkeys?.uninstall()
         welcomeController.close()
@@ -895,6 +909,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func mousePressed() {
+        Log.shared.info("mouse.pressed", [
+            "button": .string(config.mouseTriggerButton.rawValue),
+        ])
+        if assistant.isTurnActive,
+           AssistantInteraction.action(for: .dictation, phase: assistantPhase) == .ignore {
+            Log.shared.info("mouse.ignored", ["reason": .string("an assistant turn is running")])
+            return
+        }
+        switch RecordKeyInteraction.action(
+            for: .press,
+            mode: .hold,
+            phase: phase
+        ) {
+        case .start:
+            startedFromMouse = true
+            startRecording(fromHotkey: false)
+        case .stop:
+            stopRecording()
+        case .ignore:
+            break
+        }
+    }
+
+    private func mouseReleased() {
+        guard RecordKeyInteraction.action(
+            for: .release,
+            mode: .hold,
+            phase: phase
+        ) == .stop else { return }
+        stopRecording()
+    }
+
     /// The hot key was pressed.
     ///
     /// The press is answered in both modes: it starts a recording when there is
@@ -1058,7 +1105,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startedFromHotkey = false
             return
         }
+        if startedFromMouse, !mouseTrigger.isPressActive {
+            Log.shared.info("recording.skipped", ["reason": .string("the mouse press was over")])
+            startedFromMouse = false
+            return
+        }
         startedFromHotkey = false
+        startedFromMouse = false
         do {
             try recorder.start(deviceUID: config.microphoneDeviceUID)
         } catch RecorderError.permissionDenied {
@@ -2662,6 +2715,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         "mode": .string(self.config.recordingMode.rawValue),
                     ])
                 }
+                if self.appliedMouseButton != self.config.mouseTriggerButton {
+                    self.applyMouseTrigger()
+                }
                 self.applyCalibration(for: MicrophoneCatalog.recordingDeviceUID(
                     configured: self.config.microphoneDeviceUID
                 ))
@@ -2800,6 +2856,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Shortcuts
+
+    private func applyMouseTrigger() {
+        // A tap that cannot be built yet (no Accessibility) retries on its own.
+        appliedMouseButton = config.mouseTriggerButton
+        mouseTrigger.start(button: config.mouseTriggerButton)
+    }
 
     private func registerHotkeys() {
         hotkeys?.uninstall()
