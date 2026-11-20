@@ -310,7 +310,7 @@ struct AssistantPage: View {
             SettingsRow(
                 "Status",
                 subtitle: statusDetail,
-                subtitleTone: note?.tone.color ?? DotTheme.ink3
+                subtitleTone: note?.tone.color ?? DotTheme.ink2
             ) {
                 statusChip
             }
@@ -1869,7 +1869,7 @@ struct KeyNote {
             switch self {
             case .good: DotTheme.mint
             case .bad: DotTheme.coral
-            case .neutral: DotTheme.ink3
+            case .neutral: DotTheme.ink2
             }
         }
     }
@@ -1889,7 +1889,7 @@ struct AssistantKeyRow: View {
     let onDelete: () -> Void
     /// A line under the row, for a page with no status row of its own.
     var subtitle: String?
-    var subtitleTone: Color = DotTheme.ink3
+    var subtitleTone: Color = DotTheme.ink2
 
     @FocusState private var isFocused: Bool
 

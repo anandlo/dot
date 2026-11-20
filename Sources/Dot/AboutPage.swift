@@ -210,7 +210,7 @@ struct AboutPage: View {
                     if let detail {
                         Text(detail)
                             .font(DotType.font(11, .regular))
-                            .foregroundStyle(DotTheme.ink3)
+                            .foregroundStyle(DotTheme.ink2)
                             .lineLimit(1)
                     }
                     Image(systemName: "arrow.up.right")
@@ -229,7 +229,7 @@ struct AboutPage: View {
             SettingsRow("Check for updates", symbol: "arrow.triangle.2.circlepath") {
                 Text(updateStatusText)
                     .font(DotType.tabularFont(11, .regular))
-                    .foregroundStyle(DotTheme.ink3)
+                    .foregroundStyle(DotTheme.ink2)
                     .lineLimit(1)
             }
         }

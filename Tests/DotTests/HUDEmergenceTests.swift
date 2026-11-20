@@ -1268,11 +1268,11 @@ extension HUDEmergenceTests {
 
 extension HUDEmergenceTests {
     /// The SHA-256 of the rested recording card, measured on the tree before the
-    /// emergence existed and re-measured when the app's typeface changed.
-    static let baseRecordingHash = "54016b2c90e3d7d078b0b6cd458f3f241e8461bbbc7fe7362a829f370cbc44de"
+    /// emergence existed and re-measured when the typeface and the secondary text tone changed.
+    static let baseRecordingHash = "6ffda7a632056d3ac915f109583b87aca123db933e04c88b96a5bf9e64e7533a"
     /// The SHA-256 of the rested transcript card, measured on the tree before the
-    /// emergence existed and re-measured when the app's typeface changed.
-    static let baseTranscriptHash = "25ae6916b1d3d6eab691c297e61a0c5ad9e835e38ab61ec21f23a4e2890c868c"
+    /// emergence existed and re-measured when the typeface and the secondary text tone changed.
+    static let baseTranscriptHash = "ec7429b8f2d9e2e627936397df0d5ecf09008c3fc7011045a587955df4b9fe54"
 
     /// The moments the strips are written at, in seconds.
     static let stripTimes: [Double] = [0, 0.048, 0.096, 0.144, 0.192, 0.240, 0.288, 0.352, 0.432, 0.550]

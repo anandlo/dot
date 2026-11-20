@@ -21,7 +21,7 @@ struct SettingsRow<Trailing: View>: View {
     /// setting name.
     var titleTone: Color = DotTheme.ink
     /// The colour of the subtitle, for a line that reports a result.
-    var subtitleTone: Color = DotTheme.ink3
+    var subtitleTone: Color = DotTheme.ink2
     /// Whether the subtitle is drawn under the title and its control, across
     /// the row's whole width.
     ///
@@ -47,7 +47,7 @@ struct SettingsRow<Trailing: View>: View {
         symbol: String? = nil,
         appIcon: NSImage? = nil,
         titleTone: Color = DotTheme.ink,
-        subtitleTone: Color = DotTheme.ink3,
+        subtitleTone: Color = DotTheme.ink2,
         wideSubtitle: Bool = false,
         isNamedBySection: Bool = false,
         @ViewBuilder trailing: () -> Trailing
@@ -132,7 +132,7 @@ extension SettingsRow where Trailing == EmptyView {
         subtitle: String? = nil,
         symbol: String? = nil,
         titleTone: Color = DotTheme.ink,
-        subtitleTone: Color = DotTheme.ink3
+        subtitleTone: Color = DotTheme.ink2
     ) {
         self.init(
             title,

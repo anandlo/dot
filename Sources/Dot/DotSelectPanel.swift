@@ -1583,7 +1583,7 @@ struct DotSelectListRow: View {
                 if let detail = row.detail {
                     Text(detail)
                         .font(DotType.font(11, .regular))
-                        .foregroundStyle(DotTheme.ink3)
+                        .foregroundStyle(DotTheme.ink2)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
