@@ -319,24 +319,12 @@ struct AssistantPage: View {
 
     /// The dot and the words that say whether a turn would be able to run.
     private var statusChip: some View {
-        HStack(spacing: 6) {
-            switch displayedConnection {
-            case .checking:
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .controlSize(.small)
-                    .scaleEffect(0.6)
-                    .frame(width: 12, height: 12)
-            case .notSetUp, .connected, .notConnected:
-                Circle()
-                    .fill(statusDotColour)
-                    .frame(width: 6, height: 6)
-            }
-            Text(displayedConnection.title)
-                .font(DotType.font(11.5, .regular))
-                .foregroundStyle(displayedConnection == .notSetUp ? DotTheme.ink3 : DotTheme.ink2)
-        }
-        .accessibilityElement(children: .combine)
+        StatusChip(
+            title: displayedConnection.title,
+            dotTone: statusDotColour,
+            textTone: displayedConnection == .notSetUp ? DotTheme.ink3 : DotTheme.ink2,
+            isChecking: displayedConnection == .checking
+        )
     }
 
     /// The colour of the status dot.

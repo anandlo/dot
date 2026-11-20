@@ -806,10 +806,7 @@ struct SettingsView: View {
     private var speechEngineSection: some View {
         SettingsSection("Speech engine") {
             SettingsRow("Service") {
-                HStack(spacing: 12) {
-                    serviceSelect
-                    SpeechCredentialLabel(status: credentialStatus)
-                }
+                serviceSelect
             }
             SettingsDivider()
             SettingsRow("API key") {
@@ -853,6 +850,10 @@ struct SettingsView: View {
                         .accessibilityLabel("Delete the stored key from the Keychain")
                     }
                 }
+            }
+            if !selectedPreset.hasEndpoint {
+                SettingsDivider()
+                credentialStatusRow
             }
         }
     }
@@ -1041,6 +1042,8 @@ struct SettingsView: View {
                     }
                 }
             }
+            SettingsDivider()
+            credentialStatusRow
         }
     }
 
@@ -1952,9 +1955,29 @@ struct SettingsView: View {
         ].joined(separator: " ")
     }
 
-    /// The credential state the label draws.
+    /// The credential state the Status row draws.
     private var credentialStatus: SpeechCredentialStatus {
         credentialPreview ?? credentials.status
+    }
+
+    /// The last row of the card that holds the service's setup fields.
+    private var credentialStatusRow: some View {
+        SettingsRow(
+            "Status",
+            subtitle: credentialStatus.statusDetail,
+            subtitleTone: credentialStatus.tone
+        ) {
+            StatusChip(
+                title: credentialStatus.title,
+                dotTone: credentialStatus.tone,
+                textTone: DotTheme.ink2,
+                isChecking: credentialStatus == .checking
+            )
+            .help(credentialStatus.message)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(credentialStatus.statusAccessibilityLabel)
+        .accessibilityValue(credentialStatus.statusAccessibilityValue)
     }
 
     /// The row the configuration presents.

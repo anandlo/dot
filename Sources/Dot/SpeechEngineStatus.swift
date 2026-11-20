@@ -41,6 +41,26 @@ enum SpeechCredentialStatus: Equatable {
         }
     }
 
+    /// The single accessible name of the Speech to text Status row.
+    var statusAccessibilityLabel: String { "Status, \(title)" }
+
+    /// The accessible value behind that name: the whole reason for the state.
+    var statusAccessibilityValue: String { message }
+
+    /// The line under a Status row: the reason, when the check needs one.
+    ///
+    /// Checking is still in flight and Verified needs no explanation, so neither
+    /// repeats its tooltip under the row. This is the rule the AI rewrite page
+    /// uses for its own detail line.
+    var statusDetail: String? {
+        switch self {
+        case .checking, .settled(.verified, _), .settled(.verifiedWithRestriction, _):
+            nil
+        default:
+            message
+        }
+    }
+
     /// The time a check is stamped with, as a person reads a clock.
     static func clock(_ date: Date) -> String {
         clockFormat.string(from: date)
@@ -395,68 +415,6 @@ final class SpeechCredentialChecks: ObservableObject {
             return .read(value)
         }
     }
-}
-
-/// The dot and the word beside the service picker.
-///
-/// The dot pulses while a check is in flight and holds still when the system
-/// asks for less motion. The word is the state's own title, so a reader hears
-/// "Verified" and the tooltip carries the sentence behind it.
-///
-/// The pulse is keyed on the inputs that decide it, not on the view appearing:
-/// a page stays on screen across many checks, and a dot that only started on
-/// the first one would be still for every later request. A repeating animation
-/// cannot be stopped by changing the value it animates, so the circle that owns
-/// it is replaced whenever checking starts or stops: the old loop goes with the
-/// old identity and the new dot starts one of its own.
-struct SpeechCredentialLabel: View {
-    let status: SpeechCredentialStatus
-    /// A render or a test can ask for one appearance of the motion rule, which
-    /// the system's own setting only offers to the whole app.
-    var reduceMotionOverride: Bool?
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pulse = false
-
-    /// Whether the dot holds still.
-    private var motionReduced: Bool { reduceMotionOverride ?? reduceMotion }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(status.tone)
-                .frame(width: 6, height: 6)
-                .opacity(status.isChecking && !motionReduced ? (pulse ? 1 : 0.35) : 1)
-                .animation(
-                    status.isChecking && !motionReduced
-                        ? .easeInOut(duration: 1.2).repeatForever(autoreverses: true)
-                        : nil,
-                    value: pulse
-                )
-                .onAppear {
-                    pulse = status.isChecking && !motionReduced
-                }
-                .id(PulseIdentity(checking: status.isChecking, reducedMotion: motionReduced))
-            Text(status.title)
-                .font(DotType.font(11.5, .medium))
-                .foregroundStyle(status.tone)
-                .lineLimit(1)
-        }
-        .frame(width: 124, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(status.message)
-        .help(status.message)
-    }
-}
-
-/// The two inputs that decide whether the dot moves.
-///
-/// Changing either while the dot is on screen has to build a new dot: the
-/// animation is a loop, and a loop is ended by taking its view away, not by
-/// setting the value it was started with.
-private struct PulseIdentity: Hashable {
-    let checking: Bool
-    let reducedMotion: Bool
 }
 
 /// The state a render draws in place of a live check.
