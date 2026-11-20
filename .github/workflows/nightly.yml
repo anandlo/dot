@@ -1,0 +1,62 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flakes:
+    name: Nightly flake check
+    # macos-26 is a pinned image rather than the moving macos-latest alias.
+    runs-on: macos-26
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Run the test gate three times
+        uses: ./.github/actions/dot-gate
+        with:
+          bundle: "false"
+          test-runs: "3"
+
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dot-nightly-failure
+          path: |
+            ${{ runner.temp }}/dot-evidence
+            test-*.log
+            build.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  report:
+    name: Report a failed nightly
+    needs: flakes
+    if: failure()
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+
+    steps:
+      - name: Open or comment on the flake issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Nightly flake check failed"
+          number="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)"
+          body="The nightly test gate failed in $RUN_URL. Logs and failure evidence are attached to that run."
+          if [ -z "$number" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          else
+            gh issue comment --repo "$GITHUB_REPOSITORY" "$number" --body "$body"
+          fi
