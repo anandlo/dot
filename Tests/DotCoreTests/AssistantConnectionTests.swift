@@ -387,11 +387,10 @@ final class AssistantConnectionTests: XCTestCase {
         XCTAssertFalse(detail.contains("hint"))
     }
 
-    func testAnUnreachableServiceSaysSo() async {
-        // Nothing listens on port 9 of this Mac: the transport fails at once,
-        // and the line is the sanitised reason rather than an empty green dot.
+    func testAnUnreachableServiceSaysSo() async throws {
+        let port = try ClosedPort.make()
         let result = await AssistantConnectionVerifier.verify(
-            settings: settings("openai", baseURL: "http://127.0.0.1:9/v1"),
+            settings: settings("openai", baseURL: "http://127.0.0.1:\(port)/v1"),
             apiKey: key,
             session: AssistantTestSupport.session()
         )

@@ -338,9 +338,10 @@ final class XiaomiASRProviderTests: XCTestCase {
         }
     }
 
-    func testAnUnreachableServiceIsATransportError() async {
+    func testAnUnreachableServiceIsATransportError() async throws {
+        let port = try ClosedPort.make()
         let provider = XiaomiASRProvider(
-            baseURL: URL(string: "http://127.0.0.1:1/v1")!,
+            baseURL: URL(string: "http://127.0.0.1:\(port)/v1")!,
             apiKey: "test-key",
             timeout: 3
         )
