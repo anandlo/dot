@@ -6,85 +6,169 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
     name: Test & Build
-    runs-on: macos-latest
+    # macos-26 is a pinned image rather than the moving macos-latest alias.
+    runs-on: macos-26
     timeout-minutes: 45
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # macos-latest is the macOS 26 arm64 image and carries Xcode 26.x. The
-      # Xcode 15.4 this workflow used to pin lives on the macOS 14 image and
-      # cannot parse `swift-tools-version: 6.0`. The image's default Xcode is
-      # used rather than a pinned path, and the Swift version that actually ran
-      # is asserted below, so a renamed Xcode directory cannot silently select a
-      # compiler that cannot build the package.
-      - name: Select Xcode
-        run: |
-          sw_vers
-          xcodebuild -version
-          sudo xcode-select -s /Applications/Xcode.app
-
-      - name: Assert the Swift version
-        run: |
-          swift --version
-          major="$(swift --version | sed -n 's/.*Swift version \([0-9][0-9]*\)\..*/\1/p' | head -1)"
-          if [ "${major:-0}" -lt 6 ]; then
-            echo "::error::Package.swift declares swift-tools-version 6.0; this image's default toolchain is Swift ${major:-unknown}. Move the job to a newer runner image."
-            exit 1
-          fi
-
-      # Satoshi may be embedded in the app but not redistributed, so it is not
-      # in the repository. The script checks the pinned SHA-256 and fails the
-      # step on a download or checksum error.
-      - name: Fetch the typeface
-        run: ./scripts/fetch-fonts.sh
-
-      - name: Build without warnings
-        run: |
-          set -o pipefail
-          swift build --build-tests 2>&1 | tee build.log
-          matches="$(grep -E "^/.*/(Sources|Tests)/.*: warning:" build.log || true)"
-          if [ -n "$matches" ]; then
-            printf '%s\n' "$matches"
-            echo "::error::the build emitted warnings"
-            exit 1
-          fi
-
-      # Hosted runners can report Reduce Motion on, which replaces the island's
-      # motion with a crossfade. Switch it off and print what the process reads;
-      # tests that measure the full motion skip by name if the write is refused.
-      - name: Use full motion
-        run: |
-          defaults write com.apple.universalaccess reduceMotion -bool false || true
-          swift -e 'import AppKit; print("accessibilityDisplayShouldReduceMotion =", NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)' || true
-
-      # Serial: several tests composite offscreen windows through the window
-      # server and time the island's springs, and parallel processes disturb
-      # each other's measurements.
-      - name: Swift Test
-        env:
-          DOT_CI_EVIDENCE_DIR: ${{ runner.temp }}/dot-evidence
-        run: swift test
-
-      - name: Build Application Bundle
-        run: ./scripts/build.sh
+      - name: Run the shared gate
+        uses: ./.github/actions/dot-gate
 
       # The pictures a failing render test judged are the only record of what the
       # runner's display and system drew, and they cannot be reproduced on
-      # another machine. They are uploaded only when something failed.
-      - name: Upload render evidence
+      # another machine. The logs are kept with them for the same reason.
+      - name: Upload failure evidence
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: dot-evidence
-          path: ${{ runner.temp }}/dot-evidence
+          name: dot-ci-failure
+          path: |
+            ${{ runner.temp }}/dot-evidence
+            test-*.log
+            build.log
+            bundle.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  static:
+    name: Static Checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      # actionlint 1.7.12, sha256 from actionlint_1.7.12_checksums.txt.
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          version=1.7.12
+          tarball="actionlint_${version}_linux_amd64.tar.gz"
+          sha=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          curl --fail --silent --show-error --location --remote-name "https://github.com/rhysd/actionlint/releases/download/v${version}/${tarball}"
+          curl --fail --silent --show-error --location --remote-name "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_checksums.txt"
+          grep -F "$sha  $tarball" "actionlint_${version}_checksums.txt"
+          echo "$sha  $tarball" | sha256sum --check --strict
+          tar -xzf "$tarball" actionlint
+          sudo install -m 0755 actionlint /usr/local/bin/actionlint
+          actionlint -version
+
+      # gitleaks 8.30.1, sha256 from gitleaks_8.30.1_checksums.txt.
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          version=8.30.1
+          tarball="gitleaks_${version}_linux_x64.tar.gz"
+          sha=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl --fail --silent --show-error --location --remote-name "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${tarball}"
+          curl --fail --silent --show-error --location --remote-name "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_checksums.txt"
+          grep -F "$sha  $tarball" "gitleaks_${version}_checksums.txt"
+          echo "$sha  $tarball" | sha256sum --check --strict
+          tar -xzf "$tarball" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Lint workflows and composite actions
+        run: actionlint
+
+      - name: Lint shell scripts
+        run: |
+          shellcheck --version
+          shellcheck -x --severity=warning scripts/*.sh
+
+      - name: Scan tracked files for merge markers
+        run: |
+          # No tracked file legitimately contains a conflict marker; -I skips binaries.
+          if git grep -I -nE '^(<<<<<<<|>>>>>>>)( |$)|^=======$'; then
+            echo "::error::merge markers found in tracked files"
+            exit 1
+          fi
+
+      - name: Check the test log parser
+        run: python3 -m unittest discover -s scripts/ci -p 'test_*.py'
+
+      - name: Scan the pushed commits for secrets
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            range="${{ github.event.before }}..${{ github.sha }}"
+            if [[ "$range" == 0000000000000000000000000000000000000000..* ]]; then
+              range="-1 ${{ github.sha }}"
+            fi
+          fi
+          echo "scanning $range"
+          gitleaks git --no-banner --redact --log-opts "$range" .
+
+  sanitizers:
+    name: Sanitizers
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Fetch the typeface
+        run: ./scripts/fetch-fonts.sh
+
+      - name: Run DotCoreTests under AddressSanitizer
+        run: |
+          set -uo pipefail
+          swift build --build-tests --sanitize=address 2>&1 | tee sanitizer-address-build.log
+          status="${PIPESTATUS[0]}"
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          bin="$(swift build --build-tests --sanitize=address --show-bin-path)"
+          xcrun xctest "$bin/DotCoreTests.xctest" 2>&1 | tee sanitizer-address.log
+          status="${PIPESTATUS[0]}"
+          failed=0
+          if [ "$status" -ne 0 ]; then
+            echo "::error::DotCoreTests under ASan exited with status $status"
+            failed=1
+          fi
+          python3 scripts/ci/check_test_log.py sanitizer-address.log --bundles DotCoreTests || failed=1
+          exit "$failed"
+
+      - name: Run DotCoreTests under ThreadSanitizer
+        run: |
+          set -uo pipefail
+          swift build --build-tests --sanitize=thread 2>&1 | tee sanitizer-thread-build.log
+          status="${PIPESTATUS[0]}"
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          bin="$(swift build --build-tests --sanitize=thread --show-bin-path)"
+          xcrun xctest "$bin/DotCoreTests.xctest" 2>&1 | tee sanitizer-thread.log
+          status="${PIPESTATUS[0]}"
+          failed=0
+          if [ "$status" -ne 0 ]; then
+            echo "::error::DotCoreTests under TSan exited with status $status"
+            failed=1
+          fi
+          python3 scripts/ci/check_test_log.py sanitizer-thread.log --bundles DotCoreTests || failed=1
+          exit "$failed"
+
+      - name: Upload sanitizer logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dot-sanitizer-failure
+          path: |
+            sanitizer-*.log
           retention-days: 7
           if-no-files-found: ignore

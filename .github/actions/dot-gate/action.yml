@@ -1,0 +1,133 @@
+name: Dot gate
+description: Build, test, and verify Dot with the checks shared by CI, nightly, and releases.
+
+inputs:
+  bundle:
+    description: Build and verify the application bundle after the tests.
+    required: false
+    default: "true"
+  test-runs:
+    description: Number of serial test runs, checked one at a time.
+    required: false
+    default: "1"
+
+runs:
+  using: composite
+  steps:
+    - name: Select Xcode
+      shell: bash
+      run: |
+        sw_vers
+        xcodebuild -version
+        sudo xcode-select -s /Applications/Xcode.app
+
+    - name: Assert the Swift version
+      shell: bash
+      run: |
+        swift --version
+        major="$(swift --version | sed -n 's/.*Swift version \([0-9][0-9]*\)\..*/\1/p' | head -1)"
+        if [ "${major:-0}" -lt 6 ]; then
+          echo "::error::Package.swift declares swift-tools-version 6.0; this image's default toolchain is Swift ${major:-unknown}. Move the job to a newer runner image."
+          exit 1
+        fi
+
+    - name: Restore the font cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: Resources/Fonts
+        key: satoshi-${{ hashFiles('scripts/fetch-fonts.sh') }}
+
+    - name: Fetch the typeface
+      shell: bash
+      run: ./scripts/fetch-fonts.sh
+
+    - name: Build tests without compiler warnings
+      shell: bash
+      run: |
+        set -o pipefail
+        swift build --build-tests 2>&1 | tee build.log
+        matches="$(grep -E '^/.*\.swift:[0-9]+:[0-9]+: (warning|error):' build.log || true)"
+        if [ -n "$matches" ]; then
+          printf '%s\n' "$matches"
+          echo "::error::the build emitted compiler diagnostics"
+          exit 1
+        fi
+
+    - name: Use full motion
+      shell: bash
+      run: |
+        defaults write com.apple.universalaccess reduceMotion -bool false || true
+        swift -e 'import AppKit; print("accessibilityDisplayShouldReduceMotion =", NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)' || true
+
+    # Serial: several tests time the island's springs and composite offscreen
+    # windows through the window server; parallel processes disturb them.
+    - name: Run serial tests and check every log
+      shell: bash
+      env:
+        DOT_CI_EVIDENCE_DIR: ${{ runner.temp }}/dot-evidence
+      run: |
+        set -uo pipefail
+        failed=0
+        for run in $(seq 1 "${{ inputs.test-runs }}"); do
+          log="test-${run}.log"
+          swift test 2>&1 | tee "$log"
+          status="${PIPESTATUS[0]}"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::swift test run $run exited with status $status"
+            failed=1
+          fi
+          if ! python3 scripts/ci/check_test_log.py "$log"; then
+            echo "::error::the test log check failed for run $run"
+            failed=1
+          fi
+        done
+        exit "$failed"
+
+    - name: Build the application bundle
+      if: inputs.bundle == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        ./scripts/build.sh 2>&1 | tee bundle.log
+        status="${PIPESTATUS[0]}"
+        if [ "$status" -ne 0 ]; then
+          exit "$status"
+        fi
+        # build.sh prints ad-hoc signing notices beginning with "warning:".
+        # Those are not compiler diagnostics and have no file:line prefix.
+        matches="$(grep -E '^/.*\.swift:[0-9]+:[0-9]+: (warning|error):' bundle.log || true)"
+        if [ -n "$matches" ]; then
+          printf '%s\n' "$matches"
+          echo "::error::the bundle build emitted compiler diagnostics"
+          exit 1
+        fi
+
+    - name: Verify the application bundle
+      if: inputs.bundle == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        app="build/Dot.app"
+        codesign --verify --deep --strict "$app"
+        entitlements="$(codesign -d --entitlements :- "$app" 2>/dev/null)"
+        for key in com.apple.security.device.audio-input com.apple.security.automation.apple-events; do
+          if ! grep -qF "$key" <<< "$entitlements"; then
+            echo "::error::$app is missing the entitlement $key"
+            exit 1
+          fi
+        done
+        expected_version="$(tr -d '[:space:]' < VERSION)"
+        actual_version="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")"
+        if [ "$actual_version" != "$expected_version" ]; then
+          echo "::error::bundle version $actual_version does not match VERSION $expected_version"
+          exit 1
+        fi
+        font="$app/Contents/Resources/Fonts/Satoshi-Variable.ttf"
+        [ -f "$font" ] || { echo "::error::$font is missing"; exit 1; }
+        pin="$(sed -n 's/^EXPECTED_SHA256="\([^"]*\)".*/\1/p' scripts/fetch-fonts.sh)"
+        [ -n "$pin" ] || { echo "::error::the font pin could not be read from scripts/fetch-fonts.sh"; exit 1; }
+        actual="$(shasum -a 256 "$font" | cut -d' ' -f1)"
+        if [ "$actual" != "$pin" ]; then
+          echo "::error::the embedded font sha256 $actual does not match the pin $pin"
+          exit 1
+        fi
