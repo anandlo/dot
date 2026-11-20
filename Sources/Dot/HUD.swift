@@ -261,8 +261,15 @@ final class HUD {
     private var lastRailFrame: CGRect?
     /// How settled the content of the card is.
     private var contentSpring = Spring(value: 0, target: 0, duration: 0.34, bounce: 0.10)
+    var reducesMotionPreference: Bool = false {
+        didSet {
+            guard oldValue != reducesMotionPreference else { return }
+            hostingView?.rootView = makeRootView()
+        }
+    }
+
     private var reduceMotion: Bool {
-        debugReduceMotionOverride ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        debugReduceMotionOverride ?? (reducesMotionPreference || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
     }
 
     /// Creates the HUD.
@@ -334,6 +341,7 @@ final class HUD {
             model: model,
             actions: actions,
             animated: !reduceMotion,
+            reduceMotionOverride: reduceMotion ? true : nil,
             placement: placement,
             size: placement?.panelFrame.size ?? Self.panelSize
         )
@@ -359,6 +367,7 @@ final class HUD {
         model: HUDModel,
         actions: HUDActions,
         animated: Bool,
+        reduceMotionOverride: Bool? = nil,
         placement: HUDEmergence.Placement?,
         size: CGSize
     ) -> AnyView {
@@ -369,6 +378,7 @@ final class HUD {
                     model: model,
                     animated: animated,
                     actions: actions,
+                    reduceMotionOverride: reduceMotionOverride,
                     emergence: placement?.scene
                 )
                 .padding(.top, placement?.cardTopInset ?? shadowPadding)
