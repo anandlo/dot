@@ -89,10 +89,16 @@ extension HUDView {
     /// - Returns: the words, or the words in pieces while they arrive.
     @ViewBuilder
     func draftBody(_ card: RewriteCard) -> some View {
+        let text = card.visibleBodyText
         FrameRewriteDraftBody(
+            model: model,
             source: frameSource,
-            card: card,
-            reduceMotion: reduceMotion
+            text: text,
+            chunks: card.draftChunks,
+            reduceMotion: reduceMotion,
+            content: { text, runs in
+                AnyView(runs.isEmpty ? Text(text) : HUDView.rampedText(text, runs: runs))
+            }
         )
     }
 
@@ -193,6 +199,7 @@ extension HUDView {
     /// row, left-aligned with the body text.
     func chipRow(_ card: RewriteCard) -> some View {
         FrameRewriteChipRow(
+            model: model,
             source: frameSource,
             card: card,
             reduceMotion: reduceMotion,
@@ -212,29 +219,28 @@ extension HUDView {
 /// The arriving body of a rewrite, driven by the frame clock.
 @MainActor
 private struct FrameRewriteDraftBody: View {
+    @ObservedObject var model: HUDModel
     let source: HUDFrameSource
-    let card: RewriteCard
+    let text: String
+    let chunks: [RewriteDraftChunk]
     let reduceMotion: Bool
+    let content: (String, [RewriteDraftRamp.Run]) -> AnyView
 
     var body: some View {
-        let text = card.visibleBodyText
         let runs = RewriteDraftRamp.runs(
-            chunks: card.draftChunks,
+            chunks: chunks,
             length: text.count,
             time: source.time,
             reduceMotion: reduceMotion
         )
-        if runs.isEmpty {
-            Text(text)
-        } else {
-            HUDView.rampedText(text, runs: runs)
-        }
+        content(text, runs)
     }
 }
 
 /// The style row, driven by the frame clock for its arc and fade.
 @MainActor
 private struct FrameRewriteChipRow: View {
+    @ObservedObject var model: HUDModel
     let source: HUDFrameSource
     let card: RewriteCard
     let reduceMotion: Bool
