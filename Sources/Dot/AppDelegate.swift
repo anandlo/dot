@@ -1402,30 +1402,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     continue
                 }
                 let committed = currentLedger.committedSamples
-                let openSamples = sampleCount > committed
-                    ? self.recorder.samples(in: committed..<sampleCount)
-                    : []
-                guard let vadPlan = currentLedger.evaluateVAD(in: openSamples) else {
+                let prepared = await LiveTranscriptionAnalyzer.shared.prepare(
+                    ledger: currentLedger,
+                    sampleCount: sampleCount,
+                    store: self.recorder.takeStore,
+                    noiseFloorDBFS: self.silenceFloorDBFS
+                )
+                guard !Task.isCancelled, self.state == .recording else { return }
+                let afterWait = CFAbsoluteTimeGetCurrent()
+                guard prepared.plan != nil else {
                     try? await Task.sleep(for: Live.interval)
                     continue
                 }
-                let reqRange: Range<Int>
-                let isCommit: Bool
-                let commitUpTo: Int
-                switch vadPlan {
-                case .sendSegment(let segRange, let upTo):
-                    reqRange = segRange
-                    isCommit = true
-                    commitUpTo = upTo
-                case .sendProvisional(let provRange):
-                    reqRange = provRange
-                    isCommit = false
-                    commitUpTo = provRange.upperBound
-                }
-                guard let wav = self.uploadWAV(range: reqRange) else {
+                guard let request = prepared.request else {
                     try? await Task.sleep(for: Live.emptyDelay)
                     continue
                 }
+                let reqRange = request.range
+                let isCommit = request.isCommit
+                let commitUpTo = request.commitUpTo
+                let wav = request.wav
+                self.hud.recordLiveTranscriptionMainActor(
+                    ms: (CFAbsoluteTimeGetCurrent() - afterWait) * 1000
+                )
                 do {
                     let text = try await provider.transcribe(
                         wav: wav,
@@ -1433,6 +1432,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         language: settings.language
                     )
                     guard !Task.isCancelled, self.state == .recording else { return }
+                    let textReceived = CFAbsoluteTimeGetCurrent()
                     failures = 0
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     if isCommit {
@@ -1446,6 +1446,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.ledger?.recordProvisional(range: reqRange, text: trimmed)
                     }
                     self.hud.showLiveText(self.ledger?.displayText ?? "")
+                    let afterCommit = CFAbsoluteTimeGetCurrent()
+                    self.hud.recordLiveTranscriptionMainActor(ms: (afterCommit - textReceived) * 1000)
                 } catch {
                     guard !Task.isCancelled, self.state == .recording else { return }
                     if Self.isIgnoredLiveError(error) {

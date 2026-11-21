@@ -164,8 +164,10 @@ final class HUDModel: ObservableObject {
     /// Updates the clock of the recording without touching the live partial.
     func updateRecording(elapsed: String) {
         switch mode {
-        case .recording: mode = .recording(elapsed: elapsed)
-        case .assistantRecording: mode = .assistantRecording(elapsed: elapsed)
+        case .recording(let shown):
+            if shown != elapsed { mode = .recording(elapsed: elapsed) }
+        case .assistantRecording(let shown):
+            if shown != elapsed { mode = .assistantRecording(elapsed: elapsed) }
         case .working, .transcript, .message, .ready,
              .assistantThinking, .assistantTool, .assistantAnswer, .assistantConfirm:
             break
