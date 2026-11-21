@@ -506,10 +506,8 @@ struct SettingsView: View {
                     width: nil
                 )
             }
-            if let calibration = selectedCalibration {
-                SettingsDivider()
-                calibrationRow(calibration)
-            }
+            SettingsDivider()
+            calibrationRow(selectedCalibration)
         }
     }
 
@@ -517,7 +515,7 @@ struct SettingsView: View {
         SettingsSection("Formatting") {
             toggleRow(
                 title: "Format for each app",
-                subtitle: "Punctuation and line breaks match the app you dictate into. History keeps your original words.",
+                help: SettingsExplanation.formatHelp,
                 isOn: grammarEnabledBinding
             )
             if config.outputGrammarEnabled {
@@ -538,7 +536,10 @@ struct SettingsView: View {
 
     private var historySection: some View {
         SettingsSection("History") {
-            SettingsRow("Transcripts to keep") {
+            SettingsRow(
+                "Transcripts to keep",
+                help: SettingsExplanation.historyHelp
+            ) {
                 DotSelect(
                     label: "Transcripts to keep",
                     options: Self.historyLimitOptions.map { limit in
@@ -553,32 +554,39 @@ struct SettingsView: View {
 
     /// The row that says what the meter knows about this microphone, and the
     /// way to forget it.
-    private func calibrationRow(_ calibration: MicrophoneCalibration) -> some View {
+    private func calibrationRow(_ calibration: MicrophoneCalibration?) -> some View {
         SettingsRow(
-            "Level meter calibration",
-            subtitle: calibrationObservedText(calibration.observedSamples)
+            "Microphone noise profile",
+            subtitle: Self.calibrationObservedText(calibration?.observedSamples ?? 0),
+            help: SettingsExplanation.calibrationHelp
         ) {
             Button("Reset") {
                 resetCalibration()
             }
             .buttonStyle(DotSecondaryButtonStyle())
-            .accessibilityLabel("Reset level meter calibration")
+            .disabled(calibration == nil)
+            .accessibilityLabel("Reset microphone noise profile")
             .accessibilityHint("Forgets what Dot learned about this microphone.")
         }
     }
 
     /// How many recordings the entry was learned from.
-    private func calibrationObservedText(_ count: Int) -> String {
-        count == 1
-            ? "Based on 1 recording with this microphone"
-            : "Based on \(count) recordings with this microphone"
+    static func calibrationObservedText(_ count: Int) -> String {
+        if count >= MicrophoneCalibration.maximumObservedSamples {
+            return "Learned from \(MicrophoneCalibration.maximumObservedSamples) or more recordings."
+        }
+        return count == 1
+            ? SettingsExplanation.calibrationOne
+            : count > 1
+                ? "Learned from \(count) recordings."
+                : SettingsExplanation.calibrationNone
     }
 
     /// What Dot learned about the microphone the picker selects.
     ///
     /// With the system default chosen, the row describes the device that would
     /// record right now, which is the device a new take would teach. A UID the
-    /// system cannot resolve has no row: there is nothing to describe.
+    /// system cannot resolve has no entry, so the row says nothing was learned.
     private var selectedCalibration: MicrophoneCalibration? {
         MicrophoneCalibrationBook.calibration(
             for: calibrationDeviceUID,
@@ -732,7 +740,11 @@ struct SettingsView: View {
     }
 
     private var dwellRow: some View {
-        SettingsRow("Keep result on screen") {
+        SettingsRow(
+            "Keep result on screen",
+            subtitle: SettingsExplanation.dwellSubtitle,
+            help: SettingsExplanation.dwellHelp
+        ) {
             HStack(spacing: 12) {
                 DotModernSlider(
                     value: $liveDwellSeconds,
@@ -1048,7 +1060,10 @@ struct SettingsView: View {
     /// The Azure endpoint is not a field: the region and the mode produce it.
     @ViewBuilder
     private var azureEndpointRows: some View {
-        SettingsRow("Region") {
+        SettingsRow(
+            "Region",
+            help: SettingsExplanation.regionHelp
+        ) {
             DotSelect(
                 label: "Region",
                 options: AzureSpeechProvider.supportedRegions.map { item in
@@ -1223,7 +1238,10 @@ struct SettingsView: View {
     private var parametersSection: some View {
         SettingsSection("Advanced") {
             if ProviderRegistry.isGenericEndpoint(config: config) {
-                SettingsRow("Auth header") {
+                SettingsRow(
+                    "Auth header",
+                    help: SettingsExplanation.authHelp
+                ) {
                     DotSelect(
                         label: "Auth header",
                         options: [
@@ -1239,7 +1257,10 @@ struct SettingsView: View {
                 if ProviderRegistry.isGenericEndpoint(config: config) {
                     SettingsDivider()
                 }
-                SettingsRow("Temperature") {
+                SettingsRow(
+                    "Temperature",
+                    help: SettingsExplanation.temperatureHelp
+                ) {
                     DotSelect(
                         label: "Temperature",
                         options: temperatureOptions,
@@ -1548,7 +1569,11 @@ struct SettingsView: View {
 
     private var longRecordingsSection: some View {
         SettingsSection("Long recordings") {
-            SettingsRow("Send long recordings in parts of") {
+            SettingsRow(
+                "Send long recordings in parts of",
+                subtitle: SettingsExplanation.segmentSubtitle,
+                help: SettingsExplanation.segmentHelp
+            ) {
                 DotSelect(
                     label: "Send long recordings in parts of",
                     options: Self.segmentOptions.map { seconds in
@@ -2244,9 +2269,10 @@ struct SettingsView: View {
     private func toggleRow(
         title: String,
         subtitle: String? = nil,
+        help: String? = nil,
         isOn: Binding<Bool>
     ) -> some View {
-        SettingsRow(title, subtitle: subtitle) {
+        SettingsRow(title, subtitle: subtitle, help: help) {
             Toggle("", isOn: isOn)
                 .labelsHidden()
                 .toggleStyle(DotToggleStyle())
