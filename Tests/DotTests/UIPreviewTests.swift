@@ -122,6 +122,8 @@ final class UIPreviewTests: XCTestCase {
             "settings-provider-checking-dark.png",
             "settings-provider-verified.png",
             "settings-provider-verified-dark.png",
+            "settings-provider-verified-with-restriction.png",
+            "settings-provider-verified-with-restriction-dark.png",
             "settings-provider-rejected.png",
             "settings-provider-rejected-dark.png",
             "settings-provider-service-error.png",

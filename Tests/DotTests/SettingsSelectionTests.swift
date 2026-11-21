@@ -781,24 +781,91 @@ final class SpeechConnectionSourceGuardTests: XCTestCase {
         XCTAssertGreaterThan(scanned, 40, "the scan did not reach the app's sources")
     }
 
-    /// The Speech engine card carries one status, the label beside the picker.
+    /// The Speech to text page carries one status, in the last credential card.
     ///
     /// A second row that reported the stored key's presence could disagree with
-    /// the verification beside it: a key that is present and refused showed
-    /// "Connected" next to "Key rejected".
-    func testTheSpeechEngineCardHasNoStatusRow() throws {
-        // The card lives in SettingsView; the AI rewrite page has a status row
-        // of its own, which this guard does not speak for.
+    /// the check's answer: a key that is present and refused would show
+    /// "Connected" next to "Key rejected". One Status row, placed after every
+    /// setup field, leaves no second answer on the page.
+    func testTheSpeechPageHasOneStatusRowAtTheEndOfCredentialRows() throws {
         let url = Self.root.appendingPathComponent("Sources/Dot/SettingsView.swift")
         let text = try String(contentsOf: url, encoding: .utf8)
         let statusRow = try NSRegularExpression(pattern: #"SettingsRow\(\s*"Status""#)
         let range = NSRange(text.startIndex..., in: text)
-        XCTAssertNil(
-            statusRow.firstMatch(in: text, range: range),
-            "the Speech engine card draws a row titled Status"
+        XCTAssertEqual(
+            statusRow.numberOfMatches(in: text, range: range),
+            1,
+            "SettingsView draws more than one row titled Status"
         )
+
+        let speechEngine = try slice(
+            text,
+            from: "private var speechEngineSection",
+            to: "/// The picker of the speech engine"
+        )
+        let apiKeyPlacement = try XCTUnwrap(speechEngine.range(of: #"SettingsRow("API key""#)?.lowerBound)
+        let statusPlacement = try XCTUnwrap(speechEngine.range(of: "credentialStatusRow")?.lowerBound)
+        XCTAssertGreaterThan(
+            statusPlacement,
+            apiKeyPlacement,
+            "the Status row moved above the service's key field"
+        )
+        XCTAssertNotNil(
+            try NSRegularExpression(pattern: #"SettingsDivider\(\)\s*credentialStatusRow"#)
+                .firstMatch(in: speechEngine, range: NSRange(speechEngine.startIndex..., in: speechEngine)),
+            "the service card has no divider directly above its Status row"
+        )
+        XCTAssertFalse(
+            speechEngine.contains("if !selectedPreset.hasEndpoint"),
+            "the speech engine card made its Status row conditional on the endpoint card"
+        )
+
+        let endpoint = try slice(
+            text,
+            from: "private var endpointSection",
+            to: "/// The Azure endpoint"
+        )
+        XCTAssertNotNil(
+            endpoint.range(of: #"SettingsRow("Model""#),
+            "the endpoint card lost its model field"
+        )
+        XCTAssertFalse(
+            endpoint.contains("credentialStatusRow"),
+            "the endpoint card drew a second Status row"
+        )
+
+        let statusDeclaration = try slice(
+            text,
+            from: "private var credentialStatusRow",
+            to: "/// The row the configuration presents."
+        )
+        let declarationRange = NSRange(statusDeclaration.startIndex..., in: statusDeclaration)
+        XCTAssertEqual(
+            statusRow.numberOfMatches(in: statusDeclaration, range: declarationRange),
+            1,
+            "the shared status row no longer draws the Status title"
+        )
+        XCTAssertTrue(
+            statusDeclaration.contains(".accessibilityLabel(credentialStatus.statusAccessibilityLabel)"),
+            "the Status row lost its accessible name"
+        )
+        XCTAssertTrue(
+            statusDeclaration.contains(".accessibilityValue(credentialStatus.statusAccessibilityValue)"),
+            "the Status row lost its accessible value"
+        )
+        XCTAssertTrue(
+            statusDeclaration.contains(".help(credentialStatus.message)"),
+            "the whole Status row lost its tooltip"
+        )
+        XCTAssertFalse(text.contains("SpeechCredentialLabel"), "the picker-label view came back")
         for helper in ["statusChip", "isServiceConnected", "keyStatus"] {
             XCTAssertFalse(text.contains(helper), "SettingsView still carries \(helper)")
         }
+    }
+
+    private func slice(_ text: String, from start: String, to end: String) throws -> String {
+        let startIndex = try XCTUnwrap(text.range(of: start)?.lowerBound)
+        let endIndex = try XCTUnwrap(text.range(of: end, range: startIndex..<text.endIndex)?.lowerBound)
+        return String(text[startIndex..<endIndex])
     }
 }
