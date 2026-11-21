@@ -835,7 +835,6 @@ struct SettingsView: View {
                     .buttonStyle(DotPrimaryButtonStyle())
                     .disabled(!canConnect)
                     .accessibilityHint("Stores the key in the macOS Keychain and selects the service.")
-                    .accessibilityIdentifier("speech.apiKey.trailing")
 
                     if hasStoredKey(selectedPreset) && selectedPreset.key != .none {
                         Button(role: .destructive) {
@@ -850,7 +849,6 @@ struct SettingsView: View {
                         .buttonStyle(DotPressStyle())
                         .help("Delete the stored key")
                         .accessibilityLabel("Delete the stored key from the Keychain")
-                        .accessibilityIdentifier("speech.apiKey.trailing")
                     }
                 }
                 .overlay(
