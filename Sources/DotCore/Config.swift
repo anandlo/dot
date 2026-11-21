@@ -485,6 +485,8 @@ public struct DotConfig: Codable, Sendable, Equatable {
     public var hudVisualizer: HUDVisualizer
     /// How the record shortcut starts and ends a recording.
     public var recordingMode: RecordingMode
+    /// Whether the HUD island appears without the notch emergence animation.
+    public var reduceMotion: Bool
     /// Whether a transcript is rewritten for the app it is going into.
     ///
     /// Off by default. A rewrite changes the words that are inserted, so it is
@@ -532,6 +534,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         appearance: .dark,
         hudVisualizer: .stretch,
         recordingMode: .toggle,
+        reduceMotion: false,
         outputGrammarEnabled: false,
         outputGrammarTargets: [:],
         microphoneCalibration: [:],
@@ -596,6 +599,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         appearance: AppearanceMode = .dark,
         hudVisualizer: HUDVisualizer = .stretch,
         recordingMode: RecordingMode = .toggle,
+        reduceMotion: Bool = false,
         outputGrammarEnabled: Bool = false,
         outputGrammarTargets: [String: DictationTarget] = [:],
         microphoneCalibration: [String: MicrophoneCalibration] = [:],
@@ -620,6 +624,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         self.appearance = appearance
         self.hudVisualizer = hudVisualizer
         self.recordingMode = recordingMode
+        self.reduceMotion = reduceMotion
         self.outputGrammarEnabled = outputGrammarEnabled
         self.outputGrammarTargets = outputGrammarTargets
         self.microphoneCalibration = microphoneCalibration
@@ -773,6 +778,8 @@ extension DotConfig {
             forKey: .recordingMode
         )) ?? nil
         self.recordingMode = storedMode ?? fallback.recordingMode
+        self.reduceMotion = ((try? container.decodeIfPresent(Bool.self, forKey: .reduceMotion)) ?? nil)
+            ?? fallback.reduceMotion
         self.outputGrammarEnabled = try container.decodeIfPresent(
             Bool.self,
             forKey: .outputGrammarEnabled

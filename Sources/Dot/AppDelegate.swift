@@ -286,6 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.dwell = config.hudDwellSeconds
         hud.visualizer = config.hudVisualizer
         hud.material = config.hudMaterial
+        applyMotionPreference()
         applyCalibration(for: MicrophoneCatalog.recordingDeviceUID(
             configured: config.microphoneDeviceUID
         ))
@@ -2646,6 +2647,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.hud.dwell = self.config.hudDwellSeconds
                 self.hud.visualizer = self.config.hudVisualizer
                 self.hud.material = self.config.hudMaterial
+                self.applyMotionPreference()
                 // A shorter history takes effect now rather than on the next
                 // dictation: the window is open on the list being shortened.
                 if self.history.count > self.config.historyLimit {
@@ -2800,6 +2802,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Shortcuts
+
+    private func applyMotionPreference() {
+        hud.reducesMotionPreference = config.reduceMotion
+        DotMotion.reducesMotionOverride = config.reduceMotion ? true : nil
+    }
 
     private func registerHotkeys() {
         hotkeys?.uninstall()
