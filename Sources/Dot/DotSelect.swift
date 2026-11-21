@@ -425,15 +425,16 @@ private struct DotSelectAccessibilityElement: NSViewRepresentable {
     let value: String
     let isEnabled: Bool
     let onOpen: () -> Void
+    @Environment(\.settingsRowHelp) private var help
 
     func makeNSView(context: Context) -> DotSelectAccessibilityView {
         let view = DotSelectAccessibilityView()
-        view.apply(label: label, value: value, isEnabled: isEnabled, onOpen: onOpen)
+        view.apply(label: label, value: value, isEnabled: isEnabled, help: help, onOpen: onOpen)
         return view
     }
 
     func updateNSView(_ view: DotSelectAccessibilityView, context: Context) {
-        view.apply(label: label, value: value, isEnabled: isEnabled, onOpen: onOpen)
+        view.apply(label: label, value: value, isEnabled: isEnabled, help: help, onOpen: onOpen)
     }
 }
 
@@ -441,18 +442,28 @@ final class DotSelectAccessibilityView: NSView {
     private var label = ""
     private var value = ""
     private var enabled = true
+    private var help: String?
     private var onOpen: (() -> Void)?
 
-    func apply(label: String, value: String, isEnabled: Bool, onOpen: @escaping () -> Void) {
+    func apply(
+        label: String,
+        value: String,
+        isEnabled: Bool,
+        help: String? = nil,
+        onOpen: @escaping () -> Void
+    ) {
         self.label = label
         self.value = value
         self.enabled = isEnabled
+        self.help = help
         self.onOpen = onOpen
         setAccessibilityElement(true)
         setAccessibilityRole(.popUpButton)
         setAccessibilityLabel(label)
         setAccessibilityValue(value)
         setAccessibilityEnabled(isEnabled)
+        setAccessibilityHelp(help)
+        toolTip = help
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -473,6 +484,10 @@ final class DotSelectAccessibilityView: NSView {
 
     override func accessibilityValue() -> Any? {
         value
+    }
+
+    override func accessibilityHelp() -> String? {
+        help
     }
 
     override func isAccessibilityEnabled() -> Bool {

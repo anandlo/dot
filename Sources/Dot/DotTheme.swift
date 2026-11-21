@@ -702,6 +702,8 @@ struct DotTextEditor: View {
     let height: CGFloat
     /// The accessible name of the field.
     var accessibilityLabel: String = ""
+    /// The explanation VoiceOver reads when the field has focus.
+    var accessibilityHelp: String?
     /// The size of the text, in points.
     var fontSize: CGFloat = 12.5
 
@@ -741,6 +743,7 @@ struct DotTextEditor: View {
             text: $text,
             fontSize: fontSize,
             accessibilityLabel: accessibilityLabel,
+            accessibilityHelp: accessibilityHelp,
             onFocusChange: { isFocused = $0 }
         )
         .frame(height: height)
@@ -972,6 +975,7 @@ private struct DotTextEditorRepresentable: NSViewRepresentable {
     @Binding var text: String
     let fontSize: CGFloat
     let accessibilityLabel: String
+    let accessibilityHelp: String?
     let onFocusChange: (Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -1018,6 +1022,8 @@ private struct DotTextEditorRepresentable: NSViewRepresentable {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.setAccessibilityLabel(accessibilityLabel)
+        textView.setAccessibilityHelp(accessibilityHelp)
+        textView.toolTip = accessibilityHelp
         textView.string = text
         scrollView.documentView = textView
         scrollView.observeEdgeFade()
@@ -1032,6 +1038,8 @@ private struct DotTextEditorRepresentable: NSViewRepresentable {
         textView.insertionPointColor = NSColor(DotTheme.ink)
         textView.textContainerInset = DotTextEditor.textInset
         textView.setAccessibilityLabel(accessibilityLabel)
+        textView.setAccessibilityHelp(accessibilityHelp)
+        textView.toolTip = accessibilityHelp
         if textView.string != text {
             let selection = textView.selectedRange()
             textView.string = text

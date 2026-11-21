@@ -122,6 +122,8 @@ final class UIPreviewTests: XCTestCase {
             "settings-provider-checking-dark.png",
             "settings-provider-verified.png",
             "settings-provider-verified-dark.png",
+            "settings-provider-verified-with-restriction.png",
+            "settings-provider-verified-with-restriction-dark.png",
             "settings-provider-rejected.png",
             "settings-provider-rejected-dark.png",
             "settings-provider-service-error.png",
@@ -374,6 +376,24 @@ final class UIPreviewTests: XCTestCase {
             500,
             "the card with every style removed drew neither its message nor the restore row"
         )
+    }
+
+    func testSettingsWithoutProfileRenderToPNGs() throws {
+        guard let value = DotMigration.environment("RENDER_UI_DIR"),
+              !value.isEmpty
+        else {
+            throw XCTSkip("Set DOT_RENDER_UI_DIR to render the empty microphone state.")
+        }
+        let directory = URL(fileURLWithPath: value, isDirectory: true)
+        try UIPreview.renderSettingsWithoutProfile(to: directory)
+        for name in ["settings-general-no-profile.png", "settings-general-no-profile-dark.png"] {
+            let url = directory.appendingPathComponent(name)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "\(name) was not written")
+            let data = try Data(contentsOf: url)
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data), "\(name) is not a PNG")
+            XCTAssertEqual(bitmap.pixelsWide, 1640, "\(name) width")
+            XCTAssertEqual(bitmap.pixelsHigh, 2360, "\(name) height")
+        }
     }
 
     /// The rewrite card, whose chip row is sized against the face's width.

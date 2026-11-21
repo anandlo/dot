@@ -268,7 +268,10 @@ struct AssistantPage: View {
                 }
                 if showsPlanRow {
                     SettingsDivider()
-                    SettingsRow("Plan") {
+                    SettingsRow(
+                        "Plan",
+                        help: SettingsExplanation.planHelp
+                    ) {
                         DotSelect(
                             label: "Plan",
                             options: planOptions,
@@ -319,24 +322,12 @@ struct AssistantPage: View {
 
     /// The dot and the words that say whether a turn would be able to run.
     private var statusChip: some View {
-        HStack(spacing: 6) {
-            switch displayedConnection {
-            case .checking:
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .controlSize(.small)
-                    .scaleEffect(0.6)
-                    .frame(width: 12, height: 12)
-            case .notSetUp, .connected, .notConnected:
-                Circle()
-                    .fill(statusDotColour)
-                    .frame(width: 6, height: 6)
-            }
-            Text(displayedConnection.title)
-                .font(DotType.font(11.5, .medium))
-                .foregroundStyle(displayedConnection == .notSetUp ? DotTheme.ink3 : DotTheme.ink2)
-        }
-        .accessibilityElement(children: .combine)
+        StatusChip(
+            title: displayedConnection.title,
+            dotTone: statusDotColour,
+            textTone: displayedConnection == .notSetUp ? DotTheme.ink3 : DotTheme.ink2,
+            isChecking: displayedConnection == .checking
+        )
     }
 
     /// The colour of the status dot.
@@ -611,7 +602,10 @@ struct AssistantPage: View {
             }
             if !reasoningChoices.isEmpty {
                 SettingsDivider()
-                SettingsRow("Reasoning") {
+                SettingsRow(
+                    "Reasoning",
+                    help: SettingsExplanation.reasoningHelp
+                ) {
                     DotSelect(
                         label: "Reasoning",
                         options: reasoningChoices,
@@ -1160,17 +1154,16 @@ struct AssistantPage: View {
     /// The title of the standing rules switch.
     static let standingRulesTitle = "Standing rules"
 
-    /// What the switch explains when the pointer rests on its label.
-    static let standingRulesHelp =
-        "Dot adds this text word for word under every Agent prompt. The model never sees or writes it."
+    /// What the label, the switch and the editor explain about the block.
+    static let standingRulesHelp = SettingsExplanation.standingRulesHelp
 
     /// The block Dot puts under every Agent prompt, and the switch that turns
     /// it on.
     ///
     /// The field is drawn only while the switch is on: a block that is off is
     /// one line in the card, and a person who turned it on has a text to write.
-    /// Nothing explains the block under the row, because the help on the label
-    /// already says the one fact the row cannot show: the model never reads it.
+    /// Nothing explains the block under the row, because the help on the label,
+    /// the switch and the editor says what the row itself cannot show.
     private var standingRulesControls: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -1178,18 +1171,23 @@ struct AssistantPage: View {
                     .font(DotTheme.rowTitleFont)
                     .foregroundStyle(DotTheme.ink)
                     .help(Self.standingRulesHelp)
+                    .accessibilityHint(Self.standingRulesHelp)
                 Spacer(minLength: 8)
                 Toggle("", isOn: standingRulesEnabledBinding)
                     .labelsHidden()
                     .toggleStyle(DotToggleStyle())
                     .accessibilityLabel(Self.standingRulesTitle)
+                    .help(Self.standingRulesHelp)
+                    .accessibilityHint(Self.standingRulesHelp)
             }
             if config.assistant.rewrite.standingRulesEnabled {
                 DotTextEditor(
                     text: standingRulesBinding,
                     height: Self.standingRulesEditorHeight,
-                    accessibilityLabel: Self.standingRulesTitle
+                    accessibilityLabel: Self.standingRulesTitle,
+                    accessibilityHelp: Self.standingRulesHelp
                 )
+                .help(Self.standingRulesHelp)
             }
         }
         .padding(.vertical, 10)

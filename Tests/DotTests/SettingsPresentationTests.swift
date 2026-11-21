@@ -888,7 +888,7 @@ final class SettingsPresentationTests: XCTestCase {
         )
         XCTAssertEqual(
             AssistantPage.standingRulesHelp,
-            "Dot adds this text word for word under every Agent prompt. The model never sees or writes it."
+            "Dot appends these rules to Agent prompts after generation. It doesn’t send them to the model."
         )
     }
 
@@ -959,6 +959,181 @@ final class SettingsPresentationTests: XCTestCase {
         )
     }
 
+    // MARK: - Explanations on the settings controls
+
+    /// The exact copy behind the changed rows, and the native controls that
+    /// carry it in a real host.
+    ///
+    /// Each picker and editor is mounted the way the rendered fixtures mount
+    /// it, then read from its AppKit accessibility and tooltip fields. No
+    /// tooltip is hovered, no VoiceOver process is started and no view body is
+    /// evaluated outside a host.
+    func testTheExplanationCopyIsWiredToEveryChangedRow() throws {
+        XCTAssertEqual(
+            SettingsExplanation.calibrationHelp,
+            "Dot learns this microphone's background noise to set the level meter's floor and the threshold for trimming silence at the ends of a take. Reset clears what it learned; microphone gain is never changed."
+        )
+        XCTAssertEqual(
+            SettingsExplanation.dwellSubtitle,
+            "How long a copied result or an answer stays on the island."
+        )
+        XCTAssertEqual(
+            SettingsExplanation.dwellHelp,
+            "Pasted results close after at most 3.5 seconds. Hovering, scrolling or editing the card pauses the countdown, and a rewrite card stays at least 60 seconds."
+        )
+        XCTAssertEqual(
+            SettingsExplanation.historyHelp,
+            "How many recent transcripts Dot keeps in ~/Library/Application Support/Dot/history.json. Older ones are removed from that file."
+        )
+        XCTAssertEqual(
+            SettingsExplanation.formatHelp,
+            "Dot formats pasted text for the app where you started dictating. History keeps the original transcript."
+        )
+        XCTAssertEqual(
+            SettingsExplanation.segmentSubtitle,
+            "The longest stretch of audio sent in one request. A longer recording is sent in parts of this length."
+        )
+        XCTAssertEqual(
+            SettingsExplanation.segmentHelp,
+            "Service default uses the longest stretch the service accepts, and a longer choice is capped at that limit."
+        )
+        XCTAssertEqual(
+            SettingsExplanation.temperatureHelp,
+            "Lower values keep the transcript literal and consistent; higher values let the model vary its wording."
+        )
+        XCTAssertEqual(
+            SettingsExplanation.authHelp,
+            "How the API key is sent: as an Authorization: Bearer header or as an api-key header."
+        )
+        XCTAssertEqual(
+            SettingsExplanation.regionHelp,
+            "The Azure region your Speech resource was created in. A key works only in its own region."
+        )
+        XCTAssertEqual(
+            SettingsExplanation.planHelp,
+            "Token Plan keys start with tp- or ttp- and use the Token Plan address. Pasting one selects this plan."
+        )
+        XCTAssertEqual(
+            SettingsExplanation.reasoningHelp,
+            "How much the model reasons before the assistant answers. Rewrites ask for the lightest level the model publishes."
+        )
+        XCTAssertEqual(
+            SettingsExplanation.standingRulesHelp,
+            "Dot appends these rules to Agent prompts after generation. It doesn’t send them to the model."
+        )
+        XCTAssertEqual(SettingsExplanation.calibrationNone, "Not learned yet.")
+        XCTAssertEqual(SettingsExplanation.calibrationOne, "Learned from 1 recording.")
+        XCTAssertEqual(SettingsView.calibrationObservedText(0), "Not learned yet.")
+        XCTAssertEqual(SettingsView.calibrationObservedText(1), "Learned from 1 recording.")
+        XCTAssertEqual(SettingsView.calibrationObservedText(14), "Learned from 14 recordings.")
+        XCTAssertEqual(SettingsView.calibrationObservedText(998), "Learned from 998 recordings.")
+        XCTAssertEqual(SettingsView.calibrationObservedText(999), "Learned from 999 or more recordings.")
+
+        let planRow = AssistantProviderCatalogue.row(for: AssistantProviderID.xiaomi)
+        let planAddress = planRow.plans.first { $0.id == "token-plan" }?.baseURL?.absoluteString
+        var planConfig = DotConfig.default
+        planConfig.assistant.isSetUp = true
+        planConfig.assistant.chat = AssistantSettings(providerID: planRow.id, model: "chat-model")
+        planConfig.assistant.chat.baseURL = planAddress
+        let planHost = assistantHost(
+            planConfig,
+            keyed: [planRow.id],
+            models: [DiscoveredModel(id: "chat-model")],
+            connection: .connected
+        )
+        let planSelects = selects("Plan", in: planHost)
+        XCTAssertEqual(planSelects.count, 1, "the Plan row has \(planSelects.count) native targets")
+        let planSelect = try XCTUnwrap(planSelects.first, "the Plan picker has no native target")
+        XCTAssertEqual(planSelect.accessibilityValue() as? String, "Token Plan")
+        XCTAssertEqual(planSelect.accessibilityHelp(), SettingsExplanation.planHelp)
+        XCTAssertEqual(planSelect.toolTip, SettingsExplanation.planHelp)
+
+        var reasoningConfig = DotConfig.default
+        reasoningConfig.assistant.isSetUp = true
+        reasoningConfig.assistant.chat = AssistantSettings(
+            providerID: AssistantSettings.defaultProviderID,
+            model: "gpt-4o"
+        )
+        let reasoningHost = assistantHost(
+            reasoningConfig,
+            keyed: [AssistantSettings.defaultProviderID],
+            models: [
+                DiscoveredModel(
+                    id: "gpt-4o",
+                    name: "GPT-4o",
+                    reasoning: ModelReasoningSupport(
+                        efforts: ["low", "high", "max"],
+                        toggle: true,
+                        defaultEffort: "high"
+                    )
+                ),
+            ],
+            connection: .connected
+        )
+        let reasoningSelects = selects("Reasoning", in: reasoningHost)
+        XCTAssertEqual(
+            reasoningSelects.count,
+            1,
+            "the Reasoning row has \(reasoningSelects.count) native targets"
+        )
+        let reasoningSelect = try XCTUnwrap(
+            reasoningSelects.first,
+            "the Reasoning picker has no native target"
+        )
+        XCTAssertEqual(reasoningSelect.accessibilityValue() as? String, "Default (High)")
+        XCTAssertEqual(reasoningSelect.accessibilityHelp(), SettingsExplanation.reasoningHelp)
+        XCTAssertEqual(reasoningSelect.toolTip, SettingsExplanation.reasoningHelp)
+
+        let general = settingsHost(tab: 0, config: .default)
+        let historyPicker = try XCTUnwrap(
+            select("Transcripts to keep", in: general),
+            "the history picker lost its native accessibility element"
+        )
+        XCTAssertEqual(historyPicker.accessibilityHelp(), SettingsExplanation.historyHelp)
+        XCTAssertEqual(historyPicker.toolTip, SettingsExplanation.historyHelp)
+
+        var assistant = DotConfig.default
+        assistant.assistant.isSetUp = true
+        assistant.assistant.rewrite.standingRulesEnabled = true
+        assistant.assistant.rewrite.setStandingRules("## House rules\n- Run the build.")
+        let rewrite = assistantHost(
+            assistant,
+            keyed: [AssistantSettings.defaultProviderID],
+            models: [DiscoveredModel(id: "gpt-4o")],
+            style: .builtIn(.prompt)
+        )
+        let editor = try XCTUnwrap(
+            textView(label: AssistantPage.standingRulesTitle, in: rewrite),
+            "the standing rules editor was not drawn"
+        )
+        XCTAssertEqual(AssistantPage.standingRulesHelp, SettingsExplanation.standingRulesHelp)
+        XCTAssertEqual(editor.accessibilityHelp(), SettingsExplanation.standingRulesHelp)
+        XCTAssertEqual(editor.toolTip, SettingsExplanation.standingRulesHelp)
+        XCTAssertTrue(editor.isEditable, "the explained editor lost its editing")
+        XCTAssertTrue(editor.isSelectable, "the explained editor lost its selection")
+    }
+
+    private func settingsHost(tab: Int, config: DotConfig) -> NSHostingView<AnyView> {
+        let store = ConfigStore(config: config)
+        let view = SettingsView(
+            store: store,
+            providers: MenuBuilder.providerRows(config: config) { _ in false },
+            tab: tab,
+            onChange: {},
+            onSetAPIKey: { _, _ in nil },
+            onChangeShortcut: {},
+            credentials: SpeechCredentialChecks(),
+            allowsOffscreenChecks: false
+        )
+        let host = NSHostingView(rootView: AnyView(view.environment(\.settingsHeadless, true)))
+        host.frame = NSRect(x: 0, y: 0, width: 820, height: 900)
+        for _ in 0 ..< 3 {
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        return host
+    }
+
     // MARK: - Hosts
 
     /// A configured record the card tests start from.
@@ -991,7 +1166,8 @@ final class SettingsPresentationTests: XCTestCase {
         keyed: Set<String> = [],
         models: [DiscoveredModel]? = nil,
         style: AssistantPage.StyleSelection? = nil,
-        rewriting: Bool = true
+        rewriting: Bool = true,
+        connection: AssistantConnectionState = .notSetUp
     ) -> NSHostingView<AnyView> {
         var config = config
         config.assistant.rewrite.enabled = rewriting
@@ -1003,12 +1179,15 @@ final class SettingsPresentationTests: XCTestCase {
         )
         .environment(\.settingsHeadless, true)
         .environment(\.assistantKeyedProviders, keyed)
-        .environment(\.assistantConnectionPreview, .notSetUp)
+        .environment(\.assistantConnectionPreview, connection)
         .environment(\.assistantDiscoveredModelsPreview, models)
         .environment(\.assistantStyleSelectionPreview, style)
         let host = NSHostingView(rootView: AnyView(page))
         host.frame = NSRect(x: 0, y: 0, width: 640, height: 900)
-        host.layoutSubtreeIfNeeded()
+        for _ in 0 ..< 3 {
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
         return host
     }
 
@@ -1046,14 +1225,19 @@ final class SettingsPresentationTests: XCTestCase {
     // MARK: - Reading what a headless host draws
 
     private func select(_ label: String, in view: NSView?) -> DotSelectAccessibilityView? {
-        guard let view else { return nil }
+        selects(label, in: view).first
+    }
+
+    private func selects(_ label: String, in view: NSView?) -> [DotSelectAccessibilityView] {
+        guard let view else { return [] }
+        var found: [DotSelectAccessibilityView] = []
         if let element = view as? DotSelectAccessibilityView, element.accessibilityLabel() == label {
-            return element
+            found.append(element)
         }
         for sub in view.subviews {
-            if let found = select(label, in: sub) { return found }
+            found += selects(label, in: sub)
         }
-        return nil
+        return found
     }
 
     /// Every editor's text view under a host.
