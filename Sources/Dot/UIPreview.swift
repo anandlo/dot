@@ -567,6 +567,35 @@ enum UIPreview {
         try renderAssistantSettings(to: directory, providers: providers)
     }
 
+    /// Renders the General page before any take has taught the microphone.
+    ///
+    /// The calibration row is present with no profile, so its explanation is
+    /// discoverable and the empty subtitle is part of the reviewed surface.
+    static func renderSettingsWithoutProfile(to directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let providers = MenuBuilder.providerRows(config: .default) { _ in false }
+        let size = CGSize(width: 820, height: 1180)
+        for scheme in [ColorScheme.light, .dark] {
+            var config = DotConfig.default
+            config.appearance = appearance(for: scheme)
+            let settings = settingsPreview(
+                config: config,
+                providers: providers,
+                tab: 0,
+                height: size.height
+            )
+            let name = scheme == .dark
+                ? "settings-general-no-profile-dark.png"
+                : "settings-general-no-profile.png"
+            try writeHosted(
+                WindowPreview(size: size) { settings },
+                size: size,
+                scheme: scheme,
+                to: directory.appendingPathComponent(name)
+            )
+        }
+    }
+
     /// Renders the AI rewrite page into `directory`, in the states it can hold.
     ///
     /// Every fact a page would read at run time is handed to it here: the keys a
