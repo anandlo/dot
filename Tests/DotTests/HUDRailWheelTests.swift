@@ -17,6 +17,9 @@ import XCTest
 final class HUDRailWheelTests: XCTestCase {
     private let pointAway: CGFloat = 1_000
 
+    /// A private source keeps legacy line wheels independent of the session's event state.
+    private static let lineWheelSource = CGEventSource(stateID: .privateState)
+
     // MARK: - The events
 
     /// A wheel event whose phase, momentum and precision are really set.
@@ -37,9 +40,10 @@ final class HUDRailWheelTests: XCTestCase {
         timestamp: TimeInterval? = nil,
         at point: CGPoint
     ) throws -> NSEvent {
+        let isLineWheel = !precise && units == .line
         let event = try XCTUnwrap(
             CGEvent(
-                scrollWheelEvent2Source: nil,
+                scrollWheelEvent2Source: isLineWheel ? Self.lineWheelSource : nil,
                 units: units,
                 wheelCount: 2,
                 wheel1: Int32(dy),
@@ -57,6 +61,18 @@ final class HUDRailWheelTests: XCTestCase {
             .scrollWheelEventMomentumPhase,
             value: Int64(momentum.rawValue)
         )
+        if isLineWheel {
+            // A line wheel once arrived with a scrolling delta of 0. AppKit
+            // reads these parallel delta fields when it converts the event, so
+            // they are set explicitly and the wheel carries exactly the
+            // requested lines whatever the creating call filled in.
+            let axis1 = Int64(Int32(dy))
+            let axis2 = Int64(Int32(dx))
+            event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: axis1)
+            event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: axis2)
+            event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1, value: axis1 << 16)
+            event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis2, value: axis2 << 16)
+        }
         if let timestamp {
             event.timestamp = CGEventTimestamp(timestamp * 1_000_000_000)
         }
