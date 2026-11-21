@@ -366,7 +366,7 @@ struct HUDWaveform: View {
         static let floorWidthShare: CGFloat = 0.70
 
         /// The share of its ink a bar keeps at its own two tips.
-        static let tipInk: Double = 0.72
+        static let tipInk: Double = 0.85
 
         // MARK: The live edge
 
@@ -733,6 +733,15 @@ struct HUDWaveform: View {
         }
     }
 
+    /// The Wave row's ink at one height, before its age and tip shares.
+    ///
+    /// Wave has its own stops, so the card's glass lift does not mix the card's
+    /// porcelain into them; the lift belongs to the styles that use the meter.
+    static func stretchInk(level: Double, material: HUDMaterial) -> Color {
+        let tint = WaveInk.tint(level: level, material: material)
+        return VisualizerMath.ramp(tint, opacity: tint.opacity)
+    }
+
     private func drawStretch(context: GraphicsContext, size: CGSize) {
         let row = Stretch.bars(
             history: history,
@@ -750,7 +759,7 @@ struct HUDWaveform: View {
         for bar in row.reversed() {
             // The level is already normalised to the take, so the colour is
             // read on the full ramp rather than on the take's ceiling twice.
-            let colour = lit(MeterRamp.tint(level: bar.value, ceiling: 1))
+            let colour = Self.stretchInk(level: bar.value, material: material)
 
             // The glow is the one part of the row that is light rather than ink: it
             // is added to the surface under the bar, so the live edge reads as the

@@ -81,11 +81,19 @@ final class VisualizerLiftTests: XCTestCase {
             )
             let glass = try hash(canvas(frame, visualizer, material: .glass, lift: 0))
             let glassLifted = try hash(canvas(frame, visualizer, material: .glass, lift: 1))
-            XCTAssertNotEqual(
-                glass,
-                glassLifted,
-                "\(visualizer) drew the same glass canvas at a lift of zero and one"
-            )
+            if visualizer == .stretch {
+                XCTAssertEqual(
+                    glass,
+                    glassLifted,
+                    "Wave drew a different glass canvas at a lift of one"
+                )
+            } else {
+                XCTAssertNotEqual(
+                    glass,
+                    glassLifted,
+                    "\(visualizer) drew the same glass canvas at a lift of zero and one"
+                )
+            }
             print("LIFT \(visualizer): black \(black), glass \(glass) at 0, \(glassLifted) at 1")
         }
         let filament = try hash(canvas(frame, .filament, material: .glass, lift: 0))
