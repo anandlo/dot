@@ -54,7 +54,7 @@ enum SpeechCredentialStatus: Equatable {
     /// uses for its own detail line.
     var statusDetail: String? {
         switch self {
-        case .checking, .settled(.verified, _), .settled(.verifiedWithRestriction, _):
+        case .checking, .settled(.verified, _):
             nil
         default:
             message
@@ -94,7 +94,7 @@ enum SpeechCredentialStatus: Equatable {
         }
     }
 
-    /// Whether the dot is pulsing.
+    /// Whether the check is still in flight.
     var isChecking: Bool { self == .checking }
 }
 

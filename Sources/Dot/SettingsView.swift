@@ -834,6 +834,7 @@ struct SettingsView: View {
                     .buttonStyle(DotPrimaryButtonStyle())
                     .disabled(!canConnect)
                     .accessibilityHint("Stores the key in the macOS Keychain and selects the service.")
+                    .accessibilityIdentifier("speech.apiKey.trailing")
 
                     if hasStoredKey(selectedPreset) && selectedPreset.key != .none {
                         Button(role: .destructive) {
@@ -848,13 +849,17 @@ struct SettingsView: View {
                         .buttonStyle(DotPressStyle())
                         .help("Delete the stored key")
                         .accessibilityLabel("Delete the stored key from the Keychain")
+                        .accessibilityIdentifier("speech.apiKey.trailing")
                     }
                 }
+                .overlay(
+                    SpeechRowAnchor(identifier: "speech.apiKey.trailing")
+                        .frame(width: 1, height: 1),
+                    alignment: .trailing
+                )
             }
-            if !selectedPreset.hasEndpoint {
-                SettingsDivider()
-                credentialStatusRow
-            }
+            SettingsDivider()
+            credentialStatusRow
         }
     }
 
@@ -876,6 +881,12 @@ struct SettingsView: View {
             selection: serviceBinding,
             placeholder: "Choose a service",
             width: 220
+        )
+        .accessibilityIdentifier("speech.service")
+        .overlay(
+            SpeechRowAnchor(identifier: "speech.service")
+                .frame(width: 1, height: 1),
+            alignment: .trailing
         )
     }
 
@@ -1042,8 +1053,6 @@ struct SettingsView: View {
                     }
                 }
             }
-            SettingsDivider()
-            credentialStatusRow
         }
     }
 
@@ -1964,20 +1973,29 @@ struct SettingsView: View {
     private var credentialStatusRow: some View {
         SettingsRow(
             "Status",
-            subtitle: credentialStatus.statusDetail,
-            subtitleTone: credentialStatus.tone
+            subtitle: credentialStatus.statusDetail
         ) {
             StatusChip(
                 title: credentialStatus.title,
                 dotTone: credentialStatus.tone,
                 textTone: DotTheme.ink2,
-                isChecking: credentialStatus == .checking
+                isChecking: credentialStatus.isChecking
             )
-            .help(credentialStatus.message)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(credentialStatus.statusAccessibilityLabel)
         .accessibilityValue(credentialStatus.statusAccessibilityValue)
+        .help(credentialStatus.message)
+        .overlay(
+            SpeechRowAnchor(
+                identifier: "speech.status.row",
+                label: credentialPreview == nil ? nil : credentialStatus.statusAccessibilityLabel,
+                value: credentialPreview == nil ? nil : credentialStatus.statusAccessibilityValue,
+                help: credentialPreview == nil ? nil : credentialStatus.message
+            )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+        )
     }
 
     /// The row the configuration presents.
@@ -3164,6 +3182,53 @@ extension EnvironmentValues {
         get { self[SettingsDefaultInputKey.self] }
         set { self[SettingsDefaultInputKey.self] = newValue }
     }
+}
+
+/// A transparent AppKit view that gives a hosted SwiftUI row a stable edge and
+/// frame. The status row exposes its accessibility state here only in a preview
+/// host, where SwiftUI's own element has no AppKit tree; the live window keeps
+/// the SwiftUI element alone. The view draws nothing and takes no click.
+private struct SpeechRowAnchor: NSViewRepresentable {
+    let identifier: String
+    var label: String?
+    var value: String?
+    var help: String?
+
+    func makeNSView(context: Context) -> SpeechRowAnchorView {
+        let view = SpeechRowAnchorView()
+        view.apply(identifier: identifier, label: label, value: value, help: help)
+        return view
+    }
+
+    func updateNSView(_ view: SpeechRowAnchorView, context: Context) {
+        view.apply(identifier: identifier, label: label, value: value, help: help)
+    }
+}
+
+private final class SpeechRowAnchorView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = false
+        alphaValue = 0
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = false
+        alphaValue = 0
+    }
+
+    func apply(identifier: String, label: String?, value: String?, help: String?) {
+        self.identifier = NSUserInterfaceItemIdentifier(rawValue: identifier)
+        setAccessibilityElement(label != nil)
+        guard label != nil else { return }
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel(label)
+        setAccessibilityValue(value)
+        setAccessibilityHelp(help)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// A version override for offscreen renders. The real windows read the app

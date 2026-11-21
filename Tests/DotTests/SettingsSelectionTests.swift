@@ -803,9 +803,21 @@ final class SpeechConnectionSourceGuardTests: XCTestCase {
             from: "private var speechEngineSection",
             to: "/// The picker of the speech engine"
         )
-        XCTAssertTrue(
-            speechEngine.contains("if !selectedPreset.hasEndpoint") && speechEngine.contains("credentialStatusRow"),
-            "the speech engine card must end with a Status row only when it has no endpoint card"
+        let apiKeyPlacement = try XCTUnwrap(speechEngine.range(of: #"SettingsRow("API key""#)?.lowerBound)
+        let statusPlacement = try XCTUnwrap(speechEngine.range(of: "credentialStatusRow")?.lowerBound)
+        XCTAssertGreaterThan(
+            statusPlacement,
+            apiKeyPlacement,
+            "the Status row moved above the service's key field"
+        )
+        XCTAssertNotNil(
+            try NSRegularExpression(pattern: #"SettingsDivider\(\)\s*credentialStatusRow"#)
+                .firstMatch(in: speechEngine, range: NSRange(speechEngine.startIndex..., in: speechEngine)),
+            "the service card has no divider directly above its Status row"
+        )
+        XCTAssertFalse(
+            speechEngine.contains("if !selectedPreset.hasEndpoint"),
+            "the speech engine card made its Status row conditional on the endpoint card"
         )
 
         let endpoint = try slice(
@@ -813,12 +825,13 @@ final class SpeechConnectionSourceGuardTests: XCTestCase {
             from: "private var endpointSection",
             to: "/// The Azure endpoint"
         )
-        let statusPlacement = try XCTUnwrap(endpoint.range(of: "credentialStatusRow")?.lowerBound)
-        let modelPlacement = try XCTUnwrap(endpoint.range(of: #"SettingsRow("Model""#)?.lowerBound)
-        XCTAssertGreaterThan(
-            statusPlacement,
-            modelPlacement,
-            "the Status row moved above the endpoint's setup fields"
+        XCTAssertNotNil(
+            endpoint.range(of: #"SettingsRow("Model""#),
+            "the endpoint card lost its model field"
+        )
+        XCTAssertFalse(
+            endpoint.contains("credentialStatusRow"),
+            "the endpoint card drew a second Status row"
         )
 
         let statusDeclaration = try slice(
@@ -831,6 +844,18 @@ final class SpeechConnectionSourceGuardTests: XCTestCase {
             statusRow.numberOfMatches(in: statusDeclaration, range: declarationRange),
             1,
             "the shared status row no longer draws the Status title"
+        )
+        XCTAssertTrue(
+            statusDeclaration.contains(".accessibilityLabel(credentialStatus.statusAccessibilityLabel)"),
+            "the Status row lost its accessible name"
+        )
+        XCTAssertTrue(
+            statusDeclaration.contains(".accessibilityValue(credentialStatus.statusAccessibilityValue)"),
+            "the Status row lost its accessible value"
+        )
+        XCTAssertTrue(
+            statusDeclaration.contains(".help(credentialStatus.message)"),
+            "the whole Status row lost its tooltip"
         )
         XCTAssertFalse(text.contains("SpeechCredentialLabel"), "the picker-label view came back")
         for helper in ["statusChip", "isServiceConnected", "keyStatus"] {

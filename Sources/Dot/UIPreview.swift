@@ -383,38 +383,44 @@ enum UIPreview {
             to: directory.appendingPathComponent("settings-provider-azure.png")
         )
 
-        // The status label beside the service picker in every state it can
-        // hold, in both appearances. The states are handed to the page rather
-        // than asked of a service, so a render makes no request.
-        // The four states a keyed service can answer need a stored key: the key
-        // field then shows the row's own saved-key state, the placeholder that
-        // asks for a replacement and the control that deletes the stored item.
-        // "Needs setup" is the same row with no key, and "Unavailable" is the
-        // on-device row, which is the only provider that can say it.
-        // The time a check is shown with is fixed, so the picture does not depend
-        // on when it was drawn.
+        // The status row in the service card in every state it can hold, in
+        // both appearances. The states are handed to the page rather than asked
+        // of a service, so a render makes no request. Each state carries the
+        // service that can honestly produce it: Apple for Unavailable,
+        // ElevenLabs for the accepted-but-restricted key, OpenAI for the rest.
+        // A keyed service needs a stored key: the key field then shows the
+        // saved-key state, the replacement placeholder and the delete control.
+        // "Needs setup" is the same row with no key. The time a check is shown
+        // with is fixed, so the picture does not depend on when it was drawn.
         let checkedAt = Date(timeIntervalSinceReferenceDate: 800_000_000)
-        let credentialStates: [(name: String, status: SpeechCredentialStatus, keyed: Bool, onDevice: Bool)] = [
-            ("checking", .checking, true, false),
-            ("verified", .settled(.verified, checkedAt: checkedAt), true, false),
-            ("rejected", .settled(.rejected(status: 401), checkedAt: checkedAt), true, false),
-            ("service-error", .settled(.serviceError(status: 503, host: "the service"), checkedAt: checkedAt), true, false),
-            ("unreachable", .settled(.unreachable("Can't reach the service."), checkedAt: checkedAt), true, false),
-            ("needs-setup", .settled(.needsSetup("Add an API key for this service."), checkedAt: checkedAt), false, false),
-            ("not-saved", .notSaved("The Keychain did not give the key back."), true, false),
-            ("unavailable", .settled(.unavailable("Needs macOS 26 or newer."), checkedAt: checkedAt), false, true),
+        let credentialStates: [(name: String, status: SpeechCredentialStatus, preset: ProviderPreset, keyed: Bool)] = [
+            ("checking", .checking, .openAI, true),
+            ("verified", .settled(.verified, checkedAt: checkedAt), .openAI, true),
+            (
+                "verified-with-restriction",
+                .settled(
+                    .verifiedWithRestriction(
+                        "ElevenLabs accepted the key. It is not allowed to list models, which Dot does not use."
+                    ),
+                    checkedAt: checkedAt
+                ),
+                .elevenLabs,
+                true
+            ),
+            ("rejected", .settled(.rejected(status: 401), checkedAt: checkedAt), .openAI, true),
+            ("service-error", .settled(.serviceError(status: 503, host: "the service"), checkedAt: checkedAt), .openAI, true),
+            ("unreachable", .settled(.unreachable("Can't reach the service."), checkedAt: checkedAt), .openAI, true),
+            ("needs-setup", .settled(.needsSetup("Add an API key for this service."), checkedAt: checkedAt), .openAI, false),
+            ("not-saved", .notSaved("The Keychain did not give the key back."), .openAI, true),
+            ("unavailable", .settled(.unavailable("Needs macOS 26 or newer."), checkedAt: checkedAt), .apple, false),
         ]
         for state in credentialStates {
             for scheme in [ColorScheme.light, .dark] {
                 var config = sampleConfig
-                if state.onDevice {
-                    ProviderPreset.apple.apply(to: &config)
-                } else {
-                    ProviderPreset.openAI.apply(to: &config)
-                }
+                state.preset.apply(to: &config)
                 config.appearance = appearance(for: scheme)
                 let rows = MenuBuilder.providerRows(config: config) { id in
-                    state.keyed && id == ProviderIdentifier.openAI
+                    state.keyed && id == state.preset.providerID
                 }
                 let suffix = scheme == .dark ? "-dark" : ""
                 try writeHosted(
