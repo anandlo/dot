@@ -179,9 +179,12 @@ final class StopPathTests: XCTestCase {
             // It used to send the whole recording.
             XCTAssertEqual(beforeRun.stopSamples, audio.count)
             if seconds > 12 {
-                // And for anything longer than one chunk the stop is materially
-                // faster, because the chunks before the tail are already done.
-                XCTAssertLessThan(afterRun.stopSeconds, beforeRun.stopSeconds)
+                // And for anything longer than one chunk the stop waits on fewer
+                // requests, because the chunks before the tail are already done.
+                // Segments are sent one after another, so the stop's latency is
+                // its request count; elapsed time is printed above, not compared,
+                // because a loaded runner stretches each sleep far past the gap.
+                XCTAssertLessThan(afterRun.stopRequests, beforeRun.stopRequests, "a \(seconds) s recording")
                 XCTAssertLessThan(afterRun.stopSamples, beforeRun.stopSamples)
             } else {
                 // A recording shorter than one chunk is sent once either way.
