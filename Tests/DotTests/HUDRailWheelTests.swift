@@ -954,6 +954,7 @@ final class HUDRailWheelTests: XCTestCase {
         card.append(id: 2, style: second, text: HUDPreview.longTranscript, warning: nil)
         let hud = HUD(offscreen: true)
         hud.dwell = 60
+        hud.debugHoldTheOpeningCorrection = true
         hud.showTranscript(
             text: card.original,
             delivery: .copied,
@@ -966,13 +967,12 @@ final class HUDRailWheelTests: XCTestCase {
             spin(for: 0.4)
         }
 
-        // The frame clock is held at the rest frame on which the opening
-        // correction has not decided yet. The reveal is placed here rather
-        // than earlier in the entrance, so no later appearance frame can move
-        // the clip before the wheel is routed.
+        // The card comes to rest while the opening correction is held
+        // undecided. The reveal is placed at rest rather than earlier in the
+        // entrance, so no later appearance frame can move the clip before the
+        // wheel is routed.
         let restDeadline = Date().addingTimeInterval(4)
-        while Date() < restDeadline,
-              !(hud.debugAppearanceAtRest && !hud.debugRailPositionRestored) {
+        while Date() < restDeadline, !hud.debugAppearanceAtRest {
             hud.debugRootView.layoutSubtreeIfNeeded()
             RunLoop.main.run(
                 mode: .default,
@@ -1048,6 +1048,7 @@ final class HUDRailWheelTests: XCTestCase {
             accuracy: 1e-9,
             "the wheel did not record the revealed position plus its travel"
         )
+        hud.debugHoldTheOpeningCorrection = false
         XCTAssertTrue(
             waitForTheRailToSettle(hud),
             "the card never came to rest with its opening correction decided"
@@ -1095,23 +1096,18 @@ final class HUDRailWheelTests: XCTestCase {
     /// The residue's reach is a function of the backing scale, so a three-pixel
     /// residue is inside the window on a 1x display, where three pixels is
     /// three points, and outside it on a 2x display, where the window is 2.5
-    /// points. The residue is left on the clip on the first frame on which the
-    /// appearance has stopped but the correction has not yet decided, which is
-    /// the frame the correction reads.
+    /// points. The residue is left on the clip once the appearance has stopped
+    /// while the correction is held undecided, so the correction reads it.
     func testTheCorrectionRestoresAThreePixelResidueOnAOneXDisplay() throws {
-        let fixture = try makeFixture()
+        let fixture = try makeFixture(holdTheOpeningCorrection: true)
         defer { close(fixture) }
         try XCTSkipUnless(
             fixture.hud.debugPanel.backingScaleFactor == 1,
             "a three-pixel residue is only the appearance's on a 1x display"
         )
         let deadline = Date().addingTimeInterval(4)
-        while Date() < deadline,
-              !(fixture.hud.debugAppearanceAtRest && !fixture.hud.debugRailPositionRestored) {
+        while Date() < deadline, !fixture.hud.debugAppearanceAtRest {
             fixture.hud.debugRootView.layoutSubtreeIfNeeded()
-            if !fixture.hud.debugRailPositionRestored {
-                injectResidue(3.0, into: fixture)
-            }
             RunLoop.main.run(
                 mode: .default,
                 before: min(deadline, Date().addingTimeInterval(0.002))
@@ -1126,6 +1122,13 @@ final class HUDRailWheelTests: XCTestCase {
             "the opening correction decided before the residue could be left for it"
         )
         injectResidue(3.0, into: fixture)
+        XCTAssertEqual(
+            railOffset(fixture),
+            3.0,
+            accuracy: 1e-9,
+            "the injected residue did not reach the clip"
+        )
+        fixture.hud.debugHoldTheOpeningCorrection = false
         XCTAssertTrue(
             waitForTheRailToSettle(fixture.hud),
             "the card never came to rest with its opening correction decided"
@@ -1293,7 +1296,8 @@ final class HUDRailWheelTests: XCTestCase {
     private func makeFixture(
         choices: [RewriteStyle]? = nil,
         actions: HUDActions = HUDActions(),
-        holdTheEntrance: Bool = false
+        holdTheEntrance: Bool = false,
+        holdTheOpeningCorrection: Bool = false
     ) throws -> Fixture {
         _ = NSApplication.shared
         var card = RewriteCard(
@@ -1318,6 +1322,7 @@ final class HUDRailWheelTests: XCTestCase {
         hud.dwell = 60
         hud.actions = actions
         hud.debugHoldTheEntrance = holdTheEntrance
+        hud.debugHoldTheOpeningCorrection = holdTheOpeningCorrection
         hud.showTranscript(
             text: card.original,
             delivery: .copied,

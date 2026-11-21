@@ -946,6 +946,16 @@ final class HUD {
     /// never sets it.
     var debugHoldTheEntrance = false
 
+    /// Whether a test is holding the opening correction undecided at rest.
+    ///
+    /// The correction decides on the first quiet frame after the appearance
+    /// comes to rest, and a loaded machine can deliver that frame in the same
+    /// run-loop pass as the rest frame, so a test cannot reliably observe the
+    /// rest-but-undecided state by waiting for it. While this is set the card
+    /// still comes to rest but the correction does not decide; clearing it lets
+    /// the next quiet frames decide as usual. The app never sets it.
+    var debugHoldTheOpeningCorrection = false
+
     /// Moves the card's appearance by a known amount of time.
     ///
     /// The appearance runs on the frames the render loop delivers and spends
@@ -2282,7 +2292,7 @@ final class HUD {
         guard let rail = cardRail() else { return }
         observeTheRailsOrigin(of: rail)
         trackTheRailsOriginToRest(rail)
-        guard !railPositionRestored, debugAppearanceAtRest else { return }
+        guard !railPositionRestored, !debugHoldTheOpeningCorrection, debugAppearanceAtRest else { return }
         // The rail's frame changes while the card's own size springs to the
         // layer's height, and a correction made during that would be answered by
         // the transform that is still arriving. One quiet frame decides it.
