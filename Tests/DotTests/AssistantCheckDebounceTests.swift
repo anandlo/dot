@@ -33,13 +33,18 @@ final class AssistantCheckDebounceTests: XCTestCase {
     }
 
     func testTheNewestEditIsTheOneThatRuns() async {
-        var value = ""
+        var ran: [String] = []
         let clock = ManualClock()
         let debounce = AssistantCheckDebounce(delay: .milliseconds(40), clock: clock)
-        debounce.schedule { value = "https://one.example/v1" }
-        debounce.schedule { value = "https://two.example/v1" }
-        await advance(clock, by: .milliseconds(160))
-        XCTAssertEqual(value, "https://two.example/v1")
+        debounce.schedule { ran.append("https://one.example/v1") }
+        debounce.schedule { ran.append("https://two.example/v1") }
+        let asleep = await clock.waitUntilWaiting(1)
+        XCTAssertTrue(asleep, "the newest edit never started its pause")
+        let landed = await advance(clock, until: { !ran.isEmpty }, within: .seconds(2))
+        XCTAssertTrue(landed, "the newest edit never ran")
+        // Three debounces of quiet, so an older edit that was not dropped lands too.
+        await advance(clock, by: .milliseconds(120))
+        XCTAssertEqual(ran, ["https://two.example/v1"])
     }
 
     func testCancelDropsThePendingCheck() async {
@@ -57,11 +62,19 @@ final class AssistantCheckDebounceTests: XCTestCase {
         let clock = ManualClock()
         let debounce = AssistantCheckDebounce(delay: .milliseconds(80), clock: clock)
         debounce.schedule { checks += 1 }
-        await clock.waitUntilWaiting(1)
+        let asleep = await clock.waitUntilWaiting(1)
+        XCTAssertTrue(asleep, "the check never started its pause")
         await advance(clock, by: .milliseconds(79))
+        // The clock releases a due sleep inside `advance`, so a sleep still
+        // held here has not woken, whatever the scheduler does next.
+        XCTAssertEqual(clock.waiting, 1, "the check did not wait for the typing to stop")
         XCTAssertEqual(checks, 0, "the check did not wait for the typing to stop")
         await advance(clock, by: .milliseconds(1))
-        XCTAssertEqual(checks, 1)
+        // The clock stays at the deadline: only the main actor is given turns,
+        // because a resumed sleep can need more than one to reach the check.
+        let ran = await settle(until: { checks >= 1 })
+        XCTAssertTrue(ran, "the check did not run at the deadline")
+        XCTAssertEqual(checks, 1, "the deadline did not run the check exactly once")
     }
 
     /// The shipped pause is long enough to swallow a typed word and short
@@ -111,7 +124,22 @@ final class AssistantCheckDebounceTests: XCTestCase {
             await clock.advance(by: step)
             moved += step
         }
-        return predicate()
+        // A woken task can still be on its way to the main actor when the
+        // clock budget runs out; give it wall-clock time without moving the clock.
+        return await poll(until: predicate, within: .seconds(2))
+    }
+
+    /// Waits, without moving the test clock, until a state holds.
+    ///
+    /// - Parameters:
+    ///   - predicate: the state the test is waiting for.
+    ///   - limit: the wall-clock time to allow before giving up.
+    /// - Returns: whether the state held within the limit.
+    private func settle(
+        until predicate: @MainActor () -> Bool,
+        within limit: Duration = .seconds(2)
+    ) async -> Bool {
+        await poll(until: predicate, within: limit)
     }
 }
 
@@ -204,14 +232,40 @@ final class ManualClock: Clock, @unchecked Sendable {
         await Task.yield()
     }
 
-    /// Waits until `count` sleeps are suspended, giving the main actor back
-    /// between looks so the tasks that sleep on this clock can reach it.
+    /// Waits until `count` sleeps are suspended on the clock.
     ///
-    /// - Parameter count: how many sleeps the test expects.
-    func waitUntilWaiting(_ count: Int = 1) async {
-        for _ in 0 ..< 10_000 {
-            if waiting >= count { return }
+    /// - Parameters:
+    ///   - count: how many sleeps the test expects.
+    ///   - limit: the wall-clock time to allow before giving up.
+    /// - Returns: whether that many sleeps were suspended within the limit.
+    @MainActor
+    func waitUntilWaiting(_ count: Int = 1, within limit: Swift.Duration = .seconds(2)) async -> Bool {
+        await poll(until: { self.waiting >= count }, within: limit)
+    }
+}
+
+/// Looks for a state until it holds or a wall-clock limit passes.
+///
+/// A few yields cover the usual case of a task one turn away. After that the
+/// main actor sleeps between looks, so a busy runner can schedule the task
+/// being waited for instead of losing its core to the loop.
+///
+/// - Parameters:
+///   - predicate: the state to wait for.
+///   - limit: the wall-clock time to allow.
+/// - Returns: whether the state held within the limit.
+@MainActor
+private func poll(until predicate: @MainActor () -> Bool, within limit: Duration) async -> Bool {
+    let deadline = ContinuousClock.now + limit
+    var looks = 0
+    while ContinuousClock.now < deadline {
+        if predicate() { return true }
+        looks += 1
+        if looks <= 20 {
             await Task.yield()
+        } else {
+            try? await Task.sleep(for: .milliseconds(1))
         }
     }
+    return predicate()
 }
