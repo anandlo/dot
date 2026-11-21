@@ -17,7 +17,7 @@ import XCTest
 final class HUDRailWheelTests: XCTestCase {
     private let pointAway: CGFloat = 1_000
 
-    /// Legacy line wheels need a source whose scroll state no other event can change.
+    /// A private source keeps legacy line wheels independent of the session's event state.
     private static let lineWheelSource = CGEventSource(stateID: .privateState)
 
     // MARK: - The events
@@ -62,10 +62,10 @@ final class HUDRailWheelTests: XCTestCase {
             value: Int64(momentum.rawValue)
         )
         if isLineWheel {
-            // A nil source shares its scroll state with every other synthetic
-            // or real event in the session, and AppKit reads the axis set at
-            // conversion. Restate the lines in the fields it reads so a line
-            // wheel always carries exactly the requested delta.
+            // A line wheel once arrived with a scrolling delta of 0. AppKit
+            // reads these parallel delta fields when it converts the event, so
+            // they are set explicitly and the wheel carries exactly the
+            // requested lines whatever the creating call filled in.
             let axis1 = Int64(Int32(dy))
             let axis2 = Int64(Int32(dx))
             event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: axis1)
