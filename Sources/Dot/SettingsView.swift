@@ -537,11 +537,11 @@ struct SettingsView: View {
     private var historySection: some View {
         SettingsSection("History") {
             SettingsRow(
-                "Transcript history",
+                "Transcripts to keep",
                 help: SettingsExplanation.historyHelp
             ) {
                 DotSelect(
-                    label: "Transcript history",
+                    label: "Transcripts to keep",
                     options: Self.historyLimitOptions.map { limit in
                         DotSelectOption(value: limit, title: "\(limit)")
                     },

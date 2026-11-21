@@ -983,7 +983,7 @@ final class SettingsPresentationTests: XCTestCase {
         )
         XCTAssertEqual(
             SettingsExplanation.historyHelp,
-            "Limits recent transcripts in ~/Library/Application Support/Dot/history.json. Separately exported transcripts are not affected."
+            "How many recent transcripts Dot keeps in ~/Library/Application Support/Dot/history.json. Older ones are removed from that file."
         )
         XCTAssertEqual(
             SettingsExplanation.formatHelp,
@@ -1086,7 +1086,7 @@ final class SettingsPresentationTests: XCTestCase {
 
         let general = settingsHost(tab: 0, config: .default)
         let historyPicker = try XCTUnwrap(
-            select("Transcript history", in: general),
+            select("Transcripts to keep", in: general),
             "the history picker lost its native accessibility element"
         )
         XCTAssertEqual(historyPicker.accessibilityHelp(), SettingsExplanation.historyHelp)

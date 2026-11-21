@@ -190,7 +190,7 @@ enum SettingsExplanation {
     static let dwellHelp =
         "Pasted results close after at most 3.5 seconds. Hovering, scrolling or editing the card pauses the countdown, and a rewrite card stays at least 60 seconds."
     static let historyHelp =
-        "Limits recent transcripts in ~/Library/Application Support/Dot/history.json. Separately exported transcripts are not affected."
+        "How many recent transcripts Dot keeps in ~/Library/Application Support/Dot/history.json. Older ones are removed from that file."
     static let formatHelp =
         "Dot formats pasted text for the app where you started dictating. History keeps the original transcript."
     static let segmentSubtitle =
