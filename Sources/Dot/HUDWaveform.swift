@@ -2820,10 +2820,19 @@ struct HUDWaveform: View {
     private func drawMatrix(context: GraphicsContext, size: CGSize) {
         let pitch = MatrixLattice.pitch(forHeight: size.height)
         guard pitch > 0 else { return }
+#if DEBUG
+        let started = CFAbsoluteTimeGetCurrent()
+        var drawnDots = 0
+        defer { CanvasDrawProbe.recordMatrix(duration: CFAbsoluteTimeGetCurrent() - started, dots: drawnDots) }
+#endif
         let glowRadius = MatrixLattice.glowRadius(forPitch: pitch)
         let floorTint = MeterRamp.tint(level: 0, ceiling: ceiling)
 
-        for dot in matrixDots(in: size) {
+        let dots = matrixDots(in: size)
+#if DEBUG
+        drawnDots = dots.count
+#endif
+        for dot in dots {
             // A dot with no ink at the canvas's side is the frame a dot is born on
             // and the frame it leaves on: nothing is painted, and the grid has no
             // step at either edge.

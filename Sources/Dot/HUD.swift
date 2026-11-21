@@ -77,6 +77,7 @@ final class HUD {
 
     private let panel: HUDPanel
     private let model = HUDModel()
+    private let frameModel = HUDFrameModel()
     private let meter = VoiceMeter()
     /// What Dot learned about the microphone that is recording.
     ///
@@ -107,6 +108,7 @@ final class HUD {
     var onHide: (() -> Void)?
 
     private let renderLoop = HUDRenderLoop()
+    private let frameStats = HUDFrameStatistics()
     private var renderFallbackTimer: Timer?
     private var lastTick: CFTimeInterval = 0
     /// When the current presentation was ordered front, in media time.
@@ -332,6 +334,7 @@ final class HUD {
     private func makeRootView() -> AnyView {
         Self.rootView(
             model: model,
+            frame: frameModel,
             actions: actions,
             animated: !reduceMotion,
             placement: placement,
@@ -357,6 +360,7 @@ final class HUD {
     /// - Returns: the tree the panel hosts.
     static func rootView(
         model: HUDModel,
+        frame: HUDFrameModel? = nil,
         actions: HUDActions,
         animated: Bool,
         placement: HUDEmergence.Placement?,
@@ -367,6 +371,7 @@ final class HUD {
                 Color.clear
                 HUDView(
                     model: model,
+                    frame: frame,
                     animated: animated,
                     actions: actions,
                     emergence: placement?.scene
@@ -457,7 +462,7 @@ final class HUD {
         meter.seed(floor: calibration?.noiseFloorDBFS)
         spectrum.reset()
         reveal = 0
-        model.reveal = 0
+        frameModel.reveal = 0
         setMode(mode, size: HUDState.recordingCard.size)
         present()
     }
@@ -814,6 +819,7 @@ final class HUD {
         dismissTimer?.invalidate()
         dismissTimer = nil
         dwellClock = nil
+        _ = frameStats.finish()
         stopPointerTracking()
         panel.ignoresMouseEvents = true
         // The layer cannot outlive the surface that showed it. This also stops
@@ -1031,6 +1037,31 @@ final class HUD {
     /// How many frames the render loop has delivered. The headless test uses
     /// it to prove the loop ran, not only the visibility fallback.
     private(set) var debugTickCount = 0
+
+#if DEBUG
+    /// The model a frame-pacing measurement renders from.
+    var debugModel: HUDModel { model }
+
+    /// The frame values the app hands to the drawing leaves.
+    var debugFrameModel: HUDFrameModel { frameModel }
+
+    /// The frame clock the card is using, for the headless backend tests.
+    var debugRenderLoop: HUDRenderLoop { renderLoop }
+
+    /// The shipped frame statistics, read by the headless tests.
+    var debugFrameStatistics: HUDFrameStatistics { frameStats }
+
+    /// Adds the main-actor slice of one live-transcription attempt.
+    func recordLiveTranscriptionMainActor(ms: Double) {
+        frameStats.recordLiveMain(ms: ms)
+    }
+
+    /// Moves the frame clock by one known step. The headless test uses it to
+    /// drive a long recording without waiting on a display.
+    func debugTick(now: CFTimeInterval) {
+        tick(now: now)
+    }
+#endif
 
     /// How many times the visibility fallback has run. The headless test uses
     /// it to prove the watchdog fired.
@@ -1979,10 +2010,18 @@ final class HUD {
     }
 
     private func startRendering() {
-        renderLoop.start { [weak self] in
+        renderLoop.start(
+            on: panel.contentView,
+            screenID: offscreen ? nil : Self.screenID(of: panel.screen),
+            offscreen: offscreen
+        ) { [weak self] time in
             guard let self else { return }
-            self.tick(now: CACurrentMediaTime())
+            self.tick(now: time)
         }
+    }
+
+    private static func screenID(of screen: NSScreen?) -> Int? {
+        screen.map { ObjectIdentifier($0).hashValue }
     }
 
     private func stopRendering() {
@@ -2028,6 +2067,13 @@ final class HUD {
         model.content = 1
         hasRenderedSincePresent = true
         debugFallbackCount += 1
+        if renderLoop.activeBackend == .displayLink {
+            renderLoop.fallbackToTimer()
+            frameStats.note(backend: HUDRenderLoop.Backend.timer.rawValue)
+            Log.shared.info("hud.renderLoop.fallback", [
+                "reason": .string("displayLink did not render"),
+            ])
+        }
         Log.shared.warn("hud.render.fallback", [
             "elapsed_ms": .double(elapsed),
             "panel_visible": .bool(panel.isVisible),
@@ -2051,6 +2097,7 @@ final class HUD {
 
     private func tick(now: CFTimeInterval) {
         guard panel.isVisible || offscreen else { return }
+        let tickStarted = CFAbsoluteTimeGetCurrent()
         if !hasReportedFirstTick {
             hasReportedFirstTick = true
             Log.shared.info("hud.render.tick", [
@@ -2061,6 +2108,9 @@ final class HUD {
 
         let dt = min(max(now - lastTick, 0), 0.1)
         lastTick = now
+        if case .recording = model.mode, !frameStats.isRecording {
+            frameStats.start(backend: renderLoop.activeBackend.rawValue)
+        }
 
         advanceAppearance(by: dt)
         restoreTheRailsOpeningPosition()
@@ -2070,7 +2120,7 @@ final class HUD {
                 let previewTime = Self.previewPhase(now: now, startedAt: recordingStartedAt)
                 let voice = DictationScript.level(at: previewTime)
                 meter.push(decibels: Self.previewDecibels(voice), now: now)
-                model.level = meter.envelope
+                frameModel.level = meter.envelope
                 // The bands are the script's own, blended by which syllable is
                 // sounding: the top row lifts as a word with an `s` in it passes.
                 // They used to be the level multiplied by four sine waves, which
@@ -2087,14 +2137,14 @@ final class HUD {
                 // the shape before the attack had moved at all.
                 let rms = levelProvider?() ?? 0
                 meter.push(decibels: AudioLevel.decibels(rms), now: now)
-                model.level = meter.envelope
+                frameModel.level = meter.envelope
                 let rawSpec = spectrumProvider?() ?? .zero
                 advanceSpectrum(target: rawSpec, dt: dt, now: now)
                 updateRecording(elapsed: HUDClock.string(for: now - recordingStartedAt))
             }
         } else {
             // The card still breathes while it waits.
-            model.level = max(0, model.level - dt * 3)
+            frameModel.level = max(0, frameModel.level - dt * 3)
         }
 
         // The shape arrives when a recording starts and settles when it ends.
@@ -2105,19 +2155,36 @@ final class HUD {
         let revealTau = revealTarget > reveal ? 0.10 : 0.22
         reveal += (revealTarget - reveal) * (1 - exp(-dt / revealTau))
         if abs(revealTarget - reveal) < 0.002 { reveal = revealTarget }
-        model.reveal = reduceMotion ? revealTarget : reveal
+        frameModel.reveal = reduceMotion ? revealTarget : reveal
 
         meter.copyOrderedHistory(into: &historyBuffer)
-        model.history = historyBuffer
-        model.spectrumHistory = spectrumRing
-        model.phase = meter.phase
-        model.ceiling = meter.ceiling
-        model.time = reduceMotion ? 1.8 : now
-        model.pulse = reduceMotion ? 0 : now.truncatingRemainder(dividingBy: 1.1) / 1.1
-        model.shimmer = reduceMotion ? 0 : now.truncatingRemainder(dividingBy: 1.4) / 1.4
+        frameModel.history = historyBuffer
+        frameModel.spectrumHistory = spectrumRing
+        frameModel.phase = meter.phase
+        frameModel.ceiling = meter.ceiling
+        frameModel.time = reduceMotion ? 1.8 : now
+        frameModel.pulse = reduceMotion ? 0 : now.truncatingRemainder(dividingBy: 1.1) / 1.1
+        frameModel.shimmer = reduceMotion ? 0 : now.truncatingRemainder(dividingBy: 1.4) / 1.4
         updateDwell(now: now)
+        frameStats.record(
+            intervalMS: dt * 1000,
+            durationMS: (CFAbsoluteTimeGetCurrent() - tickStarted) * 1000
+        )
         hasRenderedSincePresent = true
         debugTickCount += 1
+#if DEBUG
+        HUDTickProbe.recordDuration((CFAbsoluteTimeGetCurrent() - tickStarted) * 1000)
+        HUDTickProbe.record(
+            time: now,
+            level: frameModel.level,
+            phase: frameModel.phase,
+            clock: frameModel.time,
+            bands: frameModel.spectrumHistory.last?.bands ?? AudioSpectrumFrame.zero.bands,
+            sample: frameModel.spectrumHistory.last?.sample,
+            writtenSamples: meter.writtenSamples,
+            model: model
+        )
+#endif
     }
 
     /// Reads the pointer once the shape has arrived.
@@ -2141,18 +2208,25 @@ final class HUD {
     ///
     /// - Parameter dt: the time that passed, in seconds.
     private func advanceAppearance(by dt: Double) {
+        func write(_ value: Double, to keyPath: ReferenceWritableKeyPath<HUDModel, Double>) {
+            guard model[keyPath: keyPath] != value else { return }
+            model[keyPath: keyPath] = value
+        }
         if reduceMotion {
             reduceFade.advance(dt)
+            if reduceFade.isResting { reduceFade.snap(to: reduceFade.target) }
             emergeSpring.snap(to: reduceFade.value)
-            model.emergence = reduceFade.value
-            model.presence = reduceFade.value
+            write(reduceFade.value, to: \.emergence)
+            write(reduceFade.value, to: \.presence)
         } else {
             emergeSpring.advance(dt)
-            model.emergence = emergeSpring.value
-            model.presence = min(max(emergeSpring.value, 0), 1)
+            if emergeSpring.isResting { emergeSpring.snap(to: emergeSpring.target) }
+            write(emergeSpring.value, to: \.emergence)
+            write(min(max(emergeSpring.value, 0), 1), to: \.presence)
         }
         contentSpring.advance(dt)
-        model.content = min(max(contentSpring.value, 0), 1)
+        if contentSpring.isResting { contentSpring.snap(to: contentSpring.target) }
+        write(min(max(contentSpring.value, 0), 1), to: \.content)
 
         if debugHoldTheEntrance {
             // Keep the card visibly arrived but one step short of rest, so the
@@ -2162,15 +2236,15 @@ final class HUD {
                 reduceFade.snap(to: held)
                 reduceFade.to(1)
                 emergeSpring.snap(to: held)
-                model.emergence = held
-                model.presence = held
+                write(held, to: \.emergence)
+                write(held, to: \.presence)
             } else {
                 emergeSpring.snap(to: held)
-                model.emergence = held
-                model.presence = held
+                write(held, to: \.emergence)
+                write(held, to: \.presence)
             }
             contentSpring.snap(to: held)
-            model.content = held
+            write(held, to: \.content)
         }
 
         if model.presence >= 0.98, !hasReadPointerSinceArrival {
@@ -2449,7 +2523,10 @@ final class HUD {
     private func setMode(_ mode: HUDMode, size: CGSize) {
         let changed = !Self.sameKind(mode, model.mode)
         var wasTranscript = false
+        var wasRecording = false
         if case .transcript = model.mode { wasTranscript = true }
+        if case .recording = model.mode { wasRecording = true }
+        if wasRecording { _ = frameStats.finish() }
         model.mode = mode
         model.cardSize = size
         if changed {
@@ -2539,6 +2616,7 @@ final class HUD {
                 display: false
             )
             placement = nil
+            renderLoop.refresh(on: panel.contentView, screenID: nil)
             return
         }
 
@@ -2596,6 +2674,7 @@ final class HUD {
     ///   - screens: how many displays there are, for the log.
     private func apply(_ placement: HUDEmergence.Placement, index: Int, screens: Int) {
         panel.setFrame(placement.panelFrame, display: false)
+        renderLoop.refresh(on: panel.contentView, screenID: offscreen ? nil : Self.screenID(of: panel.screen))
         let accepted = panel.frame
         let constrained = abs(accepted.origin.y - placement.panelFrame.origin.y) > 0.5
             || abs(accepted.height - placement.panelFrame.height) > 0.5
@@ -2653,6 +2732,15 @@ final class HUD {
     }
 
     private func observeScreens() {
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeScreenNotification,
+            object: panel,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.placePanel()
+            }
+        }
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
