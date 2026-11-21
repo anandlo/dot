@@ -1813,29 +1813,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         archive(transcript, at: deliveredAt)
         refreshMenu()
 
-        // The history keeps the transcript and the clipboard keeps the
-        // transcript, whichever text the rewrite puts at the cursor.
-        let grammar = grammarResult(for: transcript)
-        let plan = TranscriptDelivery.plan(transcript: transcript, grammar: grammar)
-
-        // The clipboard and the paste always carry the whole transcript, even
-        // when the card only has room for the top of it. It is on the clipboard
-        // before the guard runs, because a copy is the outcome the guard
-        // decides on: the words are never left only in a failed paste.
-        Paste.copy(plan.clipboard)
-        // Whether a rewrite is offered is decided before the paste, because it
-        // is what decides whether the insertion is anchored at all. A take Dot
-        // would not offer to rewrite never reads the Accessibility API.
-        let offersRewrite = rewrite.offersRewrite(
-            for: transcript,
-            delivery: .pasted,
-            configuration: config.assistant.rewrite
+        let dispatched = dispatchTranscript(
+            transcript: transcript,
+            config: config,
+            atPress: frontmostAtPress,
+            atDelivery: { Paste.frontmostApp },
+            accessibilityGranted: { Paste.accessibilityGranted },
+            ownBundleIdentifier: Bundle.main.bundleIdentifier ?? "",
+            shouldCaptureAnchor: {
+                rewrite.offersRewrite(
+                    for: transcript,
+                    delivery: .pasted,
+                    configuration: config.assistant.rewrite
+                )
+            },
+            captureAnchor: { text in rewrite.captureAnchor(insertedText: text) },
+            pasteboard: .live { text, insertion in
+                self.restoreClipboard(text, after: insertion)
+            }
         )
-        let decision = pasteDecision()
-        var delivery: HUDDelivery = .copied
+        let grammar = dispatched.grammar
+        let decision = dispatched.decision
+        let delivery = dispatched.delivery
+        rewriteAnchor = dispatched.anchor
         switch decision {
         case .paste:
-            delivery = paste(plan, captureAnchor: offersRewrite)
+            break
         case .copy(let reason):
             if reason == .accessibilityMissing, !hasRequestedAccessibility {
                 hasRequestedAccessibility = true
@@ -1885,34 +1888,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         finishWork()
     }
 
-    /// The rewrite for this transcript, or `nil` when the rewrite is off.
-    ///
-    /// The target comes from the app that was frontmost when the recording
-    /// started, which is the app the words were meant for; an app Dot cannot
-    /// place is plain and gets no rewrite at all.
-    private func grammarResult(for transcript: String) -> OutputGrammar.Result? {
-        guard config.outputGrammarEnabled else { return nil }
-        let target = config.dictationTarget(for: frontmostAtPress?.bundleIdentifier)
-        guard target != .plain else { return nil }
-        return OutputGrammar.result(for: transcript, target: target)
-    }
-
-    /// What the paste guard decides for a finished transcript.
-    ///
-    /// The application at the press is the one the words were meant for, and it
-    /// has to still be frontmost when they are ready. Anything else is a copy: a
-    /// paste is a keystroke into whatever holds the focus, and nothing on screen
-    /// tells the person where it landed.
-    private func pasteDecision() -> PasteDecision {
-        PasteDecision.decide(
-            atPress: frontmostAtPress,
-            atDelivery: Paste.frontmostApp,
-            accessibilityGranted: Paste.accessibilityGranted,
-            autoPasteEnabled: config.autoPaste,
-            ownBundleIdentifier: Bundle.main.bundleIdentifier ?? ""
-        )
-    }
-
     /// Records why the transcript was copied instead of pasted.
     ///
     /// The two apps are logged with the reason: a guard that copies without
@@ -1927,37 +1902,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             Log.shared.info(reason.logEvent, fields)
         }
-    }
-
-    /// Posts the planned insertion at the cursor.
-    ///
-    /// A rewritten transcript has to sit on the pasteboard while the keystroke
-    /// is posted, because that is how the frontmost app receives it. The
-    /// original words go back afterwards, so the clipboard never keeps the
-    /// rewrite and a copy the person makes in between wins.
-    ///
-    /// - Parameter plan: what to insert and what the clipboard keeps.
-    /// - Returns: how the card reports the delivery.
-    private func paste(_ plan: TranscriptDelivery, captureAnchor: Bool = false) -> HUDDelivery {
-        let rewritten = plan.insertion != plan.clipboard
-        if rewritten {
-            Paste.copy(plan.insertion)
-        }
-        // The anchor is read immediately before the keystroke: the selected
-        // range is the point the words land at, and reading it after the paste
-        // would be reading the field the words are already in.
-        rewriteAnchor = captureAnchor
-            ? rewrite.captureAnchor(insertedText: plan.insertion)
-            : nil
-        guard Paste.pasteCommand() else {
-            rewriteAnchor = nil
-            Paste.copy(plan.clipboard)
-            return .copied
-        }
-        if rewritten {
-            restoreClipboard(plan.clipboard, after: plan.insertion)
-        }
-        return .pasted
     }
 
     /// Puts the original text back once the paste has been read.
