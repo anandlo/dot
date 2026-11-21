@@ -2241,7 +2241,9 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 VisualizerSwatch(
                     visualizer: visualizer,
-                    material: config.hudMaterial,
+                    // The swatch is always drawn on the dark card, so only Wave,
+                    // whose ink is chosen per material, follows the setting.
+                    material: visualizer == .stretch ? config.hudMaterial : .black,
                     isAnimating: isSelected && !reduceMotion
                 )
                 HStack(alignment: .top, spacing: 8) {

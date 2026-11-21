@@ -85,7 +85,7 @@ final class WaveInkTests: XCTestCase {
             let value = measured[key] ?? 0
             XCTAssertGreaterThanOrEqual(
                 value, floor,
-                "\(key): the proposed Wave ink reads \(String(format: "%.2f", value)) to 1"
+                "\(key): the Wave ink reads \(String(format: "%.2f", value)) to 1"
             )
         }
         require("black-quiet", 3.0)
@@ -178,8 +178,8 @@ final class WaveInkTests: XCTestCase {
         )
     }
 
-    /// The tips of the bars carry more ink than their middles; the age fade is
-    /// the one share of ink that this change leaves alone.
+    /// The tips of a bar carry 0.85 of its middle's ink, and the age fade
+    /// keeps its floor.
     func testStretchInkShares() {
         XCTAssertEqual(HUDWaveform.Stretch.tipInk, 0.85, accuracy: 1e-12)
         XCTAssertEqual(HUDWaveform.Stretch.floorInk, 0.16, accuracy: 1e-12)

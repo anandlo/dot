@@ -4,13 +4,12 @@ import XCTest
 /// The Wave-only ramp and its opacities, on both card materials.
 final class WaveInkTests: XCTestCase {
     private struct Sample {
-        let height: Double
         let tint: MeterTint
     }
 
     private func samples(_ material: HUDMaterial) -> [Sample] {
         [0, WaveInk.speechPosition, WaveInk.tipPosition, 1].map {
-            Sample(height: $0, tint: WaveInk.tint(level: $0, material: material))
+            Sample(tint: WaveInk.tint(level: $0, material: material))
         }
     }
 
@@ -93,6 +92,9 @@ final class WaveInkTests: XCTestCase {
         assertColour(rows[3].tint, stop(1, 242.0 / 255, 61.0 / 255), .glass, 1)
 
         XCTAssertEqual(rows[0].tint.opacity, 0.55, accuracy: 1e-12)
+        XCTAssertEqual(
+            WaveInk.tint(level: 0.225, material: .glass).opacity, 0.775, accuracy: 1e-12
+        )
         XCTAssertEqual(rows[1].tint.opacity, 1, accuracy: 1e-12)
         XCTAssertEqual(rows[2].tint.opacity, 1, accuracy: 1e-12)
         XCTAssertEqual(rows[3].tint.opacity, 1, accuracy: 1e-12)

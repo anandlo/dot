@@ -20,7 +20,7 @@ import XCTest
 ///
 /// Three tests. The first holds the scope of the lift: a canvas on the black
 /// material draws the same pixels whatever the token says, the same canvas on the
-/// glass material does not, and the exempt filament is unchanged on both. The
+/// glass material does not, and the exempt Filament and Wave are unchanged on both. The
 /// other two write the pictures the proof is read on: ten black card frames, one
 /// per style at the two judged moments, and the recording card over the reference
 /// photograph's blue wave for each of the three styles the glass suite measures.
@@ -67,8 +67,9 @@ final class VisualizerLiftTests: XCTestCase {
     /// the black material is the same picture at a lift of zero and at a lift of
     /// one: the token cannot repaint the card's default material however it is
     /// re-measured. The same canvas on the glass material must move, or the token
-    /// is a number nothing reads, and the filament must not move on either
-    /// material, because its blackbody colour is the design.
+    /// is a number nothing reads. Filament and Wave must not move on either
+    /// material: Filament's blackbody colour is the design, and Wave has its own
+    /// ink for each material.
     func testTheLiftIsGlassOnly() throws {
         let frame = VisualizerRedesignTests.previewSnapshot(at: Self.moments[1])
         for visualizer in [HUDVisualizer.stretch, .haloEdge] {
