@@ -139,6 +139,22 @@ final class UIPreviewTests: XCTestCase {
             "settings-about-update-current.png",
             "settings-about-update-available.png",
             "settings-about-update-unreachable.png",
+            "settings-about-state-idle.png",
+            "settings-about-state-idle-dark.png",
+            "settings-about-state-checking.png",
+            "settings-about-state-checking-dark.png",
+            "settings-about-state-current.png",
+            "settings-about-state-current-dark.png",
+            "settings-about-state-available.png",
+            "settings-about-state-available-dark.png",
+            "settings-about-state-unreachable.png",
+            "settings-about-state-unreachable-dark.png",
+            "settings-about-state-long-build.png",
+            "settings-about-state-long-build-dark.png",
+            "settings-about-state-long-combined.png",
+            "settings-about-state-long-combined-dark.png",
+            "settings-about-state-no-build.png",
+            "settings-about-state-no-build-dark.png",
             "settings-assistant-tall.png",
             "settings-assistant-dark-tall.png",
             "settings-assistant-no-key-tall.png",
@@ -207,6 +223,56 @@ final class UIPreviewTests: XCTestCase {
             // show the field the card is about.
             let expectedHeight = isTall ? 2360 : 1200
             XCTAssertEqual(bitmap.pixelsHigh, expectedHeight, "\(name) height")
+        }
+
+        // The plate and the cropped disc are measured where they were drawn,
+        // in the 820 by 600 About render. Both values are fixed in both
+        // appearances, so the light window stands in for the pair.
+        let about = try bitmap(
+            in: directory.appendingPathComponent("settings-about.png")
+        )
+        let plateInk = srgb(AboutDialInk.plate)
+        let discInk = srgb(AboutDialInk.disc)
+        let platePixel = about.rawPixel(x: 700, y: 200)
+        XCTAssertEqual(platePixel.0, plateInk.0, accuracy: 3, "the plate fill is not the token")
+        XCTAssertEqual(platePixel.1, plateInk.1, accuracy: 3, "the plate fill is not the token")
+        XCTAssertEqual(platePixel.2, plateInk.2, accuracy: 3, "the plate fill is not the token")
+        let discPixel = about.rawPixel(x: 1_533, y: 213)
+        XCTAssertEqual(discPixel.0, discInk.0, accuracy: 5, "the disc is not the token")
+        XCTAssertEqual(discPixel.1, discInk.1, accuracy: 5, "the disc is not the token")
+        XCTAssertEqual(discPixel.2, discInk.2, accuracy: 5, "the disc is not the token")
+        let dark = try bitmap(in: directory.appendingPathComponent("settings-about-dark.png"))
+        XCTAssertEqual(dark.rawPixel(x: 700, y: 200).0, plateInk.0, accuracy: 3, "dark plate fill")
+        XCTAssertEqual(dark.rawPixel(x: 1_533, y: 213).0, discInk.0, accuracy: 5, "dark disc")
+
+        XCTAssertGreaterThanOrEqual(
+            contrast(srgb(AboutDialInk.status), plateInk),
+            4.5,
+            "the 11 pt status has less than 4.5 to one against the plate"
+        )
+        XCTAssertGreaterThanOrEqual(
+            contrast(srgb(AboutDialInk.value), plateInk),
+            4.5,
+            "the 12 pt colophon value has less than 4.5 to one against the plate"
+        )
+        XCTAssertGreaterThanOrEqual(
+            contrast(srgb(AboutDialInk.buttonEdge), plateInk),
+            3,
+            "the update control's outline has less than 3 to one against the plate"
+        )
+
+        for suffix in ["", "-dark"] {
+            let current = try Data(
+                contentsOf: directory.appendingPathComponent("settings-about-state-current\(suffix).png")
+            )
+            let noBuild = try Data(
+                contentsOf: directory.appendingPathComponent("settings-about-state-no-build\(suffix).png")
+            )
+            XCTAssertNotEqual(
+                current,
+                noBuild,
+                "the no-build render for \(suffix.isEmpty ? "light" : "dark") is the current build"
+            )
         }
 
         // A page with nothing set up is one card: the service, its key and the
@@ -348,6 +414,37 @@ final class UIPreviewTests: XCTestCase {
                 XCTAssertGreaterThan(data.count, 10_240, "\(entry.name)\(suffix).png is too small")
             }
         }
+    }
+
+    private func bitmap(in url: URL) throws -> NSBitmapImageRep {
+        let data = try Data(contentsOf: url)
+        return try XCTUnwrap(NSBitmapImageRep(data: data), "\(url.lastPathComponent) is not a PNG")
+    }
+
+    /// The production colour token resolved to sRGB bytes, so the contrast
+    /// checks read the values the app draws rather than a second copy.
+    private func srgb(_ colour: Color) -> (Int, Int, Int) {
+        let resolved = NSColor(colour).usingColorSpace(.sRGB) ?? NSColor.black
+        return (
+            Int((resolved.redComponent * 255).rounded()),
+            Int((resolved.greenComponent * 255).rounded()),
+            Int((resolved.blueComponent * 255).rounded())
+        )
+    }
+
+    /// The WCAG contrast between two sRGB colours, for the small type on the
+    /// dial plate.
+    private func contrast(_ first: (Int, Int, Int), _ second: (Int, Int, Int)) -> Double {
+        func channel(_ value: Int) -> Double {
+            let s = Double(value) / 255
+            return s <= 0.04045 ? s / 12.92 : pow((s + 0.055) / 1.055, 2.4)
+        }
+        func luminance(_ colour: (Int, Int, Int)) -> Double {
+            0.2126 * channel(colour.0) + 0.7152 * channel(colour.1) + 0.0722 * channel(colour.2)
+        }
+        let light = max(luminance(first), luminance(second))
+        let dark = min(luminance(first), luminance(second))
+        return (light + 0.05) / (dark + 0.05)
     }
 
     /// The last row of a settings render that carries anything but the page's
@@ -545,5 +642,24 @@ final class UIPreviewTests: XCTestCase {
             XCTAssertEqual(bitmap.pixelsWide, 1240, "\(name) width")
             XCTAssertEqual(bitmap.pixelsHigh, 1120, "\(name) height")
         }
+    }
+}
+
+private extension NSBitmapImageRep {
+    /// The bytes the offscreen renderer wrote, before ColorSync applies the
+    /// PNG's calibrated profile. SwiftUI's sRGB colour is stored as the same
+    /// numbers; converting with `usingColorSpace(.sRGB)` would report a second
+    /// profile conversion (36,33,30 becomes 48,44,40 here) and measure the
+    /// pipeline rather than the plate. This reader is local to the About
+    /// assertions so the shared ink-row measurement stays as it was.
+    func rawPixel(x: Int, y: Int) -> (Int, Int, Int) {
+        guard let colour = colorAt(x: x, y: y) else {
+            return (0, 0, 0)
+        }
+        return (
+            Int(colour.redComponent * 255),
+            Int(colour.greenComponent * 255),
+            Int(colour.blueComponent * 255)
+        )
     }
 }

@@ -59,6 +59,7 @@ struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.settingsHeadless) private var headless
     @Environment(\.settingsVersionOverride) private var versionOverride
+    @Environment(\.settingsBuildOverride) private var buildOverride
     @Environment(\.settingsDefaultInputUID) private var defaultInputUIDOverride
     @Environment(\.settingsHeightOverride) private var heightOverride
     /// The credential state a render draws, in place of a live check.
@@ -2328,7 +2329,7 @@ struct SettingsView: View {
     /// it: the number `CFBundleVersion` reports from inside the test bundle is
     /// the test runner's, not Dot's.
     private var buildNumber: String? {
-        versionOverride == nil ? AboutInfo.build : "1"
+        versionOverride == nil ? AboutInfo.build : (buildOverride ?? "1")
     }
 
     // MARK: - Bindings
@@ -3242,6 +3243,20 @@ extension EnvironmentValues {
     var settingsVersionOverride: String? {
         get { self[SettingsVersionKey.self] }
         set { self[SettingsVersionKey.self] = newValue }
+    }
+}
+
+/// A build override for offscreen renders. A render that names a version must
+/// be able to show a long prerelease build or no build at all.
+private struct SettingsBuildKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+    /// The build to show instead of the render's default, if any.
+    var settingsBuildOverride: String? {
+        get { self[SettingsBuildKey.self] }
+        set { self[SettingsBuildKey.self] = newValue }
     }
 }
 
