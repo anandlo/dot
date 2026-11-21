@@ -2241,6 +2241,9 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 VisualizerSwatch(
                     visualizer: visualizer,
+                    // The swatch is always drawn on the dark card, so only Wave,
+                    // whose ink is chosen per material, follows the setting.
+                    material: visualizer == .stretch ? config.hudMaterial : .black,
                     isAnimating: isSelected && !reduceMotion
                 )
                 HStack(alignment: .top, spacing: 8) {
@@ -2917,12 +2920,14 @@ enum VisualizerTile {
     ///   - feed: the demonstration's feed, advanced here to the moment.
     ///   - time: where in the demonstration the tile is drawing.
     ///   - halfHeights: the row the styles that use one are drawn against.
+    ///   - material: the material the card currently draws.
     /// - Returns: the waveform view.
     static func waveform(
         _ visualizer: HUDVisualizer,
         from feed: VisualizerFeed,
         at time: Double,
-        halfHeights: [CGFloat]
+        halfHeights: [CGFloat],
+        material: HUDMaterial = .black
     ) -> HUDWaveform {
         feed.advance(to: time)
         return HUDWaveform(
@@ -2933,7 +2938,8 @@ enum VisualizerTile {
             phase: feed.phase,
             time: feed.time,
             level: 0.68,
-            pulse: 0.25
+            pulse: 0.25,
+            material: material
         )
     }
 }
@@ -2982,6 +2988,7 @@ private enum VisualizerFeeds {
 /// tile is the ring the card draws, at the tile's own canvas.
 private struct VisualizerSwatch: View {
     let visualizer: HUDVisualizer
+    let material: HUDMaterial
     /// Whether the demonstration runs: the chosen tile's, unless Reduce Motion
     /// asks for a still picture. The preference asks for no movement, not for
     /// fewer choices, so the chosen tile keeps its frame and stops its clock.
@@ -3048,7 +3055,8 @@ private struct VisualizerSwatch: View {
             visualizer,
             from: feed,
             at: time,
-            halfHeights: Self.sampleHeights
+            halfHeights: Self.sampleHeights,
+            material: material
         )
         .frame(height: 22)
         .padding(.horizontal, 10)
