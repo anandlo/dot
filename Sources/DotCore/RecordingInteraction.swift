@@ -12,6 +12,17 @@ public enum RecordKeyGesture: Sendable, Equatable {
     case release
 }
 
+/// Where a press of the record key came from.
+///
+/// The mouse sees both edges exactly, so it is always hold; the keyboard keeps
+/// the person's mode.
+public enum RecordTrigger: Sendable, Equatable {
+    /// The keyboard shortcut fired.
+    case keyboard
+    /// The assigned mouse button was pressed.
+    case mouse
+}
+
 /// What an edge of the record key asks the app to do.
 public enum RecordingAction: Sendable, Equatable {
     /// Open the microphone and start a take.
@@ -75,5 +86,26 @@ public enum RecordKeyInteraction {
             case .idle, .working: return .ignore
             }
         }
+    }
+
+    /// What one edge of the record key means, given where it came from.
+    ///
+    /// The mouse sees both edges exactly, so it is always hold; the keyboard
+    /// keeps the person's mode.
+    ///
+    /// - Parameters:
+    ///   - gesture: whether the key went down or came back up.
+    ///   - trigger: where the press came from.
+    ///   - configuredMode: how the person chose to start and end a recording.
+    ///   - phase: what the app is doing right now.
+    /// - Returns: the action the app takes, if any.
+    public static func action(
+        for gesture: RecordKeyGesture,
+        trigger: RecordTrigger,
+        configuredMode: RecordingMode,
+        phase: RecordingPhase
+    ) -> RecordingAction {
+        let mode: RecordingMode = (trigger == .mouse) ? .hold : configuredMode
+        return action(for: gesture, mode: mode, phase: phase)
     }
 }
