@@ -65,6 +65,7 @@ final class HUDRenderLoop {
     private var linkScreenID: Int?
     private var sleepObserver: NSObjectProtocol?
     private var wakeObserver: NSObjectProtocol?
+    private var resumesOnWake = false
     private var interval = HUDRenderLoop.interval
     private var handler: (() -> Void)?
     private var timedHandler: ((CFTimeInterval) -> Void)?
@@ -75,8 +76,9 @@ final class HUDRenderLoop {
         view.displayLink(target: target, selector: selector)
     }
 
-    /// The center that reports display sleep and wake. Tests use their own.
-    var notificationCenter: NotificationCenter = .default
+    /// The center that reports display sleep and wake. AppKit posts both only on
+    /// the workspace center. Tests use their own.
+    var notificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter
     /// The view and screen to resume on after a wake.
     var wakeProvider: (() -> (NSView, Int?)?)?
 
@@ -169,6 +171,7 @@ final class HUDRenderLoop {
         if let wakeObserver { notificationCenter.removeObserver(wakeObserver) }
         sleepObserver = nil
         wakeObserver = nil
+        resumesOnWake = false
         timer?.invalidate()
         timer = nil
         link?.invalidate()
@@ -192,8 +195,9 @@ final class HUDRenderLoop {
             queue: nil
         ) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.isRunning else { return }
+                guard let self, self.isRunning, self.activeBackend == .displayLink else { return }
                 self.fallbackToTimer()
+                self.resumesOnWake = true
             }
         }
         wakeObserver = notificationCenter.addObserver(
@@ -202,7 +206,8 @@ final class HUDRenderLoop {
             queue: nil
         ) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.isRunning, self.activeBackend == .timer else { return }
+                guard let self, self.isRunning, self.resumesOnWake else { return }
+                self.resumesOnWake = false
                 guard let resumed = self.wakeProvider?() else { return }
                 self.resumeAfterWake(on: resumed.0, screenID: resumed.1)
             }
@@ -210,7 +215,7 @@ final class HUDRenderLoop {
     }
 
     private func resumeAfterWake(on view: NSView?, screenID: Int?) {
-        guard isRunning, activeBackend == .timer, let view else { return }
+        guard isRunning, activeBackend == .timer, let view, screenID != nil else { return }
         _ = installLink(on: view, screenID: screenID)
     }
 

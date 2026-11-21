@@ -120,6 +120,52 @@ final class HUDRenderLoopBackendTests: XCTestCase {
         XCTAssertEqual(second.invalidations, 1)
     }
 
+    func testDisplaySleepIsObservedWhereAppKitPostsIt() {
+        XCTAssertTrue(
+            HUDRenderLoop().notificationCenter === NSWorkspace.shared.notificationCenter,
+            "screensDidSleep and screensDidWake are posted only on the workspace center"
+        )
+    }
+
+    func testWakeDoesNotUndoAWatchdogFallback() async {
+        let loop = HUDRenderLoop()
+        let center = NotificationCenter()
+        loop.notificationCenter = center
+        var made = 0
+        loop.linkFactory = { _, _, _ in made += 1; return FakeRenderLink() }
+        let view = NSView()
+        loop.wakeProvider = { (view, 7) }
+        loop.start(on: view, screenID: 7, offscreen: false) { _ in }
+        loop.fallbackToTimer()
+
+        center.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
+        await settle()
+
+        XCTAssertEqual(loop.activeBackend, .timer, "wake reinstalled a link that never drew")
+        XCTAssertEqual(made, 1)
+        XCTAssertEqual(loop.activeClockCount, 1)
+        loop.stop()
+    }
+
+    func testWakeWithoutAScreenKeepsTheTimer() async {
+        let loop = HUDRenderLoop()
+        let center = NotificationCenter()
+        loop.notificationCenter = center
+        loop.linkFactory = { _, _, _ in FakeRenderLink() }
+        let view = NSView()
+        loop.wakeProvider = { (view, nil) }
+        loop.start(on: view, screenID: 7, offscreen: false) { _ in }
+
+        center.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
+        await settle()
+        center.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
+        await settle()
+
+        XCTAssertEqual(loop.activeBackend, .timer, "wake attached a link with no screen")
+        XCTAssertEqual(loop.activeClockCount, 1)
+        loop.stop()
+    }
+
     func testFailedLinkRefreshFallsBackToTheTimer() {
         let loop = HUDRenderLoop()
         loop.linkFactory = { _, _, _ in FakeRenderLink() }
