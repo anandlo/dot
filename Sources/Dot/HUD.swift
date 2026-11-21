@@ -1051,17 +1051,18 @@ final class HUD {
     /// The shipped frame statistics, read by the headless tests.
     var debugFrameStatistics: HUDFrameStatistics { frameStats }
 
-    /// Adds the main-actor slice of one live-transcription attempt.
-    func recordLiveTranscriptionMainActor(ms: Double) {
-        frameStats.recordLiveMain(ms: ms)
-    }
-
     /// Moves the frame clock by one known step. The headless test uses it to
     /// drive a long recording without waiting on a display.
     func debugTick(now: CFTimeInterval) {
         tick(now: now)
     }
 #endif
+
+    /// Adds the main-actor slice of one live-transcription attempt to the
+    /// shipped frame summary.
+    func recordLiveTranscriptionMainActor(ms: Double) {
+        frameStats.recordLiveMain(ms: ms)
+    }
 
     /// How many times the visibility fallback has run. The headless test uses
     /// it to prove the watchdog fired.
@@ -2010,6 +2011,10 @@ final class HUD {
     }
 
     private func startRendering() {
+        renderLoop.wakeProvider = { [weak self] in
+            guard let self, let view = self.panel.contentView else { return nil }
+            return (view, self.offscreen ? nil : Self.screenID(of: self.panel.screen))
+        }
         renderLoop.start(
             on: panel.contentView,
             screenID: offscreen ? nil : Self.screenID(of: panel.screen),
@@ -2021,7 +2026,9 @@ final class HUD {
     }
 
     private static func screenID(of screen: NSScreen?) -> Int? {
-        screen.map { ObjectIdentifier($0).hashValue }
+        guard let screen else { return nil }
+        return (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+            .intValue
     }
 
     private func stopRendering() {

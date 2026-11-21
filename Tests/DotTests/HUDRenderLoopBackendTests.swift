@@ -88,6 +88,60 @@ final class HUDRenderLoopBackendTests: XCTestCase {
         loop.stop()
     }
 
+    func testDisplaySleepAndWakeSwitchBackendsWithoutStoppingTheClock() async {
+        let loop = HUDRenderLoop()
+        let center = NotificationCenter()
+        loop.notificationCenter = center
+        let first = FakeRenderLink()
+        let second = FakeRenderLink()
+        var links = [first, second]
+        loop.linkFactory = { _, _, _ in links.removeFirst() }
+        let view = NSView()
+        loop.wakeProvider = { (view, 7) }
+
+        loop.start(on: view, screenID: 7, offscreen: false) { _ in }
+        XCTAssertEqual(loop.activeBackend, .displayLink)
+        XCTAssertEqual(loop.activeClockCount, 1)
+
+        center.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
+        await settle()
+        XCTAssertEqual(loop.activeBackend, .timer, "sleep did not switch to the timer")
+        XCTAssertEqual(loop.activeClockCount, 1)
+        XCTAssertEqual(first.invalidations, 1)
+
+        center.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
+        await settle()
+        XCTAssertEqual(loop.activeBackend, .displayLink, "wake did not restore the link")
+        XCTAssertEqual(loop.activeClockCount, 1)
+        XCTAssertTrue(second.wasAdded)
+
+        loop.stop()
+        XCTAssertEqual(loop.activeClockCount, 0)
+        XCTAssertEqual(second.invalidations, 1)
+    }
+
+    func testFailedLinkRefreshFallsBackToTheTimer() {
+        let loop = HUDRenderLoop()
+        loop.linkFactory = { _, _, _ in FakeRenderLink() }
+        loop.start(on: NSView(), screenID: 1, offscreen: false) { _ in }
+        XCTAssertEqual(loop.activeBackend, .displayLink)
+
+        loop.linkFactory = { _, _, _ in nil }
+        loop.refresh(on: NSView(), screenID: 2)
+
+        XCTAssertEqual(loop.activeBackend, .timer)
+        XCTAssertEqual(loop.activeClockCount, 1)
+        loop.stop()
+    }
+
+    private func settle() async {
+        for _ in 0..<5 {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+        }
+    }
+
     func testHidingTheHUDInvalidatesTheLinkItWasGiven() {
         let hud = HUD(offscreen: true)
         hud.showRecording(elapsed: "0:00")

@@ -89,18 +89,11 @@ extension HUDView {
     /// - Returns: the words, or the words in pieces while they arrive.
     @ViewBuilder
     func draftBody(_ card: RewriteCard) -> some View {
-        let text = card.visibleBodyText
-        let runs = RewriteDraftRamp.runs(
-            chunks: card.draftChunks,
-            length: text.count,
-            time: model.time,
+        FrameRewriteDraftBody(
+            source: frameSource,
+            card: card,
             reduceMotion: reduceMotion
         )
-        if runs.isEmpty {
-            Text(text)
-        } else {
-            rampedText(text, runs: runs)
-        }
     }
 
     /// One paragraph, with each arriving run drawn at its own strength.
@@ -113,7 +106,7 @@ extension HUDView {
     ///   - text: the whole draft.
     ///   - runs: the character ranges that are still arriving, in ascending order.
     /// - Returns: the paragraph in pieces.
-    private func rampedText(_ text: String, runs: [RewriteDraftRamp.Run]) -> Text {
+    static func rampedText(_ text: String, runs: [RewriteDraftRamp.Run]) -> Text {
         var composed = Text("")
         var cursor = text.startIndex
         for run in runs {
@@ -199,14 +192,64 @@ extension HUDView {
     /// The pinned original, the scrollable style chips and the arrows, in one
     /// row, left-aligned with the body text.
     func chipRow(_ card: RewriteCard) -> some View {
+        FrameRewriteChipRow(
+            source: frameSource,
+            card: card,
+            reduceMotion: reduceMotion,
+            ending: model.rewriteEnding,
+            actions: actions
+        )
+    }
+
+    /// How many lines the section under the body draws.
+    func noteLineCount(_ card: RewriteCard) -> Int {
+        var lines = card.note == nil ? 0 : 1
+        if case .blocked = card.phase { lines += 1 }
+        return lines
+    }
+}
+
+/// The arriving body of a rewrite, driven by the frame clock.
+@MainActor
+private struct FrameRewriteDraftBody: View {
+    let source: HUDFrameSource
+    let card: RewriteCard
+    let reduceMotion: Bool
+
+    var body: some View {
+        let text = card.visibleBodyText
+        let runs = RewriteDraftRamp.runs(
+            chunks: card.draftChunks,
+            length: text.count,
+            time: source.time,
+            reduceMotion: reduceMotion
+        )
+        if runs.isEmpty {
+            Text(text)
+        } else {
+            HUDView.rampedText(text, runs: runs)
+        }
+    }
+}
+
+/// The style row, driven by the frame clock for its arc and fade.
+@MainActor
+private struct FrameRewriteChipRow: View {
+    let source: HUDFrameSource
+    let card: RewriteCard
+    let reduceMotion: Bool
+    let ending: RewriteEnding?
+    let actions: HUDActions
+
+    var body: some View {
         RewriteChipRow(
             choices: card.choices,
             activeStyleID: card.activeStyleID,
             isStreaming: card.isStreaming,
             reduceMotion: reduceMotion,
-            time: model.time,
-            endedStyleID: model.rewriteEnding?.styleID,
-            endedAt: model.rewriteEnding?.at,
+            time: source.time,
+            endedStyleID: ending?.styleID,
+            endedAt: ending?.at,
             versions: card.versions,
             selectedVersionID: card.selectedVersionID,
             onOriginal: { actions.selectOriginal?() },
@@ -225,13 +268,6 @@ extension HUDView {
                 ? { actions.rerunRewrite?() }
                 : nil
         )
-    }
-
-    /// How many lines the section under the body draws.
-    func noteLineCount(_ card: RewriteCard) -> Int {
-        var lines = card.note == nil ? 0 : 1
-        if case .blocked = card.phase { lines += 1 }
-        return lines
     }
 }
 

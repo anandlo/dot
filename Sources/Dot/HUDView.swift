@@ -105,7 +105,7 @@ struct HUDView: View {
 
     /// The source the drawing leaves read. Building it never reads a frame
     /// value, so this view's body is not invalidated by the frame clock.
-    private var frameSource: HUDFrameSource {
+    var frameSource: HUDFrameSource {
         frame.map { .frames($0) } ?? .model(model)
     }
 
@@ -214,16 +214,19 @@ struct HUDView: View {
         let piece = HUDEmergence.shape(progress: progress, source: source, rest: rest)
         let shade = shadow(piece.mix)
         return ZStack(alignment: .topLeading) {
-            HUDEmergence.path(piece)
-                .fill(Color(red: 0, green: 0, blue: 0))
-                .opacity(1 - piece.mix)
+            ZStack(alignment: .topLeading) {
+                HUDEmergence.path(piece)
+                    .fill(Color(red: 0, green: 0, blue: 0))
+                    .opacity(1 - piece.mix)
 
-            HUDSurface(material: model.material)
-                .opacity(piece.mix)
-                .frame(width: piece.card.width, height: piece.card.height)
-                .clipShape(clip(piece, rest: rest))
-                .shadow(color: shade.color, radius: shade.radius, x: 0, y: shade.y)
-                .offset(x: piece.card.minX, y: piece.card.minY)
+                HUDSurface(material: model.material)
+                    .opacity(piece.mix)
+                    .frame(width: piece.card.width, height: piece.card.height)
+                    .clipShape(clip(piece, rest: rest))
+                    .offset(x: piece.card.minX, y: piece.card.minY)
+            }
+            .compositingGroup()
+            .shadow(color: shade.color, radius: shade.radius, x: 0, y: shade.y)
 
             content
                 .opacity(HUDEmergence.contentOpacity(

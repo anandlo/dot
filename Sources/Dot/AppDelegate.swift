@@ -1401,15 +1401,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(for: Live.emptyDelay)
                     continue
                 }
-                let beforeWait = CFAbsoluteTimeGetCurrent()
                 let committed = currentLedger.committedSamples
-                let preWaitSeconds = CFAbsoluteTimeGetCurrent() - beforeWait
                 let prepared = await LiveTranscriptionAnalyzer.shared.prepare(
                     ledger: currentLedger,
                     sampleCount: sampleCount,
                     store: self.recorder.takeStore,
                     noiseFloorDBFS: self.silenceFloorDBFS
                 )
+                guard !Task.isCancelled, self.state == .recording else { return }
                 let afterWait = CFAbsoluteTimeGetCurrent()
                 guard prepared.plan != nil else {
                     try? await Task.sleep(for: Live.interval)
@@ -1424,7 +1423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let commitUpTo = request.commitUpTo
                 let wav = request.wav
                 self.hud.recordLiveTranscriptionMainActor(
-                    ms: (preWaitSeconds + (CFAbsoluteTimeGetCurrent() - afterWait)) * 1000
+                    ms: (CFAbsoluteTimeGetCurrent() - afterWait) * 1000
                 )
                 do {
                     let text = try await provider.transcribe(

@@ -61,8 +61,10 @@ final class HUDRenderLoop {
     private let target = HUDRenderLoopTarget()
     private var timer: Timer?
     private var link: HUDRenderLinking?
-    private var linkView: NSView?
+    private weak var linkView: NSView?
     private var linkScreenID: Int?
+    private var sleepObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
     private var interval = HUDRenderLoop.interval
     private var handler: (() -> Void)?
     private var timedHandler: ((CFTimeInterval) -> Void)?
@@ -73,7 +75,17 @@ final class HUDRenderLoop {
         view.displayLink(target: target, selector: selector)
     }
 
+    /// The center that reports display sleep and wake. Tests use their own.
+    var notificationCenter: NotificationCenter = .default
+    /// The view and screen to resume on after a wake.
+    var wakeProvider: (() -> (NSView, Int?)?)?
+
     private(set) var activeBackend: Backend = .timer
+
+    /// How many clocks are installed. A presentation must have exactly one.
+    var activeClockCount: Int {
+        (timer?.isValid == true ? 1 : 0) + (link != nil ? 1 : 0)
+    }
 
     init() {
         target.loop = self
@@ -119,6 +131,7 @@ final class HUDRenderLoop {
         self.interval = interval
         self.handler = nil
         self.timedHandler = handler
+        installSleepWakeObservers()
         let backend = Self.chooseBackend(offscreen: offscreen, hasScreen: view != nil && screenID != nil)
         if backend == .displayLink, let view, installLink(on: view, screenID: screenID) {
             return
@@ -135,7 +148,7 @@ final class HUDRenderLoop {
             return
         }
         if linkView === view, linkScreenID == screenID { return }
-        _ = installLink(on: view, screenID: screenID)
+        if !installLink(on: view, screenID: screenID) { fallbackToTimer() }
     }
 
     /// Switches this presentation to the timer after a link that never drew.
@@ -152,6 +165,10 @@ final class HUDRenderLoop {
 
     /// Stops the loop and releases the frame callback.
     func stop() {
+        if let sleepObserver { notificationCenter.removeObserver(sleepObserver) }
+        if let wakeObserver { notificationCenter.removeObserver(wakeObserver) }
+        sleepObserver = nil
+        wakeObserver = nil
         timer?.invalidate()
         timer = nil
         link?.invalidate()
@@ -166,6 +183,40 @@ final class HUDRenderLoop {
     fileprivate func fire(at time: CFTimeInterval) {
         timedHandler?(time)
         handler?()
+    }
+
+    private func installSleepWakeObservers() {
+        sleepObserver = notificationCenter.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isRunning else { return }
+                self.fallbackToTimer()
+            }
+        }
+        wakeObserver = notificationCenter.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isRunning, self.activeBackend == .timer else { return }
+                guard let resumed = self.wakeProvider?() else { return }
+                self.resumeAfterWake(on: resumed.0, screenID: resumed.1)
+            }
+        }
+    }
+
+    private func resumeAfterWake(on view: NSView?, screenID: Int?) {
+        guard isRunning, activeBackend == .timer, let view else { return }
+        _ = installLink(on: view, screenID: screenID)
+    }
+
+    private func deactivateTimer() {
+        timer?.invalidate()
+        timer = nil
     }
 
     private func installTimer() {
@@ -187,6 +238,7 @@ final class HUDRenderLoop {
         else { return false }
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 60, preferred: 60)
         link.add(to: .main, forMode: .common)
+        deactivateTimer()
         self.link?.invalidate()
         self.link = link
         self.linkView = view
