@@ -14,19 +14,25 @@ public struct AppleSpeechProvider: Provider {
     /// The locale the transcriber listens for.
     public let localeIdentifier: String
 
+    /// Where readiness reads the machine's state.
+    private let readiness: AppleSpeechReadinessEnvironment
+
     /// Creates the provider.
     public init(localeIdentifier: String = "en_US") {
         self.localeIdentifier = localeIdentifier
+        self.readiness = .live
+    }
+
+    init(localeIdentifier: String, readiness: AppleSpeechReadinessEnvironment) {
+        self.localeIdentifier = localeIdentifier
+        self.readiness = readiness
     }
 
     /// Whether the on-device transcriber can run right now.
     public func isAvailable() async -> Bool {
         guard #available(macOS 26.0, *) else { return false }
-        guard SpeechTranscriber.isAvailable else { return false }
-        guard let locale = await Self.resolvedLocale(identifier: localeIdentifier) else { return false }
-        let transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
-        let status = await AssetInventory.status(forModules: [transcriber])
-        return status == .installed || status == .supported
+        if case .installed = await assetReadiness() { return true }
+        return false
     }
 
     public func transcribe(wav: Data, model: String?, language: String?) async throws -> String {
@@ -49,6 +55,31 @@ public struct AppleSpeechProvider: Provider {
     }
 
     // MARK: - Internals
+
+    /// The machine state that decides readiness.
+    ///
+    /// Apple's locale equivalence decides which Speech locale a stored language
+    /// id means. Readiness uses that locale alone and never the same-language
+    /// fallback that lets transcription still make a request.
+    private func assetReadiness() async -> AssetReadiness {
+        guard readiness.transcriberIsAvailable() else { return .transcriber }
+        guard let supported = await readiness.supportedLocale(localeIdentifier) else {
+            return .unresolvedLocale
+        }
+        // Both sides are compared as maximal language ids, so a script the one
+        // list spells out and the other implies (zh-CN, zh-Hans-CN) and any
+        // Unicode extension do not make an installed model look missing.
+        let supportedID = Self.modelIdentifier(supported.identifier(.bcp47))
+        let installed = await readiness.installedLocaleIdentifiers()
+        guard installed.contains(where: { Self.modelIdentifier($0) == supportedID }) else {
+            return .missing(supported)
+        }
+        return .installed
+    }
+
+    static func modelIdentifier(_ bcp47: String) -> String {
+        Locale.Language(identifier: bcp47).maximalIdentifier.lowercased()
+    }
 
     /// The locale the transcriber should use.
     @available(macOS 26.0, *)
@@ -155,29 +186,24 @@ extension AppleSpeechProvider: CredentialVerifying {
     /// Whether the on-device transcriber can run with the stored language.
     ///
     /// There is nothing to send anywhere, so the answer is the state of this
-    /// Mac: the system, the transcriber and the language's asset. The one
-    /// distinction that matters to a person is an asset that can be installed
-    /// and is not, which is a setup step rather than a fault.
+    /// Mac: the system, the transcriber and the installed language assets. A
+    /// locale the system supports but has not installed is a setup step, not a
+    /// provider fault.
     public func verifyCredentials() async -> CredentialCheck {
         guard #available(macOS 26.0, *) else {
             return .unavailable("Needs macOS 26 or newer.")
         }
-        guard SpeechTranscriber.isAvailable else {
-            return .unavailable("The on-device transcriber is not available on this Mac.")
-        }
-        guard let locale = await Self.resolvedLocale(identifier: localeIdentifier) else {
-            return .unavailable("The on-device transcriber does not speak \(localeIdentifier).")
-        }
-        let transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
-        let status = await AssetInventory.status(forModules: [transcriber])
-        switch status {
+        switch await assetReadiness() {
         case .installed:
             return .verified
-        case .supported, .downloading:
-            let language = locale.language.languageCode?.identifier ?? localeIdentifier
-            return .needsSetup("The on-device model for \(language) is not installed.")
-        default:
-            return .unavailable("The on-device model cannot be installed on this Mac.")
+        case .transcriber:
+            return .unavailable("The on-device transcriber is not available on this Mac.")
+        case .unresolvedLocale:
+            return .unavailable("The on-device transcriber does not speak \(localeIdentifier).")
+        case .missing(let locale):
+            let name = Locale(identifier: "en_US").localizedString(forIdentifier: locale.identifier)
+                ?? locale.identifier
+            return .needsSetup("The on-device speech model for \(name) is not installed on this Mac.")
         }
     }
 }
@@ -192,20 +218,45 @@ extension AppleSpeechProvider {
     /// cached before either changed is a different question, so the answer is
     /// part of the name it is cached under.
     ///
-    /// - Returns: `macos`, `transcriber`, `locale:<id>` or `asset:<status>`.
+    /// - Returns: `macos`, `transcriber`, `locale:<id>`, `asset:installed` or
+    ///   `asset:missing`.
     public func assetFingerprint() async -> String {
         guard #available(macOS 26.0, *) else { return "macos" }
-        guard SpeechTranscriber.isAvailable else { return "transcriber" }
-        guard let locale = await Self.resolvedLocale(identifier: localeIdentifier) else {
-            return "locale:\(localeIdentifier)"
-        }
-        let transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
-        let status = await AssetInventory.status(forModules: [transcriber])
-        switch status {
+        switch await assetReadiness() {
         case .installed: return "asset:installed"
-        case .supported: return "asset:supported"
-        case .downloading: return "asset:downloading"
-        default: return "asset:unsupported"
+        case .transcriber: return "transcriber"
+        case .unresolvedLocale: return "locale:\(localeIdentifier)"
+        case .missing: return "asset:missing"
         }
     }
+}
+
+/// What readiness found on this Mac.
+private enum AssetReadiness {
+    case installed
+    case transcriber
+    case unresolvedLocale
+    case missing(Locale)
+}
+
+/// The reads readiness makes, kept behind one seam so tests never call Speech.
+struct AppleSpeechReadinessEnvironment: Sendable {
+    let transcriberIsAvailable: @Sendable () -> Bool
+    let supportedLocale: @Sendable (String) async -> Locale?
+    let installedLocaleIdentifiers: @Sendable () async -> [String]
+
+    static let live = AppleSpeechReadinessEnvironment(
+        transcriberIsAvailable: {
+            guard #available(macOS 26.0, *) else { return false }
+            return SpeechTranscriber.isAvailable
+        },
+        supportedLocale: { identifier in
+            guard #available(macOS 26.0, *) else { return nil }
+            return await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: identifier))
+        },
+        installedLocaleIdentifiers: {
+            guard #available(macOS 26.0, *) else { return [] }
+            return await SpeechTranscriber.installedLocales.map { $0.identifier(.bcp47) }
+        }
+    )
 }
