@@ -13,6 +13,9 @@ struct SettingsRow<Trailing: View>: View {
     let title: String
     /// A concrete fact the title does not already state.
     var subtitle: String?
+    /// An explanation attached to the name and to the control, shown as a
+    /// tooltip and spoken by VoiceOver when either one has focus.
+    var help: String?
     /// An SF Symbol drawn before the title, at 16 points.
     var symbol: String?
     /// An application icon drawn before the title, at 20 points.
@@ -44,6 +47,7 @@ struct SettingsRow<Trailing: View>: View {
     init(
         _ title: String,
         subtitle: String? = nil,
+        help: String? = nil,
         symbol: String? = nil,
         appIcon: NSImage? = nil,
         titleTone: Color = DotTheme.ink,
@@ -54,6 +58,7 @@ struct SettingsRow<Trailing: View>: View {
     ) {
         self.title = title
         self.subtitle = subtitle
+        self.help = help
         self.symbol = symbol
         self.appIcon = appIcon
         self.titleTone = titleTone
@@ -72,6 +77,7 @@ struct SettingsRow<Trailing: View>: View {
                 // so the control takes the width of the card instead.
                 trailing
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .settingsHelp(help)
             } else {
                 HStack(alignment: .center, spacing: 12) {
                     if let appIcon {
@@ -99,8 +105,10 @@ struct SettingsRow<Trailing: View>: View {
                     // offered half the row, and a sentence that fits on one line
                     // wraps at a width no reader would choose.
                     .layoutPriority(1)
+                    .settingsHelp(help)
                     Spacer(minLength: 16)
                     trailing
+                        .settingsHelp(help)
                 }
             }
             if wideSubtitle, let subtitle {
@@ -126,10 +134,35 @@ struct SettingsRow<Trailing: View>: View {
     }
 }
 
+private struct SettingsRowHelpKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+    var settingsRowHelp: String? {
+        get { self[SettingsRowHelpKey.self] }
+        set { self[SettingsRowHelpKey.self] = newValue }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func settingsHelp(_ text: String?) -> some View {
+        if let text {
+            self.help(text)
+                .accessibilityHint(text)
+                .environment(\.settingsRowHelp, text)
+        } else {
+            self
+        }
+    }
+}
+
 extension SettingsRow where Trailing == EmptyView {
     init(
         _ title: String,
         subtitle: String? = nil,
+        help: String? = nil,
         symbol: String? = nil,
         titleTone: Color = DotTheme.ink,
         subtitleTone: Color = DotTheme.ink2
@@ -137,6 +170,7 @@ extension SettingsRow where Trailing == EmptyView {
         self.init(
             title,
             subtitle: subtitle,
+            help: help,
             symbol: symbol,
             titleTone: titleTone,
             subtitleTone: subtitleTone
@@ -144,6 +178,37 @@ extension SettingsRow where Trailing == EmptyView {
             EmptyView()
         }
     }
+}
+
+/// The explanations the settings rows share with their tests.
+enum SettingsExplanation {
+    static let calibrationHelp =
+        "Dot learns this microphone's background noise to set the level meter's floor and the threshold for trimming silence at the ends of a take. Reset clears what it learned; microphone gain is never changed."
+    static let calibrationNone = "Not learned yet."
+    static let calibrationOne = "Learned from 1 recording."
+    static let dwellSubtitle = "How long a copied result or an answer stays on the island."
+    static let dwellHelp =
+        "Pasted results close after at most 3.5 seconds. Hovering, scrolling or editing the card pauses the countdown, and a rewrite card stays at least 60 seconds."
+    static let historyHelp =
+        "Limits recent transcripts in ~/Library/Application Support/Dot/history.json. Separately exported transcripts are not affected."
+    static let formatHelp =
+        "Dot formats pasted text for the app where you started dictating. History keeps the original transcript."
+    static let segmentSubtitle =
+        "The longest stretch of audio sent in one request. A longer recording is sent in parts of this length."
+    static let segmentHelp =
+        "Service default uses the longest stretch the service accepts, and a longer choice is capped at that limit."
+    static let temperatureHelp =
+        "Lower values keep the transcript literal and consistent; higher values let the model vary its wording."
+    static let authHelp =
+        "How the API key is sent: as an Authorization: Bearer header or as an api-key header."
+    static let regionHelp =
+        "The Azure region your Speech resource was created in. A key works only in its own region."
+    static let planHelp =
+        "Token Plan keys start with tp- or ttp- and use the Token Plan address. Pasting one selects this plan."
+    static let reasoningHelp =
+        "How much the model reasons before the assistant answers. Rewrites ask for the lightest level the model publishes."
+    static let standingRulesHelp =
+        "Dot appends these rules to Agent prompts after generation. It doesn’t send them to the model."
 }
 
 /// The hairline between two rows.
