@@ -177,6 +177,52 @@ final class SpeechStatusRowTests: XCTestCase {
         XCTAssertEqual(plain.spinners, 0)
     }
 
+    /// The Status chip ends on the same trailing edge as the Service picker, in
+    /// every state, so the indicator and its words line up with the control above.
+    func testStatusChipTrailingMatchesTheServicePicker() throws {
+        let states: [SpeechCredentialStatus] = [
+            .checking,
+            .settled(.verified, checkedAt: Self.checkedAt),
+            .settled(.rejected(status: 401), checkedAt: Self.checkedAt),
+        ]
+        for preset in ProviderPreset.declared {
+            for status in states {
+                let page = speechHost(preset: preset, status: status)
+                defer { page.window.close() }
+                let service = try XCTUnwrap(anchor("speech.service", in: page.view), "\(preset.id) has no Service edge")
+                let chip = try XCTUnwrap(
+                    anchor("speech.status.trailing", in: page.view),
+                    "\(preset.id) has no Status chip edge"
+                )
+                let delta = absoluteFrame(of: chip, in: page.view).maxX
+                    - absoluteFrame(of: service, in: page.view).maxX
+                print("SSR3-CHIP \(preset.id) \(status.title) delta=\(String(format: "%.3f", delta)) pt")
+                XCTAssertLessThanOrEqual(
+                    abs(delta),
+                    0.5,
+                    "\(preset.id) \(status.title): the Status chip ended \(delta) pt from the Service picker"
+                )
+            }
+        }
+    }
+
+    /// With less motion asked for, a check in flight draws a still dot instead of
+    /// the turning system spinner, and the row still says it is checking.
+    func testCheckingHoldsStillWhenMotionIsReduced() throws {
+        for reduced in [false, true] {
+            let page = speechHost(preset: .openAI, status: .checking, reduceMotion: reduced)
+            defer { page.window.close() }
+            let spinners = allViews(in: page.view).filter { $0 is NSProgressIndicator }
+            XCTAssertEqual(
+                spinners.count,
+                reduced ? 0 : 1,
+                "reduce motion \(reduced): the checking row drew \(spinners.count) spinners"
+            )
+            let row = try XCTUnwrap(statusElements(in: page.view).first, "the hosted page has no Status row")
+            XCTAssertEqual(row.accessibilityLabel() ?? "", SpeechCredentialStatus.checking.statusAccessibilityLabel)
+        }
+    }
+
     // MARK: - The headless page
 
     private struct HostedSpeechPage {
@@ -184,7 +230,11 @@ final class SpeechStatusRowTests: XCTestCase {
         let view: NSHostingView<AnyView>
     }
 
-    private func speechHost(preset: ProviderPreset, status: SpeechCredentialStatus) -> HostedSpeechPage {
+    private func speechHost(
+        preset: ProviderPreset,
+        status: SpeechCredentialStatus,
+        reduceMotion: Bool? = nil
+    ) -> HostedSpeechPage {
         var config = DotConfig.default
         preset.apply(to: &config)
         if preset.id == ProviderPreset.custom.id {
@@ -205,6 +255,7 @@ final class SpeechStatusRowTests: XCTestCase {
         )
         .environment(\.settingsHeadless, true)
         .environment(\.settingsCredentialPreview, status)
+        .environment(\.statusChipReduceMotion, reduceMotion)
         let host = NSHostingView(rootView: AnyView(page))
         host.frame = NSRect(x: 0, y: 0, width: 820, height: 900)
         let window = OffscreenWindow(size: CGSize(width: 820, height: 900))

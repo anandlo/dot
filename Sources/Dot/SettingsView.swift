@@ -1980,6 +1980,11 @@ struct SettingsView: View {
                 textTone: DotTheme.ink2,
                 isChecking: credentialStatus.isChecking
             )
+            .overlay(
+                SpeechRowAnchor(identifier: "speech.status.trailing")
+                    .frame(width: 1, height: 1),
+                alignment: .trailing
+            )
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(credentialStatus.statusAccessibilityLabel)
