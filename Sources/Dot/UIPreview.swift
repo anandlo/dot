@@ -460,6 +460,47 @@ enum UIPreview {
             )
         }
 
+        // Every update state at the real window size, in both appearances.
+        // The states are supplied to the page, so no render reaches GitHub or
+        // opens a release page.
+        let longVersion = "9.8.7-beta.3+release.candidate.20261120"
+        let longBuild = "4812.7.19-nightly"
+        let longRelease = "9.9.0-rc.1+release.candidate.20261120"
+        let windowStates: [(name: String, update: AboutUpdateState, version: String?, build: String?)] = [
+            ("idle", .idle, nil, nil),
+            ("checking", .checking, nil, nil),
+            ("current", .upToDate, nil, nil),
+            ("available", .available(version: "9.9.0", page: nil), nil, nil),
+            ("unreachable", .unreachable, nil, nil),
+            ("long-build", .upToDate, longVersion, longBuild),
+            ("long-combined", .available(version: longRelease, page: nil), longVersion, longBuild),
+            // An empty build is the preview's absent build. A nil would fall
+            // through to the render's default build number instead.
+            ("no-build", .upToDate, "1.0", ""),
+        ]
+        for scheme in [ColorScheme.light, ColorScheme.dark] {
+            let suffix = scheme == .dark ? "-dark" : ""
+            for state in windowStates {
+                var config = sampleConfig
+                config.appearance = appearance(for: scheme)
+                try writeHosted(
+                    WindowPreview(size: size) {
+                        settingsPreview(
+                            config: config,
+                            providers: providers,
+                            tab: 4,
+                            aboutUpdate: state.update,
+                            aboutVersion: state.version,
+                            aboutBuild: state.build
+                        )
+                    },
+                    size: size,
+                    scheme: scheme,
+                    to: directory.appendingPathComponent("settings-about-state-\(state.name)\(suffix).png")
+                )
+            }
+        }
+
         // A service with a stored key: the key field is empty, the delete
         // button is present and the status chip reads Connected.
         let connectedProviders = MenuBuilder.providerRows(config: sampleConfig) { _ in true }
@@ -899,6 +940,8 @@ enum UIPreview {
         providers: [MenuProvider],
         tab: Int,
         aboutUpdate: AboutUpdateState? = nil,
+        aboutVersion: String? = nil,
+        aboutBuild: String? = nil,
         models: [AvailableModel]? = nil,
         assistantKeys: Set<String>? = nil,
         assistantConnection: AssistantConnectionState? = nil,
@@ -914,6 +957,8 @@ enum UIPreview {
             providers: providers,
             tab: tab,
             aboutUpdate: aboutUpdate,
+            aboutVersion: aboutVersion,
+            aboutBuild: aboutBuild,
             models: models,
             assistantKeys: assistantKeys,
             assistantConnection: assistantConnection,
@@ -936,6 +981,8 @@ enum UIPreview {
         let providers: [MenuProvider]
         let tab: Int
         let aboutUpdate: AboutUpdateState?
+        let aboutVersion: String?
+        let aboutBuild: String?
         let models: [AvailableModel]?
         let assistantKeys: Set<String>?
         let assistantConnection: AssistantConnectionState?
@@ -951,6 +998,8 @@ enum UIPreview {
             providers: [MenuProvider],
             tab: Int,
             aboutUpdate: AboutUpdateState?,
+            aboutVersion: String?,
+            aboutBuild: String?,
             models: [AvailableModel]?,
             assistantKeys: Set<String>?,
             assistantConnection: AssistantConnectionState?,
@@ -965,6 +1014,8 @@ enum UIPreview {
             self.providers = providers
             self.tab = tab
             self.aboutUpdate = aboutUpdate
+            self.aboutVersion = aboutVersion
+            self.aboutBuild = aboutBuild
             self.models = models
             self.assistantKeys = assistantKeys
             self.assistantConnection = assistantConnection
@@ -991,7 +1042,8 @@ enum UIPreview {
             )
             .environment(\.settingsHeadless, true)
             .environment(\.settingsDefaultInputUID, "DotRenderBuiltInMicrophone")
-            .environment(\.settingsVersionOverride, "1.0")
+            .environment(\.settingsVersionOverride, aboutVersion ?? "1.0")
+            .environment(\.settingsBuildOverride, aboutBuild)
             .environment(\.settingsHeightOverride, height)
             .environment(\.settingsCredentialPreview, credential)
             .environment(\.assistantKeyedProviders, assistantKeys)

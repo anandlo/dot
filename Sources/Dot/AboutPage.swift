@@ -39,14 +39,19 @@ enum AboutInfo {
 
     /// The build as the page writes it after the version.
     static func versionLine(version: String, build: String?) -> String {
+        "Version \(valueLine(version: version, build: build))"
+    }
+
+    /// The colophon's value: the version alone when there is no build to name.
+    static func valueLine(version: String, build: String?) -> String {
         guard let build, !build.isEmpty, build != ProductVersion.unknown else {
-            return "Version \(version)"
+            return version
         }
-        return "Version \(version) (\(build))"
+        return "\(version) (\(build))"
     }
 }
 
-/// What the update row is showing.
+/// What the update control is showing.
 enum AboutUpdateState: Equatable, Sendable {
     /// Nothing has been asked yet.
     case idle
@@ -58,6 +63,84 @@ enum AboutUpdateState: Equatable, Sendable {
     case available(version: String, page: URL?)
     /// The request did not produce a release.
     case unreachable
+
+    /// The control's name, which changes once a release exists to open.
+    var controlLabel: String {
+        switch self {
+        case .available: "View release"
+        case .idle, .checking, .upToDate, .unreachable: "Check for updates"
+        }
+    }
+
+    /// The line under the control, set in words rather than in colour alone.
+    var statusText: String {
+        switch self {
+        case .idle: "Not checked"
+        case .checking: "Checking..."
+        case .upToDate: "Up to date"
+        case .available(let version, _): "Version \(version) available"
+        case .unreachable: "Could not reach GitHub"
+        }
+    }
+
+    /// A check already in flight owns the control until it answers.
+    var acceptsAnotherCheck: Bool { self != .checking }
+}
+
+/// The frames a headless host reads back from the page.
+///
+/// The renderer draws these views off screen, where AppKit exposes no
+/// accessibility tree for a SwiftUI button. A geometry reader in each named
+/// region reports its own frame instead, so the plate and its contents are
+/// measured where they are laid out rather than guessed from a picture.
+struct AboutLayoutSnapshot: Equatable {
+    var frames: [String: CGRect] = [:]
+}
+
+private struct AboutFrameKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] { [:] }
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct AboutLayoutReportingKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private extension EnvironmentValues {
+    var aboutLayoutReporting: Bool {
+        get { self[AboutLayoutReportingKey.self] }
+        set { self[AboutLayoutReportingKey.self] = newValue }
+    }
+}
+
+private struct AboutFrameReporter: ViewModifier {
+    @Environment(\.aboutLayoutReporting) private var reports
+
+    let name: String
+
+    func body(content: Content) -> some View {
+        if reports {
+            content.background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: AboutFrameKey.self,
+                        value: [name: geometry.frame(in: .named(AboutPage.layoutSpace))]
+                    )
+                }
+            }
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func aboutFrame(_ name: String) -> some View {
+        modifier(AboutFrameReporter(name: name))
+    }
 }
 
 // MARK: - The page
@@ -80,58 +163,219 @@ struct AboutPage: View {
     var onOpenWelcome: () -> Void = {}
     /// Reveals the log file in Finder.
     var onOpenLog: () -> Void = {}
+    /// Counts a press made in a preview, where no request may be sent.
+    var onPreviewUpdatePress: (() -> Void)?
+    /// Reads the laid-out frames in a headless host.
+    var onLayout: ((AboutLayoutSnapshot) -> Void)?
 
     @State private var copied = false
     @State private var update: AboutUpdateState = .idle
+    @State private var copyReset: Task<Void, Never>?
+
+    /// The coordinate space every reported frame is measured in.
+    static let layoutSpace = "AboutPage.content"
+    /// The mark is drawn from the approved icon geometry on an imaginary 100 pt
+    /// square pinned to the plate's top right corner.
+    private static let markSquare: CGFloat = 100
+    private static let markDiameter: CGFloat = markSquare * DotMarkDial.clipped.diameter
+    private static let markRightInset: CGFloat = markSquare * (1 - DotMarkDial.clipped.centre.x)
+    private static let markTopInset: CGFloat = markSquare * DotMarkDial.clipped.centre.y
+    /// The trailing room the control leaves for the cropped disc.
+    private static let markReserve: CGFloat = 72
 
     var body: some View {
-        VStack(spacing: 22) {
-            header
+        VStack(spacing: 14) {
+            plate
             destinations
             actions
         }
         .frame(maxWidth: .infinity)
+        .environment(\.aboutLayoutReporting, onLayout != nil)
+        .coordinateSpace(name: Self.layoutSpace)
+        .onPreferenceChange(AboutFrameKey.self) { frames in
+            onLayout?(AboutLayoutSnapshot(frames: frames))
+        }
     }
 
-    // MARK: Header
+    // MARK: Dial plate
 
-    /// The mark, the name and the build, centred on the page.
-    private var header: some View {
-        VStack(spacing: 8) {
-            DotMarkDialPresentation(dial: DotMark.chosenDial ?? .clipped, size: 64)
-                .overlay(
-                    DotSquircle()
-                        .stroke(DotTheme.markEdge, lineWidth: 1)
-                        .padding(64 * DotIconPresentation.paddingRatio)
-                )
-                .accessibilityHidden(true)
+    /// The matte plate carries the name, the update control and the colophon.
+    ///
+    /// The disc is one drawing inside the plate's single clip. Nothing else on
+    /// the page draws a mark, a shadow or a second edge.
+    private var plate: some View {
+        ZStack(alignment: .topLeading) {
+            VStack(spacing: 0) {
+                upperBand
+                Rectangle()
+                    .fill(AboutDialInk.edge)
+                    .frame(height: 1)
+                    .aboutFrame("rule")
+                colophon
+            }
+            mark
+        }
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: DotTheme.cardCorner, style: .continuous)
+                .fill(AboutDialInk.plate)
+        )
+        .clipShape(
+            RoundedRectangle(cornerRadius: DotTheme.cardCorner, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DotTheme.cardCorner, style: .continuous)
+                .strokeBorder(AboutDialInk.edge, lineWidth: 1)
+        )
+        .aboutFrame("plate")
+    }
 
+    /// The white disc, cut by the plate and kept out of hit testing and the
+    /// accessibility tree.
+    private var mark: some View {
+        GeometryReader { geometry in
+            ZStack {
+                if onLayout != nil {
+                    Color.clear
+                        .preference(
+                            key: AboutFrameKey.self,
+                            value: ["disc": discFrame(in: geometry)]
+                        )
+                }
+                Circle()
+                    .fill(AboutDialInk.disc)
+                    .frame(width: Self.markDiameter, height: Self.markDiameter)
+                    .position(
+                        x: geometry.size.width - Self.markRightInset,
+                        y: Self.markTopInset
+                    )
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func discFrame(in geometry: GeometryProxy) -> CGRect {
+        let plate = geometry.frame(in: .named(Self.layoutSpace))
+        return CGRect(
+            x: plate.minX + geometry.size.width - Self.markRightInset - Self.markDiameter / 2,
+            y: plate.minY + Self.markTopInset - Self.markDiameter / 2,
+            width: Self.markDiameter,
+            height: Self.markDiameter
+        )
+    }
+
+    private var upperBand: some View {
+        HStack(alignment: .center, spacing: 12) {
             Text("Dot")
-                .font(DotTheme.displayFont(26))
+                .font(DotTheme.displayFont(30))
                 .tracking(-0.4)
-                .foregroundStyle(DotTheme.ink)
+                .foregroundStyle(AboutDialInk.value)
                 .accessibilityAddTraits(.isHeader)
+                .aboutFrame("title")
 
-            HStack(spacing: 6) {
-                Text(AboutInfo.versionLine(version: version, build: build))
-                    .font(DotType.tabularFont(12, .medium))
-                    .foregroundStyle(DotTheme.ink3)
-                    .textSelection(.enabled)
+            Spacer(minLength: 16)
 
-                Button(action: copyVersion) {
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(DotType.font(11, .semibold))
-                        .foregroundStyle(copied ? DotTheme.ink2 : DotTheme.ink3)
-                        .frame(width: 18, height: 18)
+            VStack(alignment: .trailing, spacing: 2) {
+                Button(action: performUpdate) {
+                    Text(currentUpdate.controlLabel)
+                        .font(DotType.font(12, .semibold))
+                        .foregroundStyle(
+                            currentUpdate.acceptsAnotherCheck ? AboutDialInk.value : AboutDialInk.status
+                        )
+                        .frame(minHeight: 28)
+                        .padding(.horizontal, 12)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(
+                                    AboutDialInk.buttonEdge.opacity(currentUpdate.acceptsAnotherCheck ? 1 : 0.5),
+                                    lineWidth: 1
+                                )
+                        )
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(DotPressStyle())
-                .accessibilityLabel("Copy version information")
-                .accessibilityValue(copied ? "Copied" : "")
-                .help("Copies the version, the build and the macOS version.")
+                .disabled(!currentUpdate.acceptsAnotherCheck)
+                .accessibilityLabel(currentUpdate.controlLabel)
+                .accessibilityValue(currentUpdate.statusText)
+                .aboutFrame("control")
+
+                Text(currentUpdate.statusText)
+                    .font(DotType.font(11, .medium))
+                    .foregroundStyle(AboutDialInk.status)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityHidden(true)
+                    .aboutFrame("status")
             }
+            .padding(.trailing, Self.markReserve)
         }
-        .padding(.top, 6)
+        .frame(minHeight: 72, alignment: .center)
+        .padding(.horizontal, 16)
+        .aboutFrame("upper")
+    }
+
+    private var colophon: some View {
+        HStack(alignment: .center, spacing: 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Version")
+                    .font(DotType.font(11, .medium))
+                    .foregroundStyle(AboutDialInk.status)
+                    .aboutFrame("versionLabel")
+                HStack(spacing: 6) {
+                    Text(AboutInfo.valueLine(version: version, build: build))
+                        .font(DotType.tabularFont(12, .medium))
+                        .foregroundStyle(AboutDialInk.value)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .aboutFrame("versionValue")
+                    copyButton
+                }
+            }
+            .padding(.vertical, 5)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .aboutFrame("versionCell")
+
+            Rectangle()
+                .fill(AboutDialInk.edge)
+                .frame(width: 1)
+                .aboutFrame("separator")
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("macOS")
+                    .font(DotType.font(11, .medium))
+                    .foregroundStyle(AboutDialInk.status)
+                    .aboutFrame("systemLabel")
+                Text(AboutInfo.operatingSystem)
+                    .font(DotType.tabularFont(12, .medium))
+                    .foregroundStyle(AboutDialInk.value)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .aboutFrame("systemValue")
+            }
+            .padding(.vertical, 5)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .aboutFrame("systemCell")
+        }
+        .frame(minHeight: 44, alignment: .center)
+        .aboutFrame("lower")
+    }
+
+    private var copyButton: some View {
+        Button(action: copyVersion) {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(DotType.font(11, .semibold))
+                .foregroundStyle(copied ? AboutDialInk.value : AboutDialInk.status)
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(DotPressStyle())
+        .accessibilityLabel("Copy version information")
+        .accessibilityValue(copied ? "Copied" : "")
+        .help("Copies the version, the build and the macOS version.")
+        .aboutFrame("copy")
     }
 
     private func copyVersion() {
@@ -143,25 +387,60 @@ struct AboutPage: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(line, forType: .string)
-        withAnimation(.easeOut(duration: 0.15)) {
-            copied = true
-        }
-        Task { @MainActor in
+
+        copied = true
+        copyReset?.cancel()
+        copyReset = Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.8))
-            withAnimation(.easeOut(duration: 0.2)) {
-                copied = false
+            guard !Task.isCancelled else { return }
+            copied = false
+        }
+    }
+
+    // MARK: Update control
+
+    /// The state the control draws: the preview's when one was supplied,
+    /// otherwise what the last check found.
+    private var currentUpdate: AboutUpdateState {
+        previewUpdate ?? update
+    }
+
+    /// Runs the update button's own action in a headless host, where AppKit
+    /// exposes no accessibility press target for a SwiftUI button.
+    func activateUpdateForTesting() {
+        performUpdate()
+    }
+
+    private func performUpdate() {
+        guard previewUpdate == nil else {
+            onPreviewUpdatePress?()
+            return
+        }
+        if case .available(_, let page) = currentUpdate {
+            NSWorkspace.shared.open(page ?? ProductLinks.website)
+            return
+        }
+        guard currentUpdate != .checking else { return }
+        update = .checking
+        Task { @MainActor in
+            let result = await UpdateController.shared.check()
+            switch result {
+            case .upToDate:
+                update = .upToDate
+            case .newer(let version, let page):
+                update = .available(version: version, page: page)
+            case .failed:
+                update = .unreachable
             }
         }
     }
 
     // MARK: Destinations
 
-    /// The update check and the places Dot lives.
+    /// The five places Dot lives, unchanged from the settings card rhythm.
     private var destinations: some View {
         DotCard {
             VStack(spacing: 0) {
-                updateRow
-                SettingsDivider()
                 linkRow(
                     "Website",
                     detail: ProductLinks.displayWebsite,
@@ -223,58 +502,6 @@ struct AboutPage: View {
         .accessibilityLabel(detail.map { "\(title), \($0)" } ?? title)
     }
 
-    /// The one control in the app that runs an update check outside the menu.
-    private var updateRow: some View {
-        Button(action: performUpdate) {
-            SettingsRow("Check for updates", symbol: "arrow.triangle.2.circlepath") {
-                Text(updateStatusText)
-                    .font(DotType.tabularFont(11, .medium))
-                    .foregroundStyle(DotTheme.ink2)
-                    .lineLimit(1)
-            }
-        }
-        .buttonStyle(DotPressStyle())
-        .accessibilityLabel("Check for updates")
-        .accessibilityValue(updateStatusText)
-    }
-
-    /// The state the row draws: the preview's when one was supplied, otherwise
-    /// what the last check found.
-    private var currentUpdate: AboutUpdateState {
-        previewUpdate ?? update
-    }
-
-    private var updateStatusText: String {
-        switch currentUpdate {
-        case .idle: return "Not checked"
-        case .checking: return "Checking..."
-        case .upToDate: return "Up to date"
-        case .available(let version, _): return "Version \(version) available"
-        case .unreachable: return "Could not reach GitHub"
-        }
-    }
-
-    private func performUpdate() {
-        guard previewUpdate == nil else { return }
-        if case .available(_, let page) = currentUpdate {
-            NSWorkspace.shared.open(page ?? ProductLinks.website)
-            return
-        }
-        guard currentUpdate != .checking else { return }
-        update = .checking
-        Task { @MainActor in
-            let result = await UpdateController.shared.check()
-            switch result {
-            case .upToDate:
-                update = .upToDate
-            case .newer(let version, let page):
-                update = .available(version: version, page: page)
-            case .failed:
-                update = .unreachable
-            }
-        }
-    }
-
     // MARK: Actions inside Dot
 
     /// The two rows that act on Dot itself rather than on the network.
@@ -298,7 +525,22 @@ struct AboutPage: View {
                     }
                 }
                 .buttonStyle(DotPressStyle())
+                .aboutFrame("openLog")
             }
         }
+        .aboutFrame("actions")
     }
+}
+
+/// The plate's fixed colours, sampled from the approved composition.
+///
+/// These are fixed rather than adaptive: the dial is a picture of the app icon
+/// and does not change with the system appearance.
+enum AboutDialInk {
+    static let plate = Color(.sRGB, red: 0x24 / 255, green: 0x21 / 255, blue: 0x1E / 255)
+    static let edge = Color(.sRGB, red: 0x62 / 255, green: 0x57 / 255, blue: 0x4D / 255)
+    static let disc = Color(.sRGB, red: 0xF4 / 255, green: 0xF2 / 255, blue: 0xEE / 255)
+    static let value = Color(.sRGB, red: 0xFF / 255, green: 0xF4 / 255, blue: 0xE6 / 255)
+    static let status = Color(.sRGB, red: 0xD8 / 255, green: 0xCA / 255, blue: 0xBC / 255)
+    static let buttonEdge = Color(.sRGB, red: 0x9D / 255, green: 0x8C / 255, blue: 0x7D / 255)
 }
