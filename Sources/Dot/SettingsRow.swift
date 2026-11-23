@@ -185,7 +185,7 @@ enum SettingsExplanation {
     static let calibrationHelp =
         "Dot learns this microphone's background noise to set the level meter's floor and the threshold for trimming silence at the ends of a take. Reset clears what it learned; microphone gain is never changed."
     static let recordingModeSubtitle = "Press to toggle, or hold to record."
-    static let mouseButtonSubtitle = "Hold to record. Dot replaces this button's usual action."
+    static let mouseButtonSubtitle = "Hold to record. Apps stop receiving its clicks."
     static let mouseButtonHelp =
         "While a button is chosen, Dot uses it only for recording, and apps no longer receive its click."
     static let reduceMotionSubtitle = "Replaces Dot's animations with still or fading versions."
