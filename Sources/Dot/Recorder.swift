@@ -419,6 +419,13 @@ final class CapturePublication: @unchecked Sendable {
         return processor?.spectrum ?? .zero
     }
 
+    /// The take's sample store, or `nil` when no take is running.
+    var currentStore: AudioSampleStore? {
+        lock.lock()
+        defer { lock.unlock() }
+        return store
+    }
+
     /// How many samples the take holds.
     var sampleCount: Int {
         lock.lock()
@@ -1307,7 +1314,7 @@ final class Recorder {
     }
 
     /// The take's locked sample store, for work that runs off the main actor.
-    var takeStore: AudioSampleStore? { store }
+    var takeStore: AudioSampleStore? { publication.currentStore }
 
     /// A copy of the samples in `range` from the current recording.
     func samples(in range: Range<Int>) -> [Int16] {
