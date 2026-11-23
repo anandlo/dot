@@ -62,6 +62,11 @@ struct HUDActions {
 struct HUDView: View {
     /// The frame the card draws.
     @ObservedObject var model: HUDModel
+    /// The values that change sixty times a second.
+    ///
+    /// The app hands its own frame model down. A still, built from a snapshot,
+    /// leaves this nil and the drawing leaves read the snapshot's fields instead.
+    var frame: HUDFrameModel? = nil
     /// Whether the card casts its shadow. The corner test renders without it.
     var showsShadow = true
     /// Whether the frame is animated. The documentation renders are not.
@@ -97,6 +102,12 @@ struct HUDView: View {
 
     /// The motion setting the card obeys.
     var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
+
+    /// The source the drawing leaves read. Building it never reads a frame
+    /// value, so this view's body is not invalidated by the frame clock.
+    var frameSource: HUDFrameSource {
+        frame.map { .frames($0) } ?? .model(model)
+    }
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: HUDTheme.cornerRadius, style: .continuous)
@@ -136,6 +147,9 @@ struct HUDView: View {
     }
 
     var body: some View {
+#if DEBUG
+        let _ = BodyEvalProbe.record()
+#endif
         if let emergence {
             pouring(emergence)
         } else {
@@ -150,16 +164,21 @@ struct HUDView: View {
     /// screens.
     private var fading: some View {
         let shade = shadow()
+        // The shadow belongs to the surface, not to a group composite that
+        // also holds the canvas. Compositing the waveform changed how its ink
+        // met the fill while the recording was live.
         return content
             .opacity(model.content)
             .scaleEffect(0.99 + 0.01 * model.content)
             .offset(y: (1 - model.content) * 6)
             .frame(width: model.cardSize.width, height: model.cardSize.height)
-            .background(HUDSurface(material: model.material))
             .clipShape(shape)
+            .background(
+                HUDSurface(material: model.material)
+                    .clipShape(shape)
+                    .shadow(color: shade.color, radius: shade.radius, x: 0, y: shade.y)
+            )
             .overlay(alignment: .topTrailing) { tooltip }
-            .compositingGroup()
-            .shadow(color: shade.color, radius: shade.radius, x: 0, y: shade.y)
             .opacity(model.presence)
             .scaleEffect(0.94 + 0.06 * model.presence)
             .offset(y: (1 - model.presence) * -10)
@@ -195,15 +214,19 @@ struct HUDView: View {
         let piece = HUDEmergence.shape(progress: progress, source: source, rest: rest)
         let shade = shadow(piece.mix)
         return ZStack(alignment: .topLeading) {
-            HUDEmergence.path(piece)
-                .fill(Color(red: 0, green: 0, blue: 0))
-                .opacity(1 - piece.mix)
+            ZStack(alignment: .topLeading) {
+                HUDEmergence.path(piece)
+                    .fill(Color(red: 0, green: 0, blue: 0))
+                    .opacity(1 - piece.mix)
 
-            HUDSurface(material: model.material)
-                .opacity(piece.mix)
-                .frame(width: piece.card.width, height: piece.card.height)
-                .clipShape(clip(piece, rest: rest))
-                .offset(x: piece.card.minX, y: piece.card.minY)
+                HUDSurface(material: model.material)
+                    .opacity(piece.mix)
+                    .frame(width: piece.card.width, height: piece.card.height)
+                    .clipShape(clip(piece, rest: rest))
+                    .offset(x: piece.card.minX, y: piece.card.minY)
+            }
+            .compositingGroup()
+            .shadow(color: shade.color, radius: shade.radius, x: 0, y: shade.y)
 
             content
                 .opacity(HUDEmergence.contentOpacity(
@@ -221,8 +244,6 @@ struct HUDView: View {
             height: model.cardSize.height,
             alignment: .topLeading
         )
-        .compositingGroup()
-        .shadow(color: shade.color, radius: shade.radius, x: 0, y: shade.y)
         .animation(animation(.shape), value: model.cardSize)
     }
 
@@ -312,7 +333,7 @@ struct HUDView: View {
                 Image(systemName: "sparkle")
                     .font(DotType.font(11, .semibold))
                     .foregroundStyle(HUDTheme.live)
-                    .opacity(0.55 + 0.45 * model.pulse)
+                    .modifier(HUDPulseOpacity(model: model, source: frameSource))
                     .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
 
                 Color.clear.frame(width: 10)
@@ -331,17 +352,10 @@ struct HUDView: View {
 
                 Color.clear.frame(width: 14)
 
-                HUDWaveform(
+                FrameHUDWaveform(
+                    model: model,
+                    source: frameSource,
                     visualizer: model.visualizer,
-                    halfHeights: model.halfHeights,
-                    history: model.history,
-                    spectrumHistory: model.spectrumHistory,
-                    phase: model.phase,
-                    time: model.time,
-                    level: model.level,
-                    pulse: model.pulse,
-                    ceiling: model.ceiling,
-                    reveal: model.reveal,
                     material: model.material,
                     glassRingLift: glassRingLift,
                     glassRingInkGain: glassRingInkGain
@@ -373,7 +387,7 @@ struct HUDView: View {
 
             Spacer(minLength: 8)
 
-            AssistantPulseDots(time: model.time, reduceMotion: reduceMotion)
+            FrameAssistantPulseDots(model: model, source: frameSource, reduceMotion: reduceMotion)
         }
         .padding(.horizontal, HUDTheme.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -400,7 +414,7 @@ struct HUDView: View {
                     Image(systemName: "speaker.wave.2")
                         .font(DotType.font(11, .semibold))
                         .foregroundStyle(HUDTheme.live)
-                        .opacity(0.55 + 0.45 * abs(sin(model.time * .pi * 1.6)))
+                        .modifier(HUDClockOpacity(model: model, source: frameSource))
                 }
 
                 Spacer(minLength: 8)
@@ -507,7 +521,7 @@ struct HUDView: View {
         let showsLiveText = !model.liveText.isEmpty
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
-                LiveDot(level: model.level, pulse: model.pulse)
+                FrameLiveDot(model: model, source: frameSource)
                     .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
 
                 Color.clear.frame(width: 10)
@@ -526,17 +540,10 @@ struct HUDView: View {
 
                 Color.clear.frame(width: 14)
 
-                HUDWaveform(
+                FrameHUDWaveform(
+                    model: model,
+                    source: frameSource,
                     visualizer: model.visualizer,
-                    halfHeights: model.halfHeights,
-                    history: model.history,
-                    spectrumHistory: model.spectrumHistory,
-                    phase: model.phase,
-                    time: model.time,
-                    level: model.level,
-                    pulse: model.pulse,
-                    ceiling: model.ceiling,
-                    reveal: model.reveal,
                     material: model.material,
                     glassRingLift: glassRingLift,
                     glassRingInkGain: glassRingInkGain
@@ -599,11 +606,7 @@ struct HUDView: View {
 
     private var working: some View {
         HStack(spacing: 10) {
-            Circle()
-                .fill(HUDTheme.amber)
-                .frame(width: 7, height: 7)
-                .scaleEffect(0.85 + 0.3 * abs(sin(model.shimmer * .pi)))
-                .shadow(color: HUDTheme.amber.opacity(0.5), radius: 4)
+            FrameWorkingPulse(model: model, source: frameSource)
 
             Text("TRANSCRIBING")
                 .font(HUDTheme.labelFont)
@@ -622,7 +625,7 @@ struct HUDView: View {
 
             Spacer(minLength: 0)
 
-            HUDSpinner(phase: model.shimmer)
+            FrameSpinner(model: model, source: frameSource)
 
             controlsSection([.cancel])
         }
@@ -639,102 +642,27 @@ struct HUDView: View {
         destination: String?
     ) -> some View {
         let card = model.rewrite
-        let rewriting = card?.activeStyleTitle
-        // The arc outlives the phase by the 140 ms the card gives it to leave.
-        // The header holds its in-progress face for those frames, because a
-        // delivery mark drawn over a ring that is still on screen would name
-        // the end while the card is still showing the work.
-        let teardownFade = model.rewriteEnding.map { ending in
-            HUDRewriteActivity.arcFade(
-                isRunning: false,
-                endedAt: ending.at,
-                time: model.time,
-                reduceMotion: reduceMotion
-            )
-        } ?? 0
-        let announcing = rewriting != nil || teardownFade > 0
         let failed = card?.phase == .failed
         return VStack(spacing: 0) {
             HStack(spacing: 10) {
-                // While a style runs the badge is the work: a ring drawn from the
-                // same arc, the same clock and the same angle as the chip that
-                // was clicked, with no fill and no glyph. The check mark belongs
-                // to a delivery that has already happened, and drawing it over a
-                // request that is still arriving claims an answer.
-                ZStack {
-                    if announcing {
-                        RewriteArcRing(
-                            shape: Circle(),
-                            head: reduceMotion
-                                ? HUDRewriteActivity.reducedMotionHeadDegrees
-                                : HUDRewriteActivity.arcHeadAngle(
-                                    time: model.time,
-                                    reduceMotion: false
-                                ),
-                            trail: HUDRewriteActivity.arcTrail(reduceMotion: reduceMotion),
-                            fade: rewriting != nil ? 1 : teardownFade,
-                            showsGlow: false
-                        )
-                        .frame(width: HUDTheme.badgeSize, height: HUDTheme.badgeSize)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(Text(Self.rewritingAccessibilityLabel(
-                            ringStyleTitle(card: card, running: rewriting)
-                        )))
-                    } else if failed {
-                        // A failure is not a delivery that happened and not a
-                        // finished version to check: it is the request's own
-                        // verdict, and it takes the badge until the card is
-                        // closed or another style is asked for.
-                        Circle()
-                            .fill(HUDTheme.live.opacity(0.14))
-                            .frame(width: HUDTheme.badgeSize, height: HUDTheme.badgeSize)
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(DotType.font(10.5, .bold))
-                            .foregroundStyle(HUDTheme.live)
-                    } else {
-                        Circle()
-                            .fill(delivery.color.opacity(0.14))
-                            .frame(width: HUDTheme.badgeSize, height: HUDTheme.badgeSize)
-                        Image(systemName: delivery.glyph)
-                            .font(DotType.font(10.5, .bold))
-                            .foregroundStyle(HUDTheme.statusInk(
-                                delivery.color,
-                                material: model.material
-                            ))
-                    }
-                }
-
-                // The application the words went into, when there is one. The
-                // title is already cut to the room the header has, so a long
-                // name can never push the clock or the buttons out of the card.
-                // Nothing is drawn in its slot while a style runs: the ring says
-                // what the header used to have to spell out, and the caps row
-                // that repeated it was a label over a control that already says
-                // it.
-                if !announcing {
-                    Text(headerTitle(for: card, delivery: delivery, destination: destination))
-                        .font(HUDTheme.labelFont)
-                        .tracking(HUDTheme.labelTracking)
-                        .foregroundStyle(HUDTheme.statusInk(
-                            failed ? HUDTheme.live : delivery.color,
-                            material: model.material
-                        ))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: headerTitleCap(for: card), alignment: .leading)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .accessibilityLabel(Text(
-                            headerAccessibilityLabel(
-                                for: card,
-                                delivery: delivery,
-                                destination: destination
-                            )
-                        ))
-                }
-
-                if let card, !announcing, Self.showsCheckBadge(card) {
-                    RewriteCheckBadge(warning: card.warning)
-                }
+                FrameRewriteIdentity(
+                    model: model,
+                    source: frameSource,
+                    card: card,
+                    delivery: delivery,
+                    material: model.material,
+                    reduceMotion: reduceMotion,
+                    title: headerTitle(for: card, delivery: delivery, destination: destination),
+                    titleCap: headerTitleCap(for: card),
+                    accessibilityTitle: headerAccessibilityLabel(
+                        for: card,
+                        delivery: delivery,
+                        destination: destination
+                    ),
+                    ringStyleTitle: ringStyleTitle(card: card, running: card?.activeStyleTitle),
+                    ending: model.rewriteEnding,
+                    failed: failed
+                )
 
                 // The surface the words were written for, named on the card.
                 // The rewrite changes the inserted text, so it has to be
@@ -1534,6 +1462,203 @@ private struct HUDActionButtonBody: View {
     }
 }
 
+/// The waveform leaf. It is the only place the card reads the frame's history,
+/// spectrum, level and reveal, so those writes redraw this canvas and nothing
+/// else.
+@MainActor
+private struct FrameHUDWaveform: View {
+    @ObservedObject var model: HUDModel
+    let source: HUDFrameSource
+    let visualizer: HUDVisualizer
+    let material: HUDMaterial
+    let glassRingLift: Double
+    let glassRingInkGain: Double
+
+    var body: some View {
+#if DEBUG
+        let _ = FrameLeafProbe.captures ? { FrameLeafProbe.waveformBodies += 1 }() : ()
+#endif
+        HUDWaveform(
+            visualizer: visualizer,
+            halfHeights: source.halfHeights,
+            history: source.history,
+            spectrumHistory: source.spectrumHistory,
+            phase: source.phase,
+            time: source.time,
+            level: source.level,
+            pulse: source.pulse,
+            ceiling: source.ceiling,
+            reveal: source.reveal,
+            material: material,
+            glassRingLift: glassRingLift,
+            glassRingInkGain: glassRingInkGain
+        )
+    }
+}
+
+/// The recording dot. Its own frame reads keep the level out of the card's body.
+@MainActor
+private struct FrameLiveDot: View {
+    @ObservedObject var model: HUDModel
+    let source: HUDFrameSource
+
+    var body: some View {
+#if DEBUG
+        let _ = FrameLeafProbe.captures ? { FrameLeafProbe.liveDotBodies += 1 }() : ()
+#endif
+        LiveDot(level: source.level, pulse: source.pulse)
+    }
+}
+
+/// The assistant's mark and the speaking label take their brightness from the
+/// same frame pulse without making the card's body depend on it.
+@MainActor
+private struct HUDPulseOpacity: ViewModifier {
+    @ObservedObject var model: HUDModel
+    let source: HUDFrameSource
+
+    func body(content: Content) -> some View {
+        content.opacity(0.55 + 0.45 * source.pulse)
+    }
+}
+
+@MainActor
+private struct HUDClockOpacity: ViewModifier {
+    @ObservedObject var model: HUDModel
+    let source: HUDFrameSource
+
+    func body(content: Content) -> some View {
+        content.opacity(0.55 + 0.45 * abs(sin(source.time * .pi * 1.6)))
+    }
+}
+
+@MainActor
+private struct FrameAssistantPulseDots: View {
+    @ObservedObject var model: HUDModel
+    let source: HUDFrameSource
+    let reduceMotion: Bool
+
+    var body: some View {
+        AssistantPulseDots(time: source.time, reduceMotion: reduceMotion)
+    }
+}
+
+@MainActor
+private struct FrameWorkingPulse: View {
+    @ObservedObject var model: HUDModel
+    let source: HUDFrameSource
+
+    var body: some View {
+        Circle()
+            .fill(HUDTheme.amber)
+            .frame(width: 7, height: 7)
+            .scaleEffect(0.85 + 0.3 * abs(sin(source.shimmer * .pi)))
+            .shadow(color: HUDTheme.amber.opacity(0.5), radius: 4)
+    }
+}
+
+@MainActor
+private struct FrameSpinner: View {
+    @ObservedObject var model: HUDModel
+    let source: HUDFrameSource
+
+    var body: some View {
+#if DEBUG
+        let _ = FrameLeafProbe.captures ? { FrameLeafProbe.spinnerBodies += 1 }() : ()
+#endif
+        HUDSpinner(phase: source.shimmer)
+    }
+}
+
+/// The badge, title and check of a transcript header.
+///
+/// The ring's angle and the tail of a finished arc come from the frame clock.
+/// Keeping them here means a tick cannot rebuild the card's text or its buttons.
+@MainActor
+private struct FrameRewriteIdentity: View {
+    @ObservedObject var model: HUDModel
+    let source: HUDFrameSource
+    let card: RewriteCard?
+    let delivery: HUDDelivery
+    let material: HUDMaterial
+    let reduceMotion: Bool
+    let title: String
+    let titleCap: CGFloat
+    let accessibilityTitle: String
+    let ringStyleTitle: String?
+    let ending: RewriteEnding?
+    let failed: Bool
+
+    var body: some View {
+#if DEBUG
+        let _ = FrameLeafProbe.captures ? { FrameLeafProbe.rewriteBodies += 1 }() : ()
+#endif
+        let rewriting = card?.activeStyleTitle
+        let teardownFade = ending.map { end in
+            HUDRewriteActivity.arcFade(
+                isRunning: false,
+                endedAt: end.at,
+                time: source.time,
+                reduceMotion: reduceMotion
+            )
+        } ?? 0
+        let announcing = rewriting != nil || teardownFade > 0
+
+        ZStack {
+            if announcing {
+                RewriteArcRing(
+                    shape: Circle(),
+                    head: reduceMotion
+                        ? HUDRewriteActivity.reducedMotionHeadDegrees
+                        : HUDRewriteActivity.arcHeadAngle(
+                            time: source.time,
+                            reduceMotion: false
+                        ),
+                    trail: HUDRewriteActivity.arcTrail(reduceMotion: reduceMotion),
+                    fade: rewriting != nil ? 1 : teardownFade,
+                    showsGlow: false
+                )
+                .frame(width: HUDTheme.badgeSize, height: HUDTheme.badgeSize)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text(HUDView.rewritingAccessibilityLabel(ringStyleTitle)))
+            } else if failed {
+                Circle()
+                    .fill(HUDTheme.live.opacity(0.14))
+                    .frame(width: HUDTheme.badgeSize, height: HUDTheme.badgeSize)
+                Image(systemName: "exclamationmark.triangle")
+                    .font(DotType.font(10.5, .bold))
+                    .foregroundStyle(HUDTheme.live)
+            } else {
+                Circle()
+                    .fill(delivery.color.opacity(0.14))
+                    .frame(width: HUDTheme.badgeSize, height: HUDTheme.badgeSize)
+                Image(systemName: delivery.glyph)
+                    .font(DotType.font(10.5, .bold))
+                    .foregroundStyle(HUDTheme.statusInk(delivery.color, material: material))
+            }
+        }
+
+        if !announcing {
+            Text(title)
+                .font(HUDTheme.labelFont)
+                .tracking(HUDTheme.labelTracking)
+                .foregroundStyle(HUDTheme.statusInk(
+                    failed ? HUDTheme.live : delivery.color,
+                    material: material
+                ))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: titleCap, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
+                .accessibilityLabel(Text(accessibilityTitle))
+        }
+
+        if let card, !announcing, HUDView.showsCheckBadge(card) {
+            RewriteCheckBadge(warning: card.warning)
+        }
+    }
+}
+
 /// The indeterminate ring of the transcribing state.
 ///
 /// It is drawn rather than handed to `ProgressView` so the same geometry
@@ -1601,7 +1726,6 @@ struct LiveDot: View {
                 )
         }
         .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.09), value: presence)
     }
 }
 

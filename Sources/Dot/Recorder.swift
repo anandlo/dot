@@ -460,6 +460,9 @@ final class Recorder {
         store?.count ?? 0
     }
 
+    /// The take's locked sample store, for work that runs off the main actor.
+    var takeStore: AudioSampleStore? { store }
+
     /// A copy of the samples in `range` from the current recording.
     func samples(in range: Range<Int>) -> [Int16] {
         store?.samples(in: range) ?? []
