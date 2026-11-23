@@ -227,14 +227,34 @@ final class GlassSurfaceTests: XCTestCase {
             .frame(width: Self.cardSize.width, height: Self.cardSize.height)
         let flagged = HUDSurface(material: .black, useSystemGlass: false)
             .frame(width: Self.cardSize.width, height: Self.cardSize.height)
-        let first = try capture(backdrop: .colour, overlay: plain)
-        let second = try capture(backdrop: .colour, overlay: flagged)
-        let bare = try capture(backdrop: .colour, overlay: EmptyView(), requiresContent: false)
-        let box = try XCTUnwrap(
-            WindowCapture.changedBounds(first, bare),
-            "the Black card changed no pixel of the backdrop"
-        )
+        let first = try capture(backdrop: .solid(0.25), overlay: plain)
+        let second = try capture(backdrop: .solid(0.25), overlay: flagged)
+        let light = try capture(backdrop: .solid(0.90), overlay: plain)
+        for comparison in [second, light] {
+            guard comparison.width == first.width, comparison.height == first.height,
+                  comparison.scale == first.scale else {
+                return XCTFail("Black card captures must use matching bitmap geometry")
+            }
+        }
+        // Fractional backdrop seams can move between captures; they do not define the card.
+        let box = cardBox(first)
         let difference = WindowCapture.mad(first, second, rect: box)
+        let cornerInset = Int(ceil(2 * HUDTheme.cornerRadius * first.scale))
+        let edgeInset = Int(ceil(3 * first.scale))
+        var maximumBackdropDifference = 0.0
+        for y in (box.y + edgeInset) ..< (box.y + box.height - edgeInset) {
+            for x in (box.x + cornerInset) ..< (box.x + box.width - cornerInset) {
+                let darkPixel = first.pixel(x, y)
+                let lightPixel = light.pixel(x, y)
+                maximumBackdropDifference = max(
+                    maximumBackdropDifference,
+                    abs(darkPixel.0 - lightPixel.0),
+                    abs(darkPixel.1 - lightPixel.1),
+                    abs(darkPixel.2 - lightPixel.2)
+                )
+            }
+        }
+        XCTAssertEqual(maximumBackdropDifference, 0, accuracy: 1, "the Black card shows its backdrop")
         let middle = first.pixel(box.midX, box.midY)
         let top = first.pixel(box.midX, box.y + 6)
         let bottom = first.pixel(box.midX, box.y + box.height - 6)
