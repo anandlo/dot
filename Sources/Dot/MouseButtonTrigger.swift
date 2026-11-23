@@ -65,7 +65,7 @@ final class MouseButtonTrigger {
     /// When the grant is read again after the announcement. The announcement
     /// can arrive before `AXIsProcessTrusted` gives the new answer, so the
     /// first read waits a moment and a second read covers a slower update.
-    static let permissionReads: [TimeInterval] = [0.5, 2]
+    nonisolated static let permissionReads: [TimeInterval] = [0.5, 2]
 
     private var context: TapContext?
     private var permissionObserver: NSObjectProtocol?
