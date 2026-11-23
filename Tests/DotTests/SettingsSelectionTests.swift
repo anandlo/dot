@@ -28,7 +28,7 @@ final class SettingsSelectionTests: XCTestCase {
 
         init(
             config: DotConfig,
-            setKey: @escaping (String, String) -> String? = { _, _ in nil },
+            setKey: @escaping (String, String) async -> String? = { _, _ in nil },
             cache: CredentialCache = .shared,
             checkCache: any CredentialCheckCaching = CredentialCheckCache(),
             runsChecks: Bool = false,
@@ -77,8 +77,8 @@ final class SettingsSelectionTests: XCTestCase {
         }
 
         /// Saves a key the way Connect does, without a keyboard.
-        func save(_ secret: String) {
-            view.save(secret: secret)
+        func save(_ secret: String) async {
+            await view.save(secret: secret)
         }
     }
 
@@ -278,10 +278,10 @@ final class SettingsSelectionTests: XCTestCase {
     }
 
     /// The page says the Keychain refused the key, with the writer's words.
-    func testARefusedKeySaveIsShownOnThePage() throws {
+    func testARefusedKeySaveIsShownOnThePage() async throws {
         let refusal = "The Keychain did not give the key back."
         let harness = Harness(config: keyedConfig(), setKey: { _, _ in refusal })
-        harness.save("sk-test-key-0123456789abcdef")
+        await harness.save("sk-test-key-0123456789abcdef")
 
         let status = harness.credentials.status
         XCTAssertEqual(status.title, "Key not saved", "the label does not say the key was not saved")
@@ -296,14 +296,14 @@ final class SettingsSelectionTests: XCTestCase {
     }
 
     /// The next successful save replaces the refusal.
-    func testASavedKeyReplacesTheRefusalOnThePage() throws {
+    func testASavedKeyReplacesTheRefusalOnThePage() async throws {
         let refusal = "The Keychain did not give the key back."
         let harness = Harness(config: keyedConfig(), setKey: { _, _ in refusal })
-        harness.save("sk-test-key-0123456789abcdef")
+        await harness.save("sk-test-key-0123456789abcdef")
         XCTAssertEqual(harness.credentials.status, .notSaved(refusal), "the refusal was never shown")
 
         let saved = Harness(config: keyedConfig(), setKey: { _, _ in nil })
-        saved.save("sk-test-key-0123456789abcdef")
+        await saved.save("sk-test-key-0123456789abcdef")
         XCTAssertNotEqual(
             saved.credentials.status,
             .notSaved(refusal),
@@ -552,6 +552,20 @@ final class SettingsSelectionTests: XCTestCase {
                 checkCache: recording,
                 runsChecks: true
             )
+            // The page must be live before the keyboard is: a value present at the
+            // first body evaluation is the starting value, not an edit.
+            let storedEntry = CredentialCheckCache.entry(
+                providerID: ProviderIdentifier.openAI,
+                baseURL: "http://127.0.0.1:9/v1",
+                authStyle: settings.authStyle?.rawValue,
+                credential: storedKey
+            )
+            let askedOnAppear = await waitFor {
+                let names = await recording.recorded()
+                return names.contains(storedEntry)
+            }
+            XCTAssertTrue(askedOnAppear, "the page never asked about the row it opened on")
+
             harness.type(typedKey)
             let answered = await waitFor { harness.credentials.status == .notSaved(message) }
             XCTAssertTrue(

@@ -84,9 +84,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// for as long as the Keychain takes. It happens once per provider, here,
     /// and never on the path between a stop and a transcript.
     private let credentials = CredentialCache.shared
+    /// Keeps the press callback and the Stop that follows it from both rebuilding.
+    private let credentialRebuildGate = CredentialRebuildGate()
+    private var credentialPressID: String?
+    private var credentialPressSignature: ProviderSignature?
     private var statusItem: StatusItemController!
     private var hotkeys: GlobalHotkeyManager?
     private var provider: (any Provider)?
+    /// What the cache held when `provider` was built. A key that appears later
+    /// in Settings has to replace a provider built without it.
+    private var providerBuiltWithoutKey = true
+    private var providerBuildGeneration: UInt64 = 0
     private var lastTranscript: String?
     private var history = HistoryStore.loadEntries()
     /// The Markdown copy of the day's takes, when the person has turned it on.
@@ -217,9 +225,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .calibration(for: recordingDeviceUID, in: config.microphoneCalibration)?
             .noiseFloorDBFS
     }
-    /// The credential migration that runs off the main actor at launch.
-    private var migrationTask: Task<Void, Never>?
-
     /// The part of the configuration a provider is built from.
     ///
     /// Appearance, dwell, the microphone and the shortcuts live outside this, so
@@ -275,13 +280,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         logIdentityMigration()
         loadConfiguration()
-        warmCredentials()
-        migrateProviderIfNeeded()
         applyAppearance()
         // The material the app already has is not a change: only a pick shows a
         // preview, or every unrelated setting would flash the island.
         previewedMaterial = config.hudMaterial
         previewedVisualizer = config.hudVisualizer
+        // A keyless provider needs no credential read, so a Keychain prompt
+        // cannot be a reason to leave it unbuilt. The press callback must find
+        // an instance ready, or the first take has no transcriber.
+        if ProviderPreset.canBuildWithoutKey(config) {
+            rebuildProvider()
+        }
 
         hud.dwell = config.hudDwellSeconds
         hud.visualizer = config.hudVisualizer
@@ -336,10 +345,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerHotkeys()
         installTestTrigger()
         startProviderRefresh()
-        // The provider is built once the credential cache is warm, not here:
-        // building one resolves its key, and a re-signed build answers that
-        // read with a Keychain prompt. Waiting for it on this path froze the
-        // whole launch, island included, until someone clicked Allow.
+        // A keyed provider is built only after its key has been resolved: a
+        // re-signed build answers that read with a Keychain prompt, and waiting
+        // for it on this path froze the whole launch until someone clicked
+        // Allow. The keyless provider was built above without any such read.
         refreshMenu()
         logConfiguration()
         Log.shared.info("microphone.status", [
@@ -361,7 +370,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         saveConfiguration()
         assistant.terminate()
-        migrationTask?.cancel()
         stopLiveTranscription()
         transcriptionTask?.cancel()
         recorder.cancel()
@@ -393,6 +401,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The only credential question the launch path may ask.
+    ///
+    /// The probe answers from attributes, never from the item's data. An
+    /// injection point here lets a test pass a recording store and prove that
+    /// launch cannot decrypt anything.
+    nonisolated static func credentialLaunchProbe(store: CredentialBundleStore) -> CredentialProbe {
+        CredentialProbe(hasKey: { store.hasKey(for: $0) }, readKey: { _ in nil })
+    }
+
     /// Says what the identity migration moved.
     ///
     /// The migration itself runs before this method exists, because the
@@ -419,7 +436,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// there a key?", which cannot raise a prompt, so a Keychain prompt can never
     /// leave the app on a provider that was deleted.
     private func loadConfiguration() {
-        let loaded = ProviderMigration.loadConfiguration(from: DotConfig.defaultURL())
+        let loaded = ProviderMigration.loadConfiguration(
+            from: DotConfig.defaultURL(),
+            probe: Self.credentialLaunchProbe(store: CredentialStore.bundle)
+        )
         config = loaded.config
         logArguments.set(config.logTranscripts)
         // The history file is read against the limit this configuration asks
@@ -458,62 +478,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // dwell the same way twice, so the file has to hold what this launch
         // uses: the next launch reads it back.
         saveConfiguration()
-    }
-
-    /// Copies credentials written by an older build, and upgrades the launch
-    /// fallback when the copy makes one of its services usable.
-    ///
-    /// The Keychain work does not run here. A read of an item whose signature
-    /// changed puts a system prompt on screen and waits for an answer, and
-    /// waiting for it in `applicationDidFinishLaunching` froze the launch. The
-    /// work therefore runs on a background queue with a deadline: a prompt that
-    /// is never answered leaves the app on the provider the launch correction
-    /// chose and the copy runs again on the next launch, instead of hanging.
-    ///
-    /// Nothing here ever reads a key value into this method: the migration
-    /// copies secret to secret and reports only which providers it touched. The
-    /// configuration is written atomically before the provider is rebuilt.
-    private func migrateProviderIfNeeded() {
-        migrationTask = Task { [weak self] in
-            guard let report = await DotMigration.migrateCredentialsAtLaunch() else {
-                // The app is already usable: the provider was chosen before
-                // this task started, without asking for any key material.
-                Log.shared.warn("credential.migration.timedOut")
-                return
-            }
-            guard let self else { return }
-            if !report.copiedProviderIDs.isEmpty {
-                Log.shared.info("credential.migrated", [
-                    "providers": .string(report.copiedProviderIDs.joined(separator: ",")),
-                    "from": .string("service-name"),
-                ])
-                // A key that the copy just produced may have been answered as
-                // "no key" before it existed: forget the answer, so the rebuild
-                // below resolves the new one.
-                for id in report.copiedProviderIDs {
-                    self.credentials.invalidate(id)
-                }
-            }
-            if report.copiedFromLegacyTool {
-                Log.shared.info("credential.migrated", [
-                    "provider": .string(ProviderIdentifier.xiaomi),
-                    "from": .string("legacy-tool"),
-                ])
-            }
-            // The copy may have produced the key the launch correction could
-            // not see yet; a provider the user chose stays untouched.
-            let correction = self.launchCorrection
-            self.launchCorrection = nil
-            if ProviderMigration.upgrade(&self.config, after: correction) {
-                self.saveConfiguration()
-                Log.shared.info("provider.upgraded", [
-                    "provider": .string(self.config.provider),
-                    "reason": .string("key-available"),
-                ])
-            }
-            self.rebuildProvider()
-            self.refreshProviders()
-        }
     }
 
     // MARK: - HUD
@@ -1008,6 +972,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard state == .idle else { return }
         startedFromHotkey = fromHotkey
         capturePurpose = purpose
+        // A press is an explicit retry after a denial for the service it chose,
+        // but not after a key that was already read: later takes use the cache.
+        let selectedID = config.provider
+        credentials.retryDenied(for: selectedID)
+        credentialPressID = selectedID
+        credentialPressSignature = providerSignature
+        resolveCredentialForFirstUse()
 
         // There is no point in recording when the transcript could never be
         // made.
@@ -1467,6 +1438,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   - prefix: the text that is already final.
     ///   - total: how many requests the tail needs, for the card's progress.
     private func transcribe(samples: [Int16], prefix: String, total: Int) async throws -> String {
+        let selectedID = config.provider
+        if CredentialFirstUse.takeNeedsRebuild(
+            providerAvailable: provider != nil,
+            providerID: selectedID,
+            cache: credentials,
+            providerBuiltWithoutKey: providerBuiltWithoutKey,
+            buildGeneration: providerBuildGeneration
+        ) {
+            // The press that opened the take may still be waiting on a prompt,
+            // or the prompt may have resolved while its rebuild callback was
+            // queued behind this stop. A key that appeared in Settings is a new
+            // answer even when the provider itself is still non-nil.
+            if provider != nil { credentialRebuildGate.forget(selectedID) }
+            if !ProviderPreset.canBuildWithoutKey(config), credentials.resolvedKey(for: selectedID) == nil {
+                await CredentialFirstUse.resolve(selectedID, cache: credentials)
+            }
+            try Task.checkCancellation()
+            applyFirstUseRebuild(
+                providerID: selectedID,
+                signature: credentialPressSignature ?? providerSignature
+            )
+        }
         guard let provider else {
             throw ProviderError.unavailable("There is no provider.")
         }
@@ -2198,9 +2191,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Builds the provider the configuration selects.
     private func rebuildProvider() {
         providerSignature = ProviderSignature(provider: config.provider, providers: config.providers)
+        providerBuildGeneration = credentials.generation(for: config.provider)
+        providerBuiltWithoutKey = credentials.resolvedKey(for: config.provider) == nil
         refreshReadyCard()
         do {
-            provider = try ProviderRegistry.selectedProvider(config: config, credentials: credentials)
+            provider = try ProviderRegistry.selectedProvider(config: config, credentials: resolvedCredentialCache)
             Log.shared.info("provider.selected", ["provider": .string(provider?.id ?? "")])
         } catch {
             provider = nil
@@ -2233,22 +2228,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Resolves the keys once, off the main actor.
+    /// A cache view that only answers from keys already in memory.
     ///
-    /// A decrypting `SecItemCopyMatching` blocks for as long as the Keychain
-    /// takes — on a re-signed build this was measured at about fourteen
-    /// seconds — so the one read a session needs happens here, on a background
-    /// task, instead of inside a frame.
-    private func warmCredentials() {
+    /// Building a provider is synchronous and often happens on the main actor.
+    /// It must never be the call that reads the Keychain: the first read is made
+    /// by an explicit action, off the main actor and awaited to its answer.
+    private var resolvedCredentialCache: CredentialCache {
         let credentials = self.credentials
+        return CredentialCache(reader: { id in
+            guard let key = credentials.resolvedKey(for: id), !key.isEmpty else { return .missing }
+            return .key(key)
+        }, logsReads: false)
+    }
+
+    /// Reads the bundle on the first recording that needs this provider.
+    ///
+    /// Nothing at launch decrypts an item. The read runs off the main actor and
+    /// is awaited to its real answer: a SecurityAgent prompt can stay up longer
+    /// than any deadline, and the provider must be rebuilt when it is answered.
+    private func resolveCredentialForFirstUse() {
+        let id = config.provider
+        let signature = providerSignature
+        let needsRebuild = CredentialFirstUse.takeNeedsRebuild(
+            providerAvailable: provider != nil,
+            providerID: id,
+            cache: credentials,
+            providerBuiltWithoutKey: providerBuiltWithoutKey,
+            buildGeneration: providerBuildGeneration
+        )
+        guard needsRebuild else { return }
+        // The key can arrive in Settings while a provider built without it is
+        // still running. An old gate decision must not suppress that rebuild.
+        if provider != nil { credentialRebuildGate.forget(id) }
+        if ProviderPreset.canBuildWithoutKey(config) || credentials.resolvedKey(for: id) != nil {
+            applyFirstUseRebuild(providerID: id, signature: signature)
+            return
+        }
+        let credentials = self.credentials
+        guard !credentials.readFailed(id) else { return }
         Task.detached(priority: .userInitiated) { [weak self] in
-            credentials.warm(ProviderRegistry.builtInIDs)
-            await MainActor.run {
-                guard let self else { return }
-                self.rebuildProvider()
-                self.refreshProviders()
-                self.refreshReadyCard()
+            await CredentialFirstUse.resolve(id, cache: credentials) {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.applyFirstUseRebuild(providerID: id, signature: signature)
+                }
             }
+        }
+    }
+
+    /// The one main-actor decision shared by the press callback and a Stop.
+    private func applyFirstUseRebuild(providerID: String, signature: ProviderSignature?) {
+        guard credentialPressID == providerID, credentialPressSignature == signature else { return }
+        let ready = ProviderPreset.canBuildWithoutKey(config)
+            || (credentials.isResolved(providerID) && credentials.resolvedKey(for: providerID) != nil)
+        credentialRebuildGate.perform(
+            providerID: providerID,
+            selectedProviderID: config.provider,
+            signatureMatches: providerSignature == signature,
+            ready: ready,
+            generation: credentials.generation(for: providerID)
+        ) {
+            self.rebuildProvider()
+            self.refreshProviders()
+            self.refreshReadyCard()
         }
     }
 
@@ -2266,7 +2308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// this from the main actor froze the launch, island and all.
     private func refreshProviders() {
         let current = config
-        let credentials = self.credentials
+        let resolved = resolvedCredentialCache
         Task.detached(priority: .userInitiated) { [weak self] in
             let entries = MenuBuilder.providerRows(config: current) { id in
                 CredentialStore.hasKey(for: id)
@@ -2274,7 +2316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let available = await ProviderRegistry.availableProviders(
                 config: current,
-                credentials: credentials
+                credentials: resolved
             )
 
             var map: [String: Bool] = [:]
@@ -2320,34 +2362,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prompt.explanation = "The key for \(name) is kept in the Keychain, never in the configuration file."
         prompt.completion = { [weak self] secret in
             guard let self, let secret else { return }
-            do {
-                try CredentialStore.write(secret, providerID: providerID)
-                // The key is verified by reading it back. The read goes through
-                // the session cache, so the verification is also the one read
-                // the rest of the session will use.
-                credentials.invalidate(providerID)
-                let readBack = credentials.key(for: providerID)
-                guard readBack == secret else {
-                    throw ProviderError.invalidResponse("the Keychain did not give the key back")
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+                    try await CredentialStore.write(trimmed, providerID: providerID)
+                    self.credentials.invalidate(providerID)
+                    self.credentials.store(trimmed, for: providerID)
+                    // Defense in depth: if the key ever reached a log line by
+                    // mistake, the logger would write stars instead.
+                    Log.shared.registerSecret(secret)
+                    Log.shared.info("credential.stored", ["provider": .string(providerID)])
+                    self.rebuildProvider()
+                    self.refreshProviders()
+                    self.hud.showMessage(
+                        text: "Key saved. Using \(self.selectedProviderName).",
+                        symbol: "key"
+                    )
+                } catch {
+                    Log.shared.error("credential.failed", ["provider": .string(providerID)])
+                    self.hud.showMessage(text: error.localizedDescription, action: nil)
                 }
-                // Defense in depth: if the key ever reached a log line by
-                // mistake, the logger would write stars instead.
-                Log.shared.registerSecret(secret)
-                Log.shared.info("credential.stored", ["provider": .string(providerID)])
-                // The key belongs to the service the user chose, so nothing is
-                // inferred from it and no endpoint is rewritten. The provider
-                // is rebuilt even when the configuration did not change: the
-                // instance built before the save does not carry the new key
-                // yet.
-                self.rebuildProvider()
-                self.refreshProviders()
-                self.hud.showMessage(
-                    text: "Key saved. Using \(self.selectedProviderName).",
-                    symbol: "key"
-                )
-            } catch {
-                Log.shared.error("credential.failed", ["provider": .string(providerID)])
-                self.hud.showMessage(text: error.localizedDescription, action: nil)
             }
         }
         secretPrompt = prompt
@@ -2367,7 +2402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   - preset: the row the user picked.
     ///   - secret: the key, empty when the row needs none.
     /// - Returns: what the view shows.
-    private func connect(_ preset: ProviderPreset, key secret: String) -> ProviderConnectionResult {
+    private func connect(_ preset: ProviderPreset, key secret: String) async -> ProviderConnectionResult {
         let key = secret.trimmingCharacters(in: .whitespacesAndNewlines)
         if preset.key == .none {
             preset.apply(to: &config)
@@ -2382,14 +2417,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .failure("Paste a key first.", providerName: preset.name)
         }
         do {
-            try CredentialStore.write(key, providerID: preset.providerID)
+            try await CredentialStore.write(key, providerID: preset.providerID)
             credentials.invalidate(preset.providerID)
-            guard credentials.key(for: preset.providerID) == key else {
-                return .failure(
-                    "The Keychain did not give the key back.",
-                    providerName: preset.name
-                )
-            }
+            credentials.store(key, for: preset.providerID)
             // Defense in depth: if the key ever reached a log line by mistake,
             // the logger writes stars instead.
             Log.shared.registerSecret(key)
@@ -2461,7 +2491,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else {
                     return .failure("Dot is not running.", providerName: preset.name)
                 }
-                return self.connect(preset, key: key)
+                return await self.connect(preset, key: key)
             },
             onFinish: { [weak self] in
                 self?.markWelcomeSeen()
@@ -2593,11 +2623,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onSetAPIKey: { [weak self] secret, providerID in
                 guard let self else { return "Dot is not running." }
                 do {
-                    try CredentialStore.write(secret, providerID: providerID)
+                    let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+                    try await CredentialStore.write(trimmed, providerID: providerID)
                     credentials.invalidate(providerID)
-                    guard credentials.key(for: providerID) == secret else {
-                        return "The Keychain did not give the key back."
-                    }
+                    credentials.store(trimmed, for: providerID)
                     Log.shared.registerSecret(secret)
                     // The endpoint may be rewritten by the view from the same
                     // key; rebuilding here makes the new key usable even when
@@ -2612,7 +2641,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onDeleteAPIKey: { [weak self] providerID in
                 guard let self else { return "Dot is not running." }
                 do {
-                    try CredentialStore.delete(providerID: providerID)
+                    try await CredentialStore.delete(providerID: providerID)
                     self.credentials.invalidate(providerID)
                     self.rebuildProvider()
                     self.refreshProviders()
@@ -2625,7 +2654,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return "Dot is not running." }
                 do {
                     for preset in ProviderPreset.all {
-                        try CredentialStore.delete(providerID: preset.providerID)
+                        try await CredentialStore.delete(providerID: preset.providerID)
                     }
                     self.credentials.invalidateAll()
                     self.rebuildProvider()

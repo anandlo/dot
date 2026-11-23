@@ -121,9 +121,9 @@ extension VoicePresetTests {
         XCTAssertEqual(cache.readCount, 1)
     }
 
-    func testTheAsyncFactoryGivesUpOnASlowKeychain() async {
+    func testTheAsyncFactoryUsesALateKeychainAnswer() async {
         let cache = CredentialCache(reader: { _ in
-            Thread.sleep(forTimeInterval: 0.5)
+            Thread.sleep(forTimeInterval: 0.1)
             return .key("late")
         })
         let provider = await VoiceProviderFactory.make(
@@ -131,7 +131,7 @@ extension VoicePresetTests {
             credentials: cache,
             timeout: .milliseconds(50)
         )
-        XCTAssertNil((provider as? DeepgramVoiceProvider)?.apiKey)
+        XCTAssertEqual((provider as? DeepgramVoiceProvider)?.apiKey, "late")
         XCTAssertNotNil(provider, "a slow Keychain must not remove the row")
     }
 

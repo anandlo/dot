@@ -148,7 +148,7 @@ extension VoiceProviderFactory {
 
     /// Builds a provider without blocking the caller on the Keychain.
     ///
-    /// The read runs off the caller's actor under ``BoundedWork`` and the answer
+    /// The read runs off the caller's actor and is awaited to its real answer.
     /// is put in ``CredentialCache`` by the cache itself, so a second call in the
     /// same session costs nothing. This is the overload a screen should use: the
     /// synchronous one is for code that already runs on a background queue.
@@ -174,10 +174,7 @@ extension VoiceProviderFactory {
         let id = normalized(providerID)
         var key: String?
         if id != VoiceProviderID.apple {
-            let outcome = await BoundedWork.run(within: timeout) { () -> String? in
-                credentials.key(for: id)
-            }
-            key = outcome.value ?? nil
+            key = await CredentialFirstUse.resolve(id, cache: credentials) ? credentials.resolvedKey(for: id) : nil
         }
         return make(
             providerID: id,
