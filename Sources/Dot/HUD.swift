@@ -174,10 +174,10 @@ final class HUD {
     /// It is the progress of the emergence: `0` is the notch, `1` is the card at
     /// rest, and it passes `1` on the way in, which is the overshoot the shape
     /// spends on the card's own height. The island leaves faster than it arrives:
-    /// the arrival is a pour out of the screen and takes 0.55 s with a little
+    /// the arrival is a pour out of the screen and takes 0.65 s with a little
     /// overshoot on the settle, and the departure is the same shape going home,
-    /// critically damped and over in 0.36 s.
-    private var emergeSpring = Spring(value: 0, target: 0, duration: 0.55, bounce: 0.12)
+    /// critically damped and over in 0.45 s.
+    private var emergeSpring = Spring(value: 0, target: 0, duration: 0.65, bounce: 0.12)
     /// The opacity of a card that arrives with its motion reduced.
     ///
     /// Reduced motion keeps the card where it rests and crossfades it instead,
@@ -1235,7 +1235,7 @@ final class HUD {
             reduceFade.to(1)
         } else {
             if poursFromTheNotch {
-                emergeSpring.to(target: 1, duration: 0.55, bounce: 0.12)
+                emergeSpring.to(target: 1, duration: 0.65, bounce: 0.12)
             } else {
                 emergeSpring.to(target: 1, duration: 0.36, bounce: 0.16)
             }
@@ -2265,7 +2265,7 @@ final class HUD {
            reduceMotion || model.content < 0.05 || dismissal.elapsed >= 0.12 {
             dismissal.shapeStarted = true
             if !reduceMotion {
-                emergeSpring.to(target: 0, duration: 0.36, bounce: 0)
+                emergeSpring.to(target: 0, duration: 0.45, bounce: 0)
             }
         }
         let left = reduceMotion ? model.presence <= 0.001 : emergeSpring.value <= 0.001
