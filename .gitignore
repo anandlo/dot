@@ -13,6 +13,7 @@ dist/*
 */.DS_Store
 */**/.DS_Store
 *.log
+__pycache__/
 .taste-skill/
 # Local-only font comparison: ITF Free Font License permits self-hosting for the
 # owner's own use but forbids redistribution, so these files must never be staged.

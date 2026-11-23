@@ -1,0 +1,107 @@
+name: Dot gate
+description: Build, test, and verify Dot with the checks shared by CI, nightly, and releases.
+
+inputs:
+  bundle:
+    description: Build and verify the application bundle after the tests.
+    required: false
+    default: "true"
+  test-runs:
+    description: Number of serial test runs, checked one at a time.
+    required: false
+    default: "1"
+  evidence-dir:
+    description: Directory for test logs and render evidence.
+    required: false
+    default: "."
+  evidence-label:
+    description: Label written above the test results in the step summary.
+    required: false
+    default: "test"
+
+runs:
+  using: composite
+  steps:
+    - name: Select Xcode
+      shell: bash
+      run: |
+        sw_vers
+        xcodebuild -version
+        sudo xcode-select -s /Applications/Xcode.app
+
+    - name: Assert the Swift version
+      shell: bash
+      run: |
+        swift --version
+        major="$(swift --version | sed -n 's/.*Swift version \([0-9][0-9]*\)\..*/\1/p' | head -1)"
+        if [ "${major:-0}" -lt 6 ]; then
+          echo "::error::Package.swift declares swift-tools-version 6.0; this image's default toolchain is Swift ${major:-unknown}. Move the job to a newer runner image."
+          exit 1
+        fi
+
+    # The licence forbids redistributing the font, so every run fetches and checks it.
+    - name: Fetch the typeface
+      shell: bash
+      run: ./scripts/fetch-fonts.sh
+
+    - name: Build tests without compiler warnings
+      shell: bash
+      run: |
+        set -uo pipefail
+        swift build --build-tests 2>&1 | tee build.log
+        status="${PIPESTATUS[0]}"
+        if [ "$status" -ne 0 ]; then exit "$status"; fi
+        python3 scripts/ci/check_build_log.py build.log
+
+    - name: Use full motion
+      shell: bash
+      run: |
+        defaults write com.apple.universalaccess reduceMotion -bool false || true
+        swift -e 'import AppKit; print("accessibilityDisplayShouldReduceMotion =", NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)' || true
+
+    # Serial: several tests time the island's springs and composite offscreen
+    # windows through the window server; parallel processes disturb them.
+    - name: Run serial tests and check every log
+      shell: bash
+      env:
+        DOT_CI_EVIDENCE_DIR: ${{ inputs.evidence-dir }}/render-evidence
+        EVIDENCE_DIR: ${{ inputs.evidence-dir }}
+        EVIDENCE_LABEL: ${{ inputs.evidence-label }}
+      run: |
+        set -uo pipefail
+        mkdir -p "$EVIDENCE_DIR/render-evidence"
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          printf '### %s\n' "$EVIDENCE_LABEL" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        failed=0
+        for run in $(seq 1 "${{ inputs.test-runs }}"); do
+          log="$EVIDENCE_DIR/test-${run}.log"
+          swift test 2>&1 | tee "$log"
+          status="${PIPESTATUS[0]}"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::swift test run $run exited with status $status"
+            failed=1
+          fi
+          if ! python3 scripts/ci/check_test_log.py "$log"; then
+            echo "::error::the test log check failed for run $run"
+            failed=1
+          fi
+        done
+        exit "$failed"
+
+    - name: Build the application bundle
+      if: inputs.bundle == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        ./scripts/build.sh 2>&1 | tee bundle.log
+        status="${PIPESTATUS[0]}"
+        if [ "$status" -ne 0 ]; then
+          exit "$status"
+        fi
+        python3 scripts/ci/check_build_log.py --require-modern-icon bundle.log
+
+    - name: Verify the application bundle
+      if: inputs.bundle == 'true'
+      shell: bash
+      run: python3 scripts/ci/verify_bundle.py --require-modern-icon build/Dot.app

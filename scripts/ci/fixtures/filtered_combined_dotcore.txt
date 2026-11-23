@@ -1,0 +1,8 @@
+Test Suite 'All tests' started at 2026-11-20 00:00:00.000.
+Test Suite 'dotPackageTests.xctest' started at 2026-11-20 00:00:00.000.
+Test Case '-[DotCoreTests.PromptEvalTests testThePromptEvalMeasuresTheContentEachStyleAdds]' started.
+Test Case '-[DotCoreTests.PromptEvalTests testThePromptEvalMeasuresTheContentEachStyleAdds]' skipped (0.001 seconds).
+Test Suite 'dotPackageTests.xctest' passed at 2026-11-20 00:00:01.000.
+	 Executed 1 test, with 1 test skipped and 0 failures (0 unexpected) in 1.000 (1.000) seconds
+Test Suite 'All tests' passed at 2026-11-20 00:00:01.000.
+	 Executed 1 test, with 1 test skipped and 0 failures (0 unexpected) in 1.000 (1.000) seconds
