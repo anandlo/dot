@@ -569,8 +569,8 @@ enum UIPreview {
 
     /// Renders the General page before any take has taught the microphone.
     ///
-    /// The calibration row is present with no profile, so its explanation is
-    /// discoverable and the empty subtitle is part of the reviewed surface.
+    /// The calibration row is present with no profile, so its Reset control
+    /// is disabled and its tooltip says nothing was learned yet.
     static func renderSettingsWithoutProfile(to directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let providers = MenuBuilder.providerRows(config: .default) { _ in false }

@@ -975,7 +975,7 @@ final class SettingsPresentationTests: XCTestCase {
         )
         XCTAssertEqual(
             SettingsExplanation.dwellSubtitle,
-            "How long a copied result or an answer stays on the island."
+            "How long results stay on the island."
         )
         XCTAssertEqual(
             SettingsExplanation.dwellHelp,
@@ -991,7 +991,7 @@ final class SettingsPresentationTests: XCTestCase {
         )
         XCTAssertEqual(
             SettingsExplanation.segmentSubtitle,
-            "The longest stretch of audio sent in one request. A longer recording is sent in parts of this length."
+            "Longer recordings are sent in parts of this length."
         )
         XCTAssertEqual(
             SettingsExplanation.segmentHelp,
@@ -1111,6 +1111,34 @@ final class SettingsPresentationTests: XCTestCase {
         XCTAssertEqual(editor.toolTip, SettingsExplanation.standingRulesHelp)
         XCTAssertTrue(editor.isEditable, "the explained editor lost its editing")
         XCTAssertTrue(editor.isSelectable, "the explained editor lost its selection")
+    }
+
+    func testGeneralPickersExposeTheirExplanationsAsNativeHelp() throws {
+        let general = settingsHost(tab: 0, config: .default)
+        for (label, help) in [
+            ("Recording mode", SettingsExplanation.recordingModeSubtitle),
+            ("Microphone", SettingsExplanation.microphoneSubtitle),
+        ] {
+            let picker = try XCTUnwrap(select(label, in: general))
+            XCTAssertEqual(picker.toolTip, help, label)
+            XCTAssertEqual(picker.accessibilityHelp(), help, label)
+        }
+    }
+
+    /// The retention picker is drawn inside Output: below Recording mode and
+    /// above Microphone, the first rows of the sections either side of it.
+    func testTheRetentionPickerSitsInTheOutputSection() throws {
+        let general = settingsHost(tab: 0, config: .default)
+        func top(_ label: String) throws -> CGFloat {
+            let element = try XCTUnwrap(select(label, in: general), "\(label) was not drawn")
+            let frame = element.convert(element.bounds, to: general)
+            return general.isFlipped ? frame.minY : general.bounds.height - frame.maxY
+        }
+        let recording = try top("Recording mode")
+        let retention = try top("Transcripts to keep")
+        let microphone = try top("Microphone")
+        XCTAssertLessThan(recording, retention, "retention moved above Recording mode")
+        XCTAssertLessThan(retention, microphone, "retention moved below the Microphone section")
     }
 
     private func settingsHost(tab: Int, config: DotConfig) -> NSHostingView<AnyView> {
