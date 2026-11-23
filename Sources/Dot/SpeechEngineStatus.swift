@@ -399,21 +399,14 @@ final class SpeechCredentialChecks: ObservableObject {
             storedReadFailed = true
             return .unknown
         }
-        let outcome = await BoundedWork.run(within: keyDeadline) {
-            cache.key(for: providerID)
-        }
-        switch outcome {
-        case .timedOut:
-            return .unknown
-        case .finished(let value):
-            guard cache.isResolved(providerID) else {
-                if cache.readFailed(providerID) {
-                    storedReadFailed = true
-                }
-                return .unknown
+        _ = await cache.resolved(for: providerID)
+        guard cache.isResolved(providerID) else {
+            if cache.readFailed(providerID) {
+                storedReadFailed = true
             }
-            return .read(value)
+            return .unknown
         }
+        return .read(cache.resolvedKey(for: providerID))
     }
 }
 

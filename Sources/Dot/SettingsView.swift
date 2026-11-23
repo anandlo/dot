@@ -27,11 +27,11 @@ struct SettingsView: View {
     /// Called after any real change to the configuration.
     private let onChange: () -> Void
     /// Stores an API key. Returns an error message, or `nil` on success.
-    private let onSetAPIKey: (String, String) -> String?
+    private let onSetAPIKey: (String, String) async -> String?
     /// Deletes an API key for a provider. Returns an error message, or `nil` on success.
-    private let onDeleteAPIKey: (String) -> String?
+    private let onDeleteAPIKey: (String) async -> String?
     /// Deletes all API keys for all providers from Keychain.
-    private let onDeleteAllAPIKeys: () -> String?
+    private let onDeleteAllAPIKeys: () async -> String?
     /// Opens the shortcut recorder for the record shortcut.
     private let onChangeShortcut: () -> Void
     /// Opens the shortcut recorder for the paste shortcut.
@@ -119,9 +119,9 @@ struct SettingsView: View {
         providers: [MenuProvider],
         tab: Int = 0,
         onChange: @escaping () -> Void,
-        onSetAPIKey: @escaping (String, String) -> String?,
-        onDeleteAPIKey: @escaping (String) -> String? = { _ in nil },
-        onDeleteAllAPIKeys: @escaping () -> String? = { nil },
+        onSetAPIKey: @escaping (String, String) async -> String?,
+        onDeleteAPIKey: @escaping (String) async -> String? = { _ in nil },
+        onDeleteAllAPIKeys: @escaping () async -> String? = { nil },
         onChangeShortcut: @escaping () -> Void,
         onChangePasteShortcut: @escaping () -> Void = {},
         onChangePaletteShortcut: @escaping () -> Void = {},
@@ -829,7 +829,7 @@ struct SettingsView: View {
                         .focused($focusedField, equals: .apiKey)
                         .disabled(selectedPreset.key == ProviderPreset.KeyRequirement.none)
                         .onSubmit {
-                            connect()
+                            Task { @MainActor in await self.connect() }
                         }
                         .onChange(of: keyField.text) { _, newKey in
                             let trimmed = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -842,7 +842,7 @@ struct SettingsView: View {
                         .accessibilityHint("The key for the chosen service. It is stored in the Keychain.")
 
                     Button(connectingPrimary ? "Connecting…" : connectTitle) {
-                        connect()
+                        Task { @MainActor in await self.connect() }
                     }
                     .buttonStyle(DotPrimaryButtonStyle())
                     .disabled(!canConnect)
@@ -850,7 +850,7 @@ struct SettingsView: View {
 
                     if hasStoredKey(selectedPreset) && selectedPreset.key != .none {
                         Button(role: .destructive) {
-                            deleteKey(for: selectedPreset)
+                            Task { @MainActor in await self.deleteKey(for: selectedPreset) }
                         } label: {
                             Image(systemName: "trash")
                                 .font(DotType.font(12, .semibold))
@@ -958,9 +958,9 @@ struct SettingsView: View {
     }
 
     /// Stores the key of the chosen service and selects it.
-    private func connect() {
+    private func connect() async {
         guard canConnect else { return }
-        save(secret: trimmedKey)
+        await save(secret: trimmedKey)
     }
 
     /// Stores a key, then selects the row with it.
@@ -972,7 +972,7 @@ struct SettingsView: View {
     /// difference between the two calls.
     ///
     /// - Parameter secret: the key to store, as it was typed.
-    func save(secret: String) {
+    func save(secret: String) async {
         let preset = selectedPreset
         let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
         connectingPrimary = true
@@ -980,7 +980,7 @@ struct SettingsView: View {
         defer { connectingPrimary = false }
 
         if preset.key != .none, !trimmed.isEmpty {
-            if let message = onSetAPIKey(trimmed, preset.providerID) {
+            if let message = await onSetAPIKey(trimmed, preset.providerID) {
                 credentials.markNotSaved(message)
                 focusedField = .apiKey
                 return
@@ -996,8 +996,8 @@ struct SettingsView: View {
         startCredentialCheck(immediate: true)
     }
 
-    private func deleteKey(for preset: ProviderPreset) {
-        guard onDeleteAPIKey(preset.providerID) == nil else { return }
+    private func deleteKey(for preset: ProviderPreset) async {
+        guard await onDeleteAPIKey(preset.providerID) == nil else { return }
         savedProviders.remove(preset.providerID)
         keyField.text = ""
         startCredentialCheck(immediate: true)
@@ -1120,8 +1120,7 @@ struct SettingsView: View {
 
     private var hasModelsKey: Bool {
         if !trimmedKey.isEmpty { return true }
-        if hasStoredKey(selectedPreset) { return true }
-        return CredentialCache.shared.key(for: config.provider).map { !$0.isEmpty } ?? false
+        return hasStoredKey(selectedPreset)
     }
 
     /// Whether the picker has a real model to name: a configured one counts,
@@ -1210,12 +1209,20 @@ struct SettingsView: View {
         guard !headless else { return }
         guard providerID != ProviderIdentifier.apple else { return }
         isLoadingModels = true
-        let key = trimmedKey.isEmpty ? CredentialCache.shared.key(for: providerID) : trimmedKey
+        let typedKey = trimmedKey
         let baseURLStr = config.settings(for: providerID).baseURL
         let baseURL = (baseURLStr != nil && !baseURLStr!.isEmpty) ? URL(string: baseURLStr!) : nil
         let authStyle = config.settings(for: providerID).authStyle
 
         Task {
+            let key: String?
+            if typedKey.isEmpty {
+                CredentialCache.shared.retryDenied()
+                _ = await CredentialFirstUse.resolve(providerID)
+                key = CredentialCache.shared.resolvedKey(for: providerID)
+            } else {
+                key = typedKey
+            }
             let fetched = await ProviderModelCatalog.fetchModels(
                 for: providerID,
                 baseURL: baseURL,

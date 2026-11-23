@@ -106,9 +106,9 @@ struct AssistantPage: View {
     /// Called after a change that a rebuild or a save depends on.
     let onChange: () -> Void
     /// Stores a key. Returns an error message, or `nil` on success.
-    let onSetKey: (String, String) -> String?
+    let onSetKey: (String, String) async -> String?
     /// Deletes a key. Returns an error message, or `nil` on success.
-    let onDeleteKey: (String) -> String?
+    let onDeleteKey: (String) async -> String?
 
     @Environment(\.assistantKeyedProviders) private var keyedProviders
     @Environment(\.assistantConnectionPreview) private var connectionPreview
@@ -261,8 +261,8 @@ struct AssistantPage: View {
                         field: $keyField,
                         hasStoredKey: hasKey(row.id),
                         isConnecting: connecting,
-                        onConnect: connect,
-                        onDelete: deleteKey,
+                        onConnect: { Task { @MainActor in await self.connect() } },
+                        onDelete: { Task { @MainActor in await self.deleteKey() } },
                         subtitle: row.keyNote
                     )
                 }
@@ -1630,7 +1630,7 @@ struct AssistantPage: View {
         !connecting && !trimmedKey.isEmpty
     }
 
-    private func connect() {
+    private func connect() async {
         guard canConnect else { return }
         let service = row
         let secret = trimmedKey
@@ -1638,7 +1638,7 @@ struct AssistantPage: View {
         note = nil
         focusedField = nil
         defer { connecting = false }
-        if let message = onSetKey(secret, service.id) {
+        if let message = await onSetKey(secret, service.id) {
             note = KeyNote(detail: message, tone: .bad)
             focusedField = .apiKey
             return
@@ -1697,9 +1697,9 @@ struct AssistantPage: View {
         loadModels()
     }
 
-    private func deleteKey() {
+    private func deleteKey() async {
         let service = row
-        if let message = onDeleteKey(service.id) {
+        if let message = await onDeleteKey(service.id) {
             note = KeyNote(detail: message, tone: .bad)
             return
         }

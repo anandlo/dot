@@ -86,6 +86,19 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
     /// Whether the service refuses requests without a key.
     public var needsKey: Bool { key == .required }
 
+    /// Whether a provider named by this id may need a key.
+    ///
+    /// Several presets can name one provider id: the custom endpoint shares
+    /// `openai` with the hosted service and declares an optional key. One row
+    /// with a key requirement is enough to keep the first-use read, so a local
+    /// server is never mistaken for the keyless on-device transcriber. An id
+    /// Dot does not declare is treated as keyed as well.
+    public static func requiresKey(for providerID: String) -> Bool {
+        let rows = declared.filter { $0.providerID == providerID }
+        guard !rows.isEmpty else { return true }
+        return rows.contains { $0.key != .none }
+    }
+
     // MARK: - The rows
 
     /// The transcriber built into macOS: no key, no network, no account.
@@ -240,6 +253,21 @@ public struct ProviderPreset: Identifiable, Equatable, Sendable {
     ///   network, and the custom row is the user's own URL.
     public static func endpoint(forProviderID id: String) -> ProviderPreset? {
         declared.first { $0.providerID == id && $0.baseURL != nil }
+    }
+
+    /// Whether the selected provider can be built without any credential.
+    ///
+    /// The on-device transcriber has no key at all. A custom endpoint on this
+    /// Mac declares an optional key, so an empty credential is enough to build
+    /// it; a hosted row with the same provider id still needs its key.
+    public static func canBuildWithoutKey(_ config: DotConfig) -> Bool {
+        let row = presenting(config)
+        if row.key == .none { return true }
+        guard row.key == .optional,
+              let host = host(of: config.settings(for: config.provider).baseURL),
+              EndpointPolicy.isLoopback(host)
+        else { return false }
+        return true
     }
 
     /// The row the picker shows for a configuration.
