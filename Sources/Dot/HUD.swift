@@ -870,6 +870,16 @@ final class HUD {
     /// Whether the card is on screen.
     var isVisible: Bool { model.isVisible }
 
+    /// The mode the real card is drawing. The headless stop test reads it to
+    /// prove the working card replaced the recording card before held work ends.
+    var debugMode: HUDMode { model.mode }
+
+    #if DEBUG
+    /// Every mode the card has entered, in order. The stop ordering test reads
+    /// it to prove a forbidden working state was never entered even briefly.
+    private(set) var debugModeHistory: [HUDMode] = []
+    #endif
+
     /// The grammar the transcript card is naming. The headless test reads it to
     /// prove the chip is attached to the text it describes; the app never does.
     var debugGrammar: DictationTarget? { model.grammar }
@@ -2451,6 +2461,9 @@ final class HUD {
         var wasTranscript = false
         if case .transcript = model.mode { wasTranscript = true }
         model.mode = mode
+        #if DEBUG
+        debugModeHistory.append(mode)
+        #endif
         model.cardSize = size
         if changed {
             // A chip belongs to the transcript card that carried it.
