@@ -1111,155 +1111,101 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let inFlightLiveTask = liveTask
         liveTask = nil
         let recording = recorder.stop()
-        state = .working
-
         let samples = recording.sampleCount
-        let initialLedger = self.ledger
+        let ledgerSnapshot = self.ledger
             ?? TranscriptLedger(commitSeconds: maxSegmentSeconds(self.provider))
+        let capturedBook = config.microphoneCalibration
+        let capturedDeviceUID = recordingDeviceUID
 
         Log.shared.info("recording.stopped", [
             "duration_s": .double(recording.duration),
             "samples": .int(samples),
             "peak_dbfs": .double(recording.peakDBFS),
-            "final_samples": .int(initialLedger.committedSamples),
-            "final_chunks": .int(initialLedger.committedText.count),
+            "final_samples": .int(ledgerSnapshot.committedSamples),
+            "final_chunks": .int(ledgerSnapshot.committedText.count),
         ])
 
-        // The only thing that sends nothing at all: not a single sample.
-        guard samples > 0 else {
-            inFlightLiveTask?.cancel()
-            self.ledger = nil
-            hud.showMessage(text: "Nothing was recorded.", action: nil)
-            finishWork()
-            return
-        }
-
-        learn(from: recording)
-        refreshMenu()
         // The guard reads the frontmost application when the words are ready,
         // not when the recording stops: the transcript can arrive seconds
-        // later, and what is frontmost then is what a paste would land in.
-
-        transcriptionTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            guard TranscriptionLifecycle.end(
-                isTerminating: self.isTerminating,
-                isCancelled: Task.isCancelled
-            ) == .deliver else {
-                self.abandonTranscription()
-                return
-            }
-
-            let initialLedger = self.ledger ?? initialLedger
-            let lastTranscribed = initialLedger.provisional?.endSample ?? initialLedger.committedSamples
-            let uncoveredCount = max(0, samples - lastTranscribed)
-
-            // VAD check: determine whether trailing audio after the last live request contains speech
-            let uncoveredHasSpeech: Bool = {
-                guard uncoveredCount > 0 else { return false }
-                let start = max(0, samples - uncoveredCount)
-                guard start < samples else { return false }
-                let hop = 256
-                let frames = uncoveredCount / hop
-                guard frames > 0 else { return false }
-                var maxRMS = 0.0
-                for f in 0..<frames {
-                    var sumSq = 0.0
-                    let fStart = start + f * hop
-                    for i in fStart..<(fStart + hop) {
-                        let s = Double(recording.samples[i]) / 32768.0
-                        sumSq += s * s
-                    }
-                    let rms = sqrt(sumSq / Double(hop))
-                    if rms > maxRMS { maxRMS = rms }
-                    if maxRMS > 0.015 { return true }
-                }
-                return false
-            }()
-
-            // Fast-Path: If trailing audio is release silence/room noise, await the cancelled
-            // live task for the same second a last partial gets and promote its transcript
-            // immediately. TaskCompletion.wait is bounded even when the request ignores
-            // cancellation, so a stuck upload cannot hold the stop open.
-            if !uncoveredHasSpeech, let activeTask = inFlightLiveTask {
-                _ = await TaskCompletion.wait(for: activeTask, upTo: Live.partialWait)
-                let currentLedger = self.ledger ?? initialLedger
-                let candidateText = currentLedger.displayText
-                if !candidateText.isEmpty {
-                    Log.shared.info("transcription.fastpath.reusedProvisional", [
-                        "samples": .int(samples),
-                        "characters": .int(candidateText.count),
-                    ])
-                    self.ledger = nil
-                    self.handleTranscript(candidateText)
-                    return
-                }
-                // The partial said nothing usable, so the tail below is the one
-                // that sends this audio. The live task must not commit a chunk
-                // the tail is about to send again, and it must not keep a
-                // connection open while the stop waits for its own.
-                activeTask.cancel()
-            } else if let activeTask = inFlightLiveTask {
-                // Speech continued right to the stop; cancel the obsolete live
-                // task immediately so the final tail request is dispatched
-                // without waiting for it.
-                activeTask.cancel()
-            }
-
-            let currentLedger = self.ledger ?? initialLedger
-            self.ledger = nil
-
-            let trailingTolerance = uncoveredHasSpeech ? WAVSpec.sampleRate / 4 : WAVSpec.sampleRate * 2
-            switch currentLedger.stopPlan(sampleCount: samples, trailingTolerance: trailingTolerance) {
-            case .alreadyFinal(let text):
-                Log.shared.info("transcription.reused", [
-                    "samples": .int(samples),
-                    "characters": .int(text.count),
+        // later, and what is frontmost then is where a paste lands.
+        transcriptionTask = StopResponse.perform(StopHandoff(
+            hud: hud,
+            recording: recording,
+            ledger: ledgerSnapshot,
+            liveTask: inFlightLiveTask,
+            deviceUID: capturedDeviceUID,
+            capturedBook: capturedBook,
+            currentBook: { [weak self] in self?.config.microphoneCalibration ?? [:] },
+            isTerminating: { [weak self] in self?.isTerminating ?? true },
+            ownsCard: { [weak self] in self?.state == .working },
+            enterWorking: { [weak self] in self?.state = .working },
+            markMenuNotRecording: { [weak self] in
+                self?.statusItem.menuState.isRecording = false
+            },
+            clearLedger: { [weak self] in self?.ledger = nil },
+            finishEmpty: { [weak self] in
+                guard let self else { return }
+                self.ledger = nil
+                self.finishWork()
+            },
+            applyCalibration: { [weak self] book, entry in
+                guard let self else { return }
+                // ConfigStore.onWrite schedules the debounced save.
+                // applicationWillTerminate calls saveConfiguration before it
+                // cancels this task, so a queued write is flushed on the way out.
+                self.config.microphoneCalibration = book
+                Log.shared.info("microphone.calibration.learned", [
+                    "recordings": .int(entry.observedSamples),
+                    "floor_dbfs": .double(entry.noiseFloorDBFS),
+                    "peak_dbfs": .double(entry.peakDBFS),
                 ])
-                self.handleTranscript(text)
-            case .send(let range, let prefix):
-                let piece = Array(recording.samples[range])
+            },
+            observe: { samples, peak, device, book, at in
+                await Task.detached(priority: .userInitiated) {
+                    stopCalibrationLearning(
+                        samples: samples,
+                        peakDBFS: peak,
+                        deviceUID: device,
+                        book: book,
+                        at: at
+                    )
+                }.value
+            },
+            transcribe: { [weak self] piece, prefix in
+                guard let self else { return "" }
                 let segments = self.plannedSegments(for: piece)
                 Log.shared.info("transcription.tail", [
                     "samples": .int(piece.count),
                     "segments": .int(segments),
-                    "final_samples": .int(currentLedger.committedSamples),
+                    "final_samples": .int(ledgerSnapshot.committedSamples),
                 ])
-                self.hud.showTranscribing()
-                do {
-                    let transcript = try await self.transcribe(
-                        samples: piece,
-                        prefix: prefix,
-                        total: segments
-                    )
-                    self.handleTranscript(transcript)
-                } catch is CancellationError {
-                    // A genuine cancellation: the task stopped, so no result is
-                    // coming. The card must not keep saying "transcribing".
-                    self.abandonTranscription()
-                } catch {
-                    guard TranscriptionLifecycle.end(
-                        isTerminating: self.isTerminating,
-                        isCancelled: Task.isCancelled
-                    ) == .deliver else {
-                        self.abandonTranscription()
-                        return
-                    }
-                    // The tail failed, but the audio the live loop already
-                    // committed is transcribed and final. Losing it because the
-                    // last few seconds failed would throw away the recording.
-                    let fallback = currentLedger.displayText
-                    if !fallback.isEmpty {
-                        Log.shared.info("transcription.tail.fallbackToPrefix", [
-                            "characters": .int(fallback.count),
-                        ])
-                        self.handleTranscript(fallback)
-                    } else {
-                        self.handleFailure(error)
-                    }
+                return try await self.transcribe(samples: piece, prefix: prefix, total: segments)
+            },
+            deliver: { [weak self] text, source in
+                guard let self else { return }
+                switch source {
+                case .complete:
+                    Log.shared.info("transcription.reused", [
+                        "samples": .int(samples),
+                        "characters": .int(text.count),
+                    ])
+                case .live:
+                    Log.shared.info("transcription.fastpath.reusedProvisional", [
+                        "samples": .int(samples),
+                        "characters": .int(text.count),
+                    ])
+                case .tail:
+                    break
+                case .fallback:
+                    Log.shared.info("transcription.tail.fallbackToPrefix", [
+                        "characters": .int(text.count),
+                    ])
                 }
-            }
-        }
+                self.handleTranscript(text)
+            },
+            abandon: { [weak self] in self?.abandonTranscription() },
+            fail: { [weak self] error in self?.handleFailure(error) }
+        ))
     }
 
     /// Drops the recording without sending it anywhere.
