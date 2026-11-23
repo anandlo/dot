@@ -2175,6 +2175,8 @@ struct SettingsView: View {
                     materialCard(.black, name: HUDMaterial.black.title)
                 }
                 .padding(.vertical, 9)
+                SettingsDivider()
+                toggleRow(title: "Reduce motion", subtitle: "The island appears without the notch animation.", isOn: reduceMotionBinding)
             }
 
             SettingsSection("Voice visualizer") {
@@ -2475,6 +2477,16 @@ struct SettingsView: View {
             set: { value in
                 guard config.recordingMode != value else { return }
                 config.recordingMode = value
+            }
+        )
+    }
+
+    private var reduceMotionBinding: Binding<Bool> {
+        Binding(
+            get: { config.reduceMotion },
+            set: { value in
+                guard config.reduceMotion != value else { return }
+                config.reduceMotion = value
             }
         )
     }
