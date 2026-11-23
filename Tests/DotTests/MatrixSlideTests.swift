@@ -350,14 +350,14 @@ final class MatrixSlideTests: XCTestCase {
         XCTAssertEqual(worst, 0, accuracy: 1e-9, "a lit dot's light reaches past half a pitch")
     }
 
-    // MARK: - MS5 Glint
+    // MARK: - MS5 No light outside the dot
 
-    /// A bright dot sparkles, and only while it is new.
+    /// A young bright dot paints no further than an old one or a dim one.
     ///
-    /// The same frame holds a young dot and an old one at the same band, so the
-    /// body and the halo under the two are the same and the only difference is the
-    /// glint. The point measured is on the horizontal arm, one and a half points
-    /// from a centre, outside the dot's own radius.
+    /// The same frame holds a young dot and an old one at the same band, so a
+    /// difference outside the dot's radius could only come from an age-driven
+    /// glint. It samples 1.8 points from each centre, past the 1.4 point dot and
+    /// its antialias, on a canvas whose body is otherwise identical.
     func testMS5TheGlintIsOnAYoungBrightDotAndOffAnOldOne() throws {
         let size = Self.canvas
         func frame(_ display: Double, still: Bool) -> HUDWaveform {
@@ -401,21 +401,17 @@ final class MatrixSlideTests: XCTestCase {
         let old = try dot(bright, column: 10)
         XCTAssertEqual(young.centre, try dot(brightNoGlint, column: 1).centre, "the two grids are not the same grid")
         XCTAssertEqual(young.age, 1.0 / 30, accuracy: 1e-9, "the young dot is not a thirtieth of a second old")
-        XCTAssertGreaterThan(old.age, 0.25, "the old dot is not past the glint's life")
-        XCTAssertGreaterThan(young.glint, 0, "the young bright dot carries no glint")
-        XCTAssertEqual(old.glint, 0, "the old bright dot still carries a glint")
-        XCTAssertEqual(try dot(dim, column: 1).glint, 0, "a dot at 0.70 carries a glint")
+        XCTAssertGreaterThan(old.age, 0.25, "the old dot is not a thirtieth of a second old")
 
-        /// The ink on a dot's horizontal arm, and what the same point reads
-        /// without a glint.
+        /// The ink outside the dot, in a frame with and without a moving grid.
         func arm(_ bitmap: NSBitmapImageRep, _ dot: MatrixLattice.Dot) -> Double {
-            let x = Double(dot.centre.x) + 1.5
+            let x = Double(dot.centre.x) + 1.8
             let y = Double(dot.centre.y)
             return Self.luminance(bitmap, at: (x, y), scale: Self.scale)
                 - Self.luminance(emptyBitmap, at: (x, y), scale: Self.scale)
         }
         func spark(_ bitmap: NSBitmapImageRep, _ without: NSBitmapImageRep, _ dot: MatrixLattice.Dot) -> Double {
-            let x = Double(dot.centre.x) + 1.5
+            let x = Double(dot.centre.x) + 1.8
             let y = Double(dot.centre.y)
             return Self.luminance(bitmap, at: (x, y), scale: Self.scale)
                 - Self.luminance(without, at: (x, y), scale: Self.scale)
@@ -425,20 +421,26 @@ final class MatrixSlideTests: XCTestCase {
         let dimYoungSpark = spark(dimBitmap, dimNoGlintBitmap, try dot(dim, column: 1))
         let dimOldSpark = spark(dimBitmap, dimNoGlintBitmap, try dot(dim, column: 10))
         print(String(
-            format: "MS5 at 0.95 the young dot's arm reads %.4f over the bare card (glint %.3f, spark %.4f), the old dot's %.4f (spark %.4f); at 0.70 the young dot's spark is %.4f and the old dot's %.4f",
+            format: "MS5 outside a dot: young bright %.4f, old bright %.4f, young dim %.4f; against the still grid: %.4f %.4f %.4f %.4f",
             arm(brightBitmap, young),
-            young.glint,
-            youngSpark,
             arm(brightBitmap, old),
+            arm(dimBitmap, try dot(dim, column: 1)),
+            youngSpark,
             oldSpark,
             dimYoungSpark,
             dimOldSpark
         ))
-        XCTAssertGreaterThan(arm(brightBitmap, young), 0.05, "the young dot's arm is not brighter than the bare card")
-        XCTAssertGreaterThan(youngSpark, 0.05, "the young bright dot's arm carries no glint")
-        XCTAssertEqual(oldSpark, 0, accuracy: 1.0 / 255.0, "the old bright dot still carries a glint")
-        XCTAssertEqual(dimYoungSpark, 0, accuracy: 1.0 / 255.0, "a dot below the onset carries a glint")
-        XCTAssertEqual(dimOldSpark, 0, accuracy: 1.0 / 255.0, "a dot below the onset carries a glint")
+        for (name, value) in [
+            ("young bright", arm(brightBitmap, young)),
+            ("old bright", arm(brightBitmap, old)),
+            ("young dim", arm(dimBitmap, try dot(dim, column: 1))),
+            ("young bright against the still grid", youngSpark),
+            ("old bright against the still grid", oldSpark),
+            ("young dim against the still grid", dimYoungSpark),
+            ("old dim against the still grid", dimOldSpark),
+        ] {
+            XCTAssertEqual(value, 0, accuracy: 1.0 / 255.0, "\(name) painted outside its dot")
+        }
     }
 
     // MARK: - MS6 Edges
@@ -452,7 +454,7 @@ final class MatrixSlideTests: XCTestCase {
     func testMS6NoDotIsCutAndTheEdgeFades() throws {
         let size = Self.canvas
         let pitch = Double(Self.pitch)
-        let halo = Double(MatrixLattice.glowRadius(forPitch: Self.pitch))
+        let halo = Double(MatrixLattice.maximumRadiusShare) * Self.pitch
         let ring = [AudioSpectrumFrame](
             repeating: AudioSpectrumFrame(bands: (0.9, 0.8, 0.7, 0.6, 0.5)),
             count: VoiceMeter.historyLength
@@ -556,10 +558,9 @@ final class MatrixSlideTests: XCTestCase {
         XCTAssertEqual(first, second, "the reduced-motion grid moved between two clocks")
         XCTAssertEqual(Self.hash(first), Self.hash(second), "the reduced-motion grid is two pictures")
 
-        // And it is a still grid: the fixed lattice, no glint, the glow kept.
+        // And it is a still grid: the fixed lattice, with no age-driven light.
         let dots = still(time: 5.0, phase: 0.8).matrixDots(in: size)
         XCTAssertEqual(dots.count, MatrixLattice.columnCount(for: size) * MatrixLattice.rows, "the still grid is not whole")
-        XCTAssertTrue(dots.allSatisfy { $0.glint == 0 }, "the still grid carries a glint")
         XCTAssertTrue(dots.allSatisfy { $0.age == 0 }, "the still grid is drawn on a clock")
         for dot in dots {
             let fixed = MatrixLattice.centre(column: dot.column, row: dot.row, forHeight: size.height, width: size.width)

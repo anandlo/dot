@@ -165,7 +165,7 @@ private struct TourWave: View {
                 let h = max(1.6, CGFloat(pow(level, 0.8)) * (mid - 1))
                 let x = CGFloat(i) * (bw + gap)
                 let path = Path(roundedRect: CGRect(x: x, y: mid - h, width: bw, height: h * 2), cornerRadius: bw / 2)
-                let color = level > 0.55 ? HUDTheme.live : Color.white.opacity(0.35 + level * 0.6)
+                let color = level > 0.55 ? HUDTheme.recording : Color.white.opacity(0.35 + level * 0.6)
                 context.fill(path, with: .color(color))
             }
         }
@@ -329,7 +329,7 @@ private struct SpeakScene: View {
                             .lineLimit(1)
                     }
                     Rectangle()
-                        .fill(HUDTheme.live)
+                        .fill(HUDTheme.recording)
                         .frame(width: 2, height: 16)
                         .opacity((t * 2).truncatingRemainder(dividingBy: 1) < 0.6 ? 1 : 0)
                         .padding(.leading, 2)

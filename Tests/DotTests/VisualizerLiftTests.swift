@@ -12,11 +12,10 @@ import XCTest
 /// 0.2386 of luminance behind the visualizer's canvas, and the amber the styles
 /// are drawn with was measured on a card whose material was 0.1413. That is a
 /// light ink on a light surface, which is the pair a contrast ratio cannot carry.
-/// ``HUDTheme/visualizerGlassLift`` mixes each style's lit ink toward the card's
-/// ink on the glass material, and there is one thing it must never touch: the
-/// black card. Its renders are compared byte for byte between the tree that ships
-/// the lift and the tree that does not, so the ten frames below are written here
-/// rather than in the styles' own suites.
+/// The gold ramp replaced the old card-wide lift toward white. Each material
+/// owns its stops, so a canvas must draw the same bytes whatever lift an older
+/// caller passes. Its renders are compared byte for byte between two lift values,
+/// so the ten frames below are written here rather than in the styles' own suites.
 ///
 /// Three tests. The first holds the scope of the lift: a canvas on the black
 /// material draws the same pixels whatever the token says, the same canvas on the
@@ -61,15 +60,12 @@ final class VisualizerLiftTests: XCTestCase {
 
     // MARK: - The scope of the lift
 
-    /// The lift reaches the glass material and nothing else.
+    /// No canvas is lifted toward the card's white.
     ///
-    /// The black card's ink is the ink every style was drawn for, so a canvas on
-    /// the black material is the same picture at a lift of zero and at a lift of
-    /// one: the token cannot repaint the card's default material however it is
-    /// re-measured. The same canvas on the glass material must move, or the token
-    /// is a number nothing reads. Filament and Wave must not move on either
-    /// material: Filament's blackbody colour is the design, and Wave has its own
-    /// ink for each material.
+    /// The gold ramp carries the contrast on both materials; mixing an old lift
+    /// into any style would pull its gold back toward porcelain. Every canvas
+    /// must therefore be the same picture at a lift of zero and at a lift of one,
+    /// on both materials, including Filament and Wave.
     func testTheLiftIsGlassOnly() throws {
         let frame = VisualizerRedesignTests.previewSnapshot(at: Self.moments[1])
         for visualizer in [HUDVisualizer.stretch, .haloEdge] {
@@ -82,19 +78,11 @@ final class VisualizerLiftTests: XCTestCase {
             )
             let glass = try hash(canvas(frame, visualizer, material: .glass, lift: 0))
             let glassLifted = try hash(canvas(frame, visualizer, material: .glass, lift: 1))
-            if visualizer == .stretch {
-                XCTAssertEqual(
-                    glass,
-                    glassLifted,
-                    "Wave drew a different glass canvas at a lift of one"
-                )
-            } else {
-                XCTAssertNotEqual(
-                    glass,
-                    glassLifted,
-                    "\(visualizer) drew the same glass canvas at a lift of zero and one"
-                )
-            }
+            XCTAssertEqual(
+                glass,
+                glassLifted,
+                "\(visualizer) drew a different glass canvas at a lift of one"
+            )
             print("LIFT \(visualizer): black \(black), glass \(glass) at 0, \(glassLifted) at 1")
         }
         let filament = try hash(canvas(frame, .filament, material: .glass, lift: 0))

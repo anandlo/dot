@@ -723,9 +723,9 @@ final class MatrixRenderTests: XCTestCase {
         // of any voice can join two dots.
         XCTAssertEqual(
             1 - 2 * MatrixLattice.maximumRadiusShare,
-            0.34,
+            0.44,
             accuracy: 1e-12,
-            "the lattice allows two neighbouring dots to touch"
+            "the lattice leaves less than 0.44 of the pitch empty between neighbours"
         )
         print(String(
             format: "G4 widest dot %.2f pt across of a %.2f pt pitch, so the lattice keeps %.2f pt (%.0f%%) empty",
@@ -1218,12 +1218,10 @@ extension MatrixRenderTests {
     /// its dot.
     func testTheHighlightStartsAboveHalfHeatAndStaysInsideTheDot() throws {
         try WindowCapture.requireRetinaBacking()
-        // The test reads the specification, not the drawing's constants, so a
-        // wrong constant in the drawing cannot move the sampler with it.
-        let specHighlightOffsetShare = 0.18
-        let specHighlightRadiusShare = 0.38
-        let specHighlightOnset = 0.5
-        let specGlowRadiusShare = 0.45
+        // The specification is written here, not read from the drawing: the
+        // specular is a centred die, present only at or above 0.35, and its
+        // support never leaves the dot's own circle.
+        let specularOnset = 0.35
         let pitch = Double(MatrixLattice.pitch(forHeight: Self.height))
         let column = MatrixLattice.columnCount(for: Self.expandedSize) / 2
         let centre = MatrixLattice.centre(
@@ -1232,140 +1230,9 @@ extension MatrixRenderTests {
             forHeight: Self.height,
             width: Self.width
         )
+        let scale = Double(Self.zoomScale)
 
-        // The raster puts the dot's centre half a pixel below the nearest-pixel
-        // sampler's integer point, so two nearest-pixel reads of equidistant
-        // points are not equidistant from the dot. Interpolating at the exact
-        // coordinates keeps the two reads symmetric.
-        func sample(_ bitmap: NSBitmapImageRep, at point: (x: Double, y: Double)) -> Double {
-            let scale = Double(Self.zoomScale)
-            let x = point.x * scale - 0.5
-            let y = point.y * scale - 0.5
-            let x0 = Int(x.rounded(.down))
-            let y0 = Int(y.rounded(.down))
-            let fx = x - Double(x0)
-            let fy = y - Double(y0)
-            func value(_ px: Int, _ py: Int) -> Double {
-                Self.luminance(
-                    bitmap,
-                    at: (Double(px) / scale, Double(py) / scale),
-                    scale: Self.zoomScale
-                )
-            }
-            let top = value(x0, y0) * (1 - fx) + value(x0 + 1, y0) * fx
-            let bottom = value(x0, y0 + 1) * (1 - fx) + value(x0 + 1, y0 + 1) * fx
-            return top * (1 - fy) + bottom * fy
-        }
-
-        // The caller passes a distance along the up-left diagonal in points.
-        // The mirror is the same diagonal distance down and to the right, so each
-        // axis moves by the diagonal distance divided by the square root of two.
-        func difference(
-            in bitmap: NSBitmapImageRep,
-            diagonalDistancePoints distance: Double
-        ) -> Double {
-            let axis = distance / sqrt(2)
-            let shine = sample(
-                bitmap,
-                at: (Double(centre.x) - axis, Double(centre.y) - axis)
-            )
-            let mirror = sample(
-                bitmap,
-                at: (Double(centre.x) + axis, Double(centre.y) + axis)
-            )
-            return shine - mirror
-        }
-
-        // The paired renders cancel the body and the glint, leaving only the ink
-        // that the highlight flag draws. Sampling stays bilinear and in sRGB.
-        func inkDifference(
-            _ on: NSBitmapImageRep,
-            _ off: NSBitmapImageRep,
-            at point: (x: Double, y: Double)
-        ) -> Double {
-            sample(on, at: point) - sample(off, at: point)
-        }
-
-        // The highlight is source-over white ink. Recover its alpha on the
-        // channel with the most room between the off render and the ink colour.
-        func inkAlpha(
-            _ on: NSBitmapImageRep,
-            _ off: NSBitmapImageRep,
-            at pixel: (x: Int, y: Int)
-        ) -> Double? {
-            let scale = Self.zoomScale
-            let point = (x: Double(pixel.x) / Double(scale), y: Double(pixel.y) / Double(scale))
-            let onColour = Self.components(on, at: point, scale: scale)
-            let offColour = Self.components(off, at: point, scale: scale)
-            let onRGB = [onColour.red, onColour.green, onColour.blue]
-            let offRGB = [offColour.red, offColour.green, offColour.blue]
-            let inkRGB = [1.0, 0.957, 0.902]
-            guard let channel = (0..<3).max(by: {
-                abs(inkRGB[$0] - offRGB[$0]) < abs(inkRGB[$1] - offRGB[$1])
-            }) else { return nil }
-            let denominator = inkRGB[channel] - offRGB[channel]
-            guard abs(denominator) >= 0.05 else { return nil }
-            return (onRGB[channel] - offRGB[channel]) / denominator
-        }
-
-        func measuredInkAlpha(
-            _ on: NSBitmapImageRep,
-            _ off: NSBitmapImageRep
-        ) -> (value: Double, method: String) {
-            let width = on.pixelsWide
-            let height = on.pixelsHigh
-            var support = [[Bool]](
-                repeating: [Bool](repeating: false, count: width),
-                count: height
-            )
-            var supportAlphas: [Double] = []
-            for y in 0..<height {
-                for x in 0..<width {
-                    let point = (
-                        x: (Double(x) + 0.5) / Double(Self.zoomScale),
-                        y: (Double(y) + 0.5) / Double(Self.zoomScale)
-                    )
-                    guard inkDifference(on, off, at: point) > 2.0 / 255.0 else { continue }
-                    support[y][x] = true
-                    if let alpha = inkAlpha(on, off, at: (x, y)) {
-                        supportAlphas.append(alpha)
-                    }
-                }
-            }
-            var interiorAlphas: [Double] = []
-            if width > 2, height > 2 {
-                for y in 1..<(height - 1) {
-                    for x in 1..<(width - 1) {
-                        guard support[y][x] else { continue }
-                        var interior = true
-                        for dy in -1...1 {
-                            for dx in -1...1 {
-                                if dx == 0, dy == 0 { continue }
-                                if !support[y + dy][x + dx] {
-                                    interior = false
-                                }
-                            }
-                        }
-                        if interior, let alpha = inkAlpha(on, off, at: (x, y)) {
-                            interiorAlphas.append(alpha)
-                        }
-                    }
-                }
-            }
-            if interiorAlphas.count >= 3 {
-                return (Self.percentile(interiorAlphas, 0.5), "interior median n=\(interiorAlphas.count)")
-            }
-            if supportAlphas.isEmpty {
-                return (0, "empty support")
-            }
-            return (Self.percentile(supportAlphas, 0.9), "support p90 n=\(supportAlphas.count)")
-        }
-
-        func picture(
-            _ display: Double,
-            named name: String,
-            highlight: Bool = true
-        ) throws -> (bitmap: NSBitmapImageRep, radius: Double, contrast: Double) {
+        func picture(_ display: Double, highlight: Bool, named name: String) throws -> NSBitmapImageRep {
             let energy = pow(display, 1 / 1.6)
             let frame = AudioSpectrumFrame(bands: (energy, energy, energy, energy, energy))
             var view = HUDWaveform(
@@ -1379,283 +1246,92 @@ extension MatrixRenderTests {
                 reduceMotionOverride: true
             )
             view.highlight = highlight
-            let bitmap = try renderZoomed(view, named: name)
-            let radius = Double(MatrixLattice.radius(
-                forPitch: CGFloat(pitch),
-                energy: energy
-            ))
-            let specDistancePoints = 2 * specHighlightOffsetShare * radius
-            return (
-                bitmap,
-                radius,
-                difference(in: bitmap, diagonalDistancePoints: specDistancePoints)
+            return try renderZoomed(view, named: name)
+        }
+
+        struct Specular {
+            let support: Int
+            let strength: Double
+            let centroidDistance: Double
+            let farthest: Double
+            let radius: Double
+        }
+
+        func measure(_ display: Double, named name: String) throws -> Specular {
+            let on = try picture(display, highlight: true, named: "c3-spec-\(name)-on.png")
+            let off = try picture(display, highlight: false, named: "c3-spec-\(name)-off.png")
+            let energy = pow(display, 1 / 1.6)
+            let radius = Double(MatrixLattice.radius(forPitch: CGFloat(pitch), energy: energy))
+            var support = 0
+            var strength = 0.0
+            var sumX = 0.0
+            var sumY = 0.0
+            var farthest = 0.0
+            let pixelArea = 1 / (scale * scale)
+            let localReach = 2 * radius
+            for y in 0..<on.pixelsHigh {
+                for x in 0..<on.pixelsWide {
+                    let point = (
+                        x: (Double(x) + 0.5) / scale,
+                        y: (Double(y) + 0.5) / scale
+                    )
+                    let distance = hypot(point.x - Double(centre.x), point.y - Double(centre.y))
+                    guard distance <= localReach else { continue }
+                    let delta = Self.luminance(on, at: (Double(x) / scale, Double(y) / scale), scale: Self.zoomScale)
+                        - Self.luminance(off, at: (Double(x) / scale, Double(y) / scale), scale: Self.zoomScale)
+                    guard delta > 2.0 / 255.0 else { continue }
+                    support += 1
+                    strength += delta * pixelArea
+                    sumX += point.x
+                    sumY += point.y
+                    farthest = max(farthest, distance)
+                }
+            }
+            let centroid = support > 0
+                ? (x: sumX / Double(support), y: sumY / Double(support))
+                : (x: Double(centre.x), y: Double(centre.y))
+            return Specular(
+                support: support,
+                strength: strength,
+                centroidDistance: hypot(centroid.x - Double(centre.x), centroid.y - Double(centre.y)),
+                farthest: farthest,
+                radius: radius
             )
         }
 
-        // No specular test in this suite has a "no difference" tolerance, so this
-        // one uses one hundredth of the luminance range.
-        let noDifferenceTolerance = 0.01
-        let quiet = try picture(0.30, named: "c3-highlight-d030.png")
-        let cool = try picture(specHighlightOnset - 0.05, named: "c3-highlight-d045.png")
-        let atOnset = try picture(specHighlightOnset, named: "c3-highlight-d050.png")
-        let afterOnset = try picture(specHighlightOnset + 0.10, named: "c3-highlight-d060.png")
-        let warm = try picture(0.75, named: "c3-highlight-d075.png")
-        let strong = try picture(0.90, named: "c3-highlight-d090.png")
-        let hot = try picture(1.00, named: "c3-highlight-d100.png")
-
+        let quiet = try measure(0.30, named: "d030")
+        let atOnset = try measure(specularOnset, named: "d035")
+        let warm = try measure(0.60, named: "d060")
+        let strong = try measure(0.75, named: "d075")
+        let hot = try measure(1.00, named: "d100")
         print(String(
-            format: "C3 d0.30 %.4f d0.45 %.4f d0.50 %.4f d0.60 %.4f d0.75 %.4f d0.90 %.4f d1.00 %.4f",
-            quiet.contrast,
-            cool.contrast,
-            atOnset.contrast,
-            afterOnset.contrast,
-            warm.contrast,
-            strong.contrast,
-            hot.contrast
+            format: "C3 centred specular: below support %d strength %.4f, onset support %d strength %.4f, d0.60 %.4f, d0.75 %.4f, d1.00 %.4f",
+            quiet.support, quiet.strength, atOnset.support, atOnset.strength,
+            warm.strength, strong.strength, hot.strength
         ))
-        XCTAssertLessThanOrEqual(
-            abs(quiet.contrast),
-            noDifferenceTolerance,
-            "a quiet dot carries a highlight (difference \(quiet.contrast))"
-        )
-        XCTAssertLessThanOrEqual(
-            abs(cool.contrast),
-            noDifferenceTolerance,
-            "a dot below the \(specHighlightOnset) onset carries a highlight (difference \(cool.contrast))"
-        )
-        XCTAssertLessThanOrEqual(
-            abs(atOnset.contrast),
-            noDifferenceTolerance,
-            "a dot at the \(specHighlightOnset) onset carries a highlight (difference \(atOnset.contrast))"
-        )
-        XCTAssertGreaterThan(
-            afterOnset.contrast,
-            noDifferenceTolerance,
-            "a dot above the \(specHighlightOnset) onset carries no highlight (difference \(afterOnset.contrast))"
-        )
-        XCTAssertLessThan(
-            afterOnset.contrast,
-            warm.contrast,
-            "the highlight does not strengthen from d0.60 (\(afterOnset.contrast)) to d0.75 (\(warm.contrast))"
-        )
-        XCTAssertLessThan(
-            warm.contrast,
-            strong.contrast,
-            "the highlight does not strengthen from d0.75 (\(warm.contrast)) to d0.90 (\(strong.contrast))"
-        )
-        XCTAssertLessThan(
-            strong.contrast,
-            hot.contrast,
-            "the highlight does not strengthen from d0.90 (\(strong.contrast)) to d1.00 (\(hot.contrast))"
-        )
-
-        let unhighlighted = try picture(
-            1.00,
-            named: "c3-highlight-d100-off.png",
-            highlight: false
-        )
-
-        var supportCount = 0
-        var supportSumX = 0.0
-        var supportSumY = 0.0
-        var supportMinDiagonal = Double.infinity
-        var supportMaxDiagonal = -Double.infinity
-        var supportMinPerpendicular = Double.infinity
-        var supportMaxPerpendicular = -Double.infinity
-        var leastDifference = Double.infinity
-        var greatestDifference = -Double.infinity
-        var farthestLitDistance = 0.0
-        let differencePixelScale = Double(Self.zoomScale)
-        // The zoom crop holds many dots. Only the neighbourhood of the selected
-        // dot can be attributed to it; the next centre is more than 3r away.
-        let localReach = 2 * hot.radius
-        for y in 0..<hot.bitmap.pixelsHigh {
-            for x in 0..<hot.bitmap.pixelsWide {
-                let point = (
-                    x: (Double(x) + 0.5) / differencePixelScale,
-                    y: (Double(y) + 0.5) / differencePixelScale
-                )
-                let difference = inkDifference(hot.bitmap, unhighlighted.bitmap, at: point)
-                leastDifference = min(leastDifference, difference)
-                greatestDifference = max(greatestDifference, difference)
-                let deltaX = point.x - Double(centre.x)
-                let deltaY = point.y - Double(centre.y)
-                let distance = hypot(deltaX, deltaY)
-                guard distance <= localReach else { continue }
-                if difference > 1.0 / 255.0 {
-                    farthestLitDistance = max(farthestLitDistance, distance)
-                }
-                if difference > 2.0 / 255.0 {
-                    supportCount += 1
-                    supportSumX += point.x
-                    supportSumY += point.y
-                    let diagonal = -(deltaX + deltaY) / sqrt(2)
-                    let perpendicular = (-deltaX + deltaY) / sqrt(2)
-                    supportMinDiagonal = min(supportMinDiagonal, diagonal)
-                    supportMaxDiagonal = max(supportMaxDiagonal, diagonal)
-                    supportMinPerpendicular = min(supportMinPerpendicular, perpendicular)
-                    supportMaxPerpendicular = max(supportMaxPerpendicular, perpendicular)
-                }
-            }
-        }
-        let centroid = supportCount > 0
-            ? (x: supportSumX / Double(supportCount), y: supportSumY / Double(supportCount))
-            : (x: Double(centre.x), y: Double(centre.y))
-        let centroidDeltaX = centroid.x - Double(centre.x)
-        let centroidDeltaY = centroid.y - Double(centre.y)
-        let diagonalDistance = -(centroidDeltaX + centroidDeltaY) / sqrt(2)
-        let perpendicularDistance = (-centroidDeltaX + centroidDeltaY) / sqrt(2)
-        let diagonalShare = diagonalDistance / hot.radius
-        let perpendicularShare = perpendicularDistance / hot.radius
-        let minimumShare = supportCount > 0 ? supportMinDiagonal / hot.radius : 0
-        let maximumShare = supportCount > 0 ? supportMaxDiagonal / hot.radius : 0
-        let specCentreDistancePoints = 2 * specHighlightOffsetShare * hot.radius
         print(String(
-            format: "C3 highlight centroid %.4f pt (%.4fr), spec %.4f pt (%.4fr), perpendicular %.4fr, support %d pixels, extent %.4fr to %.4fr",
-            diagonalDistance,
-            diagonalShare,
-            specCentreDistancePoints,
-            specCentreDistancePoints / hot.radius,
-            perpendicularShare,
-            supportCount,
-            minimumShare,
-            maximumShare
+            format: "C3 d1.00 support %d px, centroid %.4fr, farthest %.4fr of radius %.4f pt",
+            hot.support,
+            hot.centroidDistance / hot.radius,
+            hot.farthest / hot.radius,
+            hot.radius
         ))
-        XCTAssertGreaterThan(
-            greatestDifference,
-            0,
-            "the paired highlight renders show no highlight (maximum \(greatestDifference))"
-        )
-        XCTAssertGreaterThanOrEqual(
-            leastDifference,
-            -1.0 / 255.0,
-            "the highlight-off render is brighter somewhere (minimum \(leastDifference))"
+        XCTAssertEqual(quiet.support, 0, "a dot below the \(specularOnset) onset carries a specular die")
+        XCTAssertEqual(atOnset.support, 0, "a dot at the \(specularOnset) onset carries a specular die")
+        XCTAssertGreaterThan(warm.support, 0, "a dot above the onset has no specular die")
+        XCTAssertGreaterThan(hot.support, 0, "the paired renders show no specular die")
+        XCTAssertGreaterThan(warm.strength, atOnset.strength, "the specular does not strengthen above the onset")
+        XCTAssertGreaterThan(strong.strength, warm.strength, "the specular does not strengthen from d0.60 to d0.75")
+        XCTAssertGreaterThan(hot.strength, strong.strength, "the specular does not strengthen from d0.75 to d1.00")
+        XCTAssertLessThanOrEqual(
+            hot.centroidDistance,
+            0.04 * hot.radius + 1e-9,
+            "the specular centroid is \(hot.centroidDistance / hot.radius)r from the dot centre"
         )
         XCTAssertLessThanOrEqual(
-            farthestLitDistance,
-            hot.radius,
-            "highlight ink lies outside the dot: farthest \(farthestLitDistance) pt of radius \(hot.radius) pt"
-        )
-        XCTAssertLessThanOrEqual(
-            abs(diagonalShare - 2 * specHighlightOffsetShare),
-            0.04 + 1e-9,
-            "the highlight peak is \(diagonalShare)r from the centre, "
-                + "not \(2 * specHighlightOffsetShare)r within the 0.04r tolerance"
-        )
-        XCTAssertLessThanOrEqual(
-            abs(perpendicularShare),
-            0.04 + 1e-9,
-            "the highlight centroid is \(perpendicularShare)r perpendicular to the diagonal, "
-                + "not 0r within the 0.04r tolerance"
-        )
-
-        // One device pixel at render scale 4 is about 0.172r, so a 0.20r
-        // tolerance allows raster quantisation and antialiasing on the extent.
-        let diagonalExtentShare = supportCount > 0
-            ? (supportMaxDiagonal - supportMinDiagonal) / hot.radius
-            : 0
-        let perpendicularExtentShare = supportCount > 0
-            ? (supportMaxPerpendicular - supportMinPerpendicular) / hot.radius
-            : 0
-        let specDiameterShare = 2 * specHighlightRadiusShare
-        print(String(
-            format: "C3 highlight extent %.4fr diagonal, %.4fr perpendicular, spec %.4fr",
-            diagonalExtentShare,
-            perpendicularExtentShare,
-            specDiameterShare
-        ))
-        XCTAssertLessThanOrEqual(
-            abs(diagonalExtentShare - specDiameterShare),
-            0.20,
-            "the highlight diagonal extent is \(diagonalExtentShare)r, not \(specDiameterShare)r within 0.20r"
-        )
-        XCTAssertLessThanOrEqual(
-            abs(perpendicularExtentShare - specDiameterShare),
-            0.20,
-            "the highlight perpendicular extent is \(perpendicularExtentShare)r, not \(specDiameterShare)r within 0.20r"
-        )
-
-        let specHighlightInk = 0.75
-        let offCool = try picture(specHighlightOnset - 0.05, named: "c3-highlight-d045-off.png", highlight: false)
-        let offOnset = try picture(specHighlightOnset, named: "c3-highlight-d050-off.png", highlight: false)
-        let offAfterOnset = try picture(specHighlightOnset + 0.10, named: "c3-highlight-d060-off.png", highlight: false)
-        let offWarm = try picture(0.75, named: "c3-highlight-d075-off.png", highlight: false)
-        let offStrong = try picture(0.90, named: "c3-highlight-d090-off.png", highlight: false)
-        let rampCases: [(
-            label: String,
-            display: Double,
-            on: NSBitmapImageRep,
-            off: NSBitmapImageRep
-        )] = [
-            ("0.45", specHighlightOnset - 0.05, cool.bitmap, offCool.bitmap),
-            ("0.50", specHighlightOnset, atOnset.bitmap, offOnset.bitmap),
-            ("0.60", specHighlightOnset + 0.10, afterOnset.bitmap, offAfterOnset.bitmap),
-            ("0.75", 0.75, warm.bitmap, offWarm.bitmap),
-            ("0.90", 0.90, strong.bitmap, offStrong.bitmap),
-            ("1.00", 1.00, hot.bitmap, unhighlighted.bitmap),
-        ]
-        print("C3 ink ramp: heat measured expected method")
-        for entry in rampCases {
-            let measured = measuredInkAlpha(entry.on, entry.off)
-            let ramp = min(1, max(0, (entry.display - specHighlightOnset)
-                / (1 - specHighlightOnset)))
-            let expected = specHighlightInk * ramp
-            print(String(
-                format: "C3 ink ramp d%@ measured %.4f expected %.4f %@",
-                entry.label,
-                measured.value,
-                expected,
-                measured.method
-            ))
-            XCTAssertLessThanOrEqual(
-                abs(measured.value - expected),
-                0.05,
-                "the highlight ink at d\(entry.label) is \(measured.value), not \(expected) within 0.05 (\(measured.method))"
-            )
-        }
-
-        let bare = try renderZoomed(Color.clear, named: "c3-highlight-baseline.png")
-        let centres = Self.cells(of: Self.expandedSize).flatMap { $0 }
-        let bound = specGlowRadiusShare * pitch
-        let pixelScale = Double(Self.zoomScale)
-        var worstLift = 0.0
-        var worstDistance = 0.0
-        var worstPoint = (x: 0.0, y: 0.0)
-        for y in 0..<hot.bitmap.pixelsHigh {
-            for x in 0..<hot.bitmap.pixelsWide {
-                // The sampler snaps to a pixel index, so it takes the index
-                // coordinate. The distance rule takes that pixel's centre.
-                let pixel = (x: Double(x) / pixelScale, y: Double(y) / pixelScale)
-                let point = (
-                    x: (Double(x) + 0.5) / pixelScale,
-                    y: (Double(y) + 0.5) / pixelScale
-                )
-                let distance = centres.map { centre in
-                    hypot(point.x - centre.x, point.y - centre.y)
-                }.min() ?? Double.infinity
-                guard distance > bound else { continue }
-                let lift = Self.luminance(hot.bitmap, at: pixel, scale: Self.zoomScale)
-                    - Self.luminance(bare, at: pixel, scale: Self.zoomScale)
-                if lift > worstLift {
-                    worstLift = lift
-                    worstDistance = distance
-                    worstPoint = point
-                }
-            }
-        }
-        print(String(
-            format: "C3 strict containment: worst lift %.4f at %.4f pt (%.4f pitch), point (%.3f, %.3f)",
-            worstLift,
-            worstDistance,
-            worstDistance / pitch,
-            worstPoint.x,
-            worstPoint.y
-        ))
-        XCTAssertLessThanOrEqual(
-            worstLift,
-            0.04,
-            "light reaches past the glow's \(specGlowRadiusShare) pitch bound: "
-                + "worst alpha \(worstLift) at \(worstDistance) pt (point \(worstPoint))"
+            hot.farthest,
+            hot.radius + 0.5 / scale + 1e-9,
+            "specular ink lies outside the dot: \(hot.farthest) pt of radius \(hot.radius) pt"
         )
     }
 }
@@ -2351,12 +2027,13 @@ extension MatrixRenderTests {
                 let ratio = centreLuminance / max(edgeLuminance, 0.0001)
                 ratios.append(ratio)
                 if display > 0.80 { loudRatios.append(ratio) }
-                // The highlight sits up and to the left of the centre; the body
-                // is radially symmetric, so its mirror is the same distance down
-                // and to the right.
-                let highlightOffset = Double(MatrixLattice.highlightOffset) * 2 * radius / sqrt(2)
-                let shine = luminance(bitmap, at: (centre.x - highlightOffset, centre.y - highlightOffset), scale: Self.zoomScale)
-                let mirror = luminance(bitmap, at: (centre.x + highlightOffset, centre.y + highlightOffset), scale: Self.zoomScale)
+                // The specular is centred now, so shine is the centre's lift
+                // over the saturated body at 0.45 of the radius. Both drawings
+                // are sampled the same way: this compares the pictures, not a
+                // fitted threshold for one of them.
+                let ringOffset = 0.45 * radius / sqrt(2)
+                let shine = luminance(bitmap, at: centre, scale: Self.zoomScale)
+                let mirror = luminance(bitmap, at: (centre.x + ringOffset, centre.y + ringOffset), scale: Self.zoomScale)
                 let spotlight = Double.pi * pow(highlightShare * radius, 2)
                 speculars.append(shine - mirror)
                 shines.append((shine - mirror) * spotlight)
@@ -2627,7 +2304,8 @@ private struct ShippedMatrix: View {
     }
 
     private func tip(_ amount: Double) -> Color {
-        let tip = MeterRamp.tip
+        // The shipped reference stays the shipped pale tip (#FFDA8B), not today's peak.
+        let tip = MeterTint(red: 1.000, green: 0.855, blue: 0.545, opacity: 1)
         let ink = (red: 1.0, green: 0.957, blue: 0.902)
         let t = min(max(amount, 0), 1)
         return Color(

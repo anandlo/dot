@@ -161,7 +161,7 @@ extension HUDView {
             if let blocked {
                 Text(blocked)
                     .font(DotType.font(HUDRewriteLayout.noteFontSize, .medium))
-                    .foregroundStyle(HUDTheme.live)
+                    .foregroundStyle(HUDTheme.warning)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, HUDTheme.padding)
@@ -280,7 +280,7 @@ struct RewriteChip: View {
     /// label that also pulsed would be two movements saying one thing.
     private var titleColor: Color {
         if isSelected { return Color.black.opacity(0.86) }
-        if isRunning { return HUDTheme.live }
+        if isRunning { return HUDTheme.recording }
         return HUDTheme.ink2
     }
 
@@ -352,7 +352,7 @@ struct RewriteChip: View {
                             glowOpacity: isSelected
                                 ? HUDRewriteActivity.glowOpacityOnPill
                                 : HUDRewriteActivity.glowOpacity,
-                            tint: isSelected ? HUDTheme.arcOnPill : HUDTheme.live
+                            tint: isSelected ? HUDTheme.arcOnPill : HUDTheme.recording
                         )
                     }
                 }
@@ -420,7 +420,7 @@ struct RewriteArcRing<S: InsettableShape>: View {
     /// The card's amber is the running colour on its own surface. On the
     /// selected chip's cream pill the same amber is a light-on-light ring at
     /// about 1.5:1, so that chip draws the darker ``HUDTheme/arcOnPill``.
-    var tint: Color = HUDTheme.live
+    var tint: Color = HUDTheme.recording
 
     /// The gradient's stops, from the model's own falloff.
     private var stops: [Gradient.Stop] {
@@ -497,14 +497,14 @@ struct RewriteCheckBadge: View {
     var body: some View {
         HStack(spacing: 5) {
             Circle()
-                .fill(isQuiet ? HUDTheme.ink2 : HUDTheme.live)
+                .fill(isQuiet ? HUDTheme.ink2 : HUDTheme.warning)
                 .frame(
                     width: HUDRewriteLayout.badgeDotSize,
                     height: HUDRewriteLayout.badgeDotSize
                 )
             Text(isQuiet ? "Checked" : "Review")
                 .font(DotType.font(HUDRewriteLayout.chipFontSize, .medium))
-                .foregroundStyle(isQuiet ? HUDTheme.ink2 : HUDTheme.live)
+                .foregroundStyle(isQuiet ? HUDTheme.ink2 : HUDTheme.warning)
                 .lineLimit(1)
         }
         .padding(.horizontal, 8)
