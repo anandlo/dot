@@ -6,7 +6,7 @@ import XCTest
 @testable import Dot
 import DotCore
 
-/// Every General row, Standing rules and the long-recordings row keep one
+/// Every General row, Reduce motion, Standing rules and the long-recordings row keep one
 /// complete line at the window's minimum width.
 ///
 /// The settings window is fixed at 820 points. Its 198 point sidebar and one
@@ -52,7 +52,11 @@ final class SettingsCopyFitTests: XCTestCase {
         RecordingMode.allCases.map(\.title).max { $0.count < $1.count } ?? ""
     }
 
-    /// Every General row, Standing rules and the long-recordings row, with the
+    private static var widestMouseButton: String {
+        MouseTriggerButton.allCases.map(\.title).max { $0.count < $1.count } ?? ""
+    }
+
+    /// Every General row, Reduce motion, Standing rules and the long-recordings row, with the
     /// strings the pages draw and the widest value each control can show.
     private static var fixtures: [RowFixture] {
         [
@@ -61,7 +65,28 @@ final class SettingsCopyFitTests: XCTestCase {
                 subtitle: SettingsExplanation.recordingModeSubtitle,
                 control: .select(widestRecordingMode, width: nil)
             ),
+            RowFixture(
+                title: "Mouse button",
+                subtitle: SettingsExplanation.mouseButtonSubtitle,
+                control: .select(widestMouseButton, width: nil)
+            ),
             RowFixture(title: "Paste into the active app", subtitle: SettingsExplanation.pasteSubtitle, control: .toggle),
+            RowFixture(
+                title: "Accessibility permission",
+                subtitle: SettingsExplanation.accessibilityForPaste,
+                control: .button("Grant Access")
+            ),
+            RowFixture(
+                title: "Accessibility permission",
+                subtitle: SettingsExplanation.accessibilityForMouse,
+                control: .button("Grant Access")
+            ),
+            RowFixture(
+                title: "Accessibility permission",
+                subtitle: SettingsExplanation.accessibilityForBoth,
+                control: .button("Grant Access")
+            ),
+            RowFixture(title: "Reduce motion", subtitle: SettingsExplanation.reduceMotionSubtitle, control: .toggle),
             RowFixture(
                 title: "Record from the menu bar icon",
                 subtitle: SettingsExplanation.menuBarRecordSubtitle,

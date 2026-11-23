@@ -1254,12 +1254,10 @@ enum DotMotion {
         return NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
-    /// The answer a test gives instead of the workspace setting, or `nil` to ask
-    /// the workspace. Reduce Motion cannot be turned on for one test on a Mac that
-    /// has not asked for it, and the open behaves differently when it is on.
-    ///
-    /// It is a seam, not state the app keeps: nothing writes it outside a test,
-    /// and the read below is the only reader.
+    /// An answer that replaces the workspace setting, or `nil` to ask the
+    /// workspace. The app sets it to `true` when Dot's own Reduce motion setting
+    /// is on, and tests use it because Reduce Motion cannot be turned on for one
+    /// test on a Mac that has not asked for it.
     nonisolated(unsafe) static var reducesMotionOverride: Bool?
 }
 

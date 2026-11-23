@@ -185,6 +185,13 @@ enum SettingsExplanation {
     static let calibrationHelp =
         "Dot learns this microphone's background noise to set the level meter's floor and the threshold for trimming silence at the ends of a take. Reset clears what it learned; microphone gain is never changed."
     static let recordingModeSubtitle = "Press to toggle, or hold to record."
+    static let mouseButtonSubtitle = "Hold to record. Dot replaces this button's usual action."
+    static let mouseButtonHelp =
+        "While a button is chosen, Dot uses it only for recording, and apps no longer receive its click."
+    static let reduceMotionSubtitle = "Replaces Dot's animations with still or fading versions."
+    static let accessibilityForPaste = "Pasting into another app needs this permission."
+    static let accessibilityForMouse = "Recording with a mouse button needs this permission."
+    static let accessibilityForBoth = "Pasting and recording with a mouse button need this permission."
     static let pasteSubtitle = "When off, Dot copies the transcript without pasting."
     static let menuBarRecordSubtitle =
         "Clicking the icon starts and stops recording instead of opening the menu."

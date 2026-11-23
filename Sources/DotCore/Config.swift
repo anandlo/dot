@@ -487,6 +487,8 @@ public struct DotConfig: Codable, Sendable, Equatable {
     public var recordingMode: RecordingMode
     /// Whether the HUD island appears without the notch emergence animation.
     public var reduceMotion: Bool
+    /// Which mouse button, if any, is held to record.
+    public var mouseTriggerButton: MouseTriggerButton
     /// Whether a transcript is rewritten for the app it is going into.
     ///
     /// Off by default. A rewrite changes the words that are inserted, so it is
@@ -535,6 +537,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         hudVisualizer: .stretch,
         recordingMode: .toggle,
         reduceMotion: false,
+        mouseTriggerButton: .off,
         outputGrammarEnabled: false,
         outputGrammarTargets: [:],
         microphoneCalibration: [:],
@@ -600,6 +603,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         hudVisualizer: HUDVisualizer = .stretch,
         recordingMode: RecordingMode = .toggle,
         reduceMotion: Bool = false,
+        mouseTriggerButton: MouseTriggerButton = .off,
         outputGrammarEnabled: Bool = false,
         outputGrammarTargets: [String: DictationTarget] = [:],
         microphoneCalibration: [String: MicrophoneCalibration] = [:],
@@ -625,6 +629,7 @@ public struct DotConfig: Codable, Sendable, Equatable {
         self.hudVisualizer = hudVisualizer
         self.recordingMode = recordingMode
         self.reduceMotion = reduceMotion
+        self.mouseTriggerButton = mouseTriggerButton
         self.outputGrammarEnabled = outputGrammarEnabled
         self.outputGrammarTargets = outputGrammarTargets
         self.microphoneCalibration = microphoneCalibration
@@ -780,6 +785,13 @@ extension DotConfig {
         self.recordingMode = storedMode ?? fallback.recordingMode
         self.reduceMotion = ((try? container.decodeIfPresent(Bool.self, forKey: .reduceMotion)) ?? nil)
             ?? fallback.reduceMotion
+        // A file written before the mouse trigger existed has no field, and a
+        // hand-edited one may name a button no build knows: both load as off.
+        let storedMouseButton = (try? container.decodeIfPresent(
+            MouseTriggerButton.self,
+            forKey: .mouseTriggerButton
+        )) ?? nil
+        self.mouseTriggerButton = storedMouseButton ?? fallback.mouseTriggerButton
         self.outputGrammarEnabled = try container.decodeIfPresent(
             Bool.self,
             forKey: .outputGrammarEnabled

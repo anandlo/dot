@@ -488,6 +488,21 @@ struct SettingsView: View {
                     width: nil
                 )
             }
+            SettingsDivider()
+            SettingsRow(
+                "Mouse button",
+                subtitle: SettingsExplanation.mouseButtonSubtitle,
+                help: SettingsExplanation.mouseButtonHelp
+            ) {
+                DotSelect(
+                    label: "Mouse button",
+                    options: MouseTriggerButton.allCases.map { button in
+                        DotSelectOption(value: button, title: button.title)
+                    },
+                    selection: mouseTriggerButtonBinding,
+                    width: nil
+                )
+            }
         }
     }
 
@@ -499,11 +514,15 @@ struct SettingsView: View {
                 help: SettingsExplanation.pasteSubtitle,
                 isOn: autoPasteBinding
             )
-            if config.autoPaste && !Paste.accessibilityGranted {
+            if !Paste.accessibilityGranted,
+               let reason = Self.accessibilityReason(
+                   autoPaste: config.autoPaste,
+                   mouseButton: config.mouseTriggerButton
+               ) {
                 SettingsDivider()
                 SettingsRow(
                     "Accessibility permission",
-                    subtitle: "Pasting into another app needs this permission."
+                    subtitle: reason
                 ) {
                     Button("Grant Access") {
                         Paste.requestAccessibility()
@@ -2176,7 +2195,12 @@ struct SettingsView: View {
                 }
                 .padding(.vertical, 9)
                 SettingsDivider()
-                toggleRow(title: "Reduce motion", subtitle: "The island appears without the notch animation.", isOn: reduceMotionBinding)
+                toggleRow(
+                    title: "Reduce motion",
+                    subtitle: SettingsExplanation.reduceMotionSubtitle,
+                    help: SettingsExplanation.reduceMotionSubtitle,
+                    isOn: reduceMotionBinding
+                )
             }
 
             SettingsSection("Voice visualizer") {
@@ -2487,6 +2511,16 @@ struct SettingsView: View {
             set: { value in
                 guard config.reduceMotion != value else { return }
                 config.reduceMotion = value
+            }
+        )
+    }
+
+    private var mouseTriggerButtonBinding: Binding<MouseTriggerButton> {
+        Binding(
+            get: { config.mouseTriggerButton },
+            set: { value in
+                guard config.mouseTriggerButton != value else { return }
+                config.mouseTriggerButton = value
             }
         )
     }
@@ -3384,5 +3418,27 @@ extension EnvironmentValues {
     var settingsHeightOverride: CGFloat? {
         get { self[SettingsHeightKey.self] }
         set { self[SettingsHeightKey.self] = newValue }
+    }
+}
+
+extension SettingsView {
+    /// Why Dot needs Accessibility, or `nil` when nothing that is on needs it.
+    ///
+    /// Pasting and the mouse button ask for the same grant, so the page offers
+    /// one row for both and names whichever is on: two rows with one button
+    /// each would ask the person to grant the same thing twice.
+    nonisolated static func accessibilityReason(autoPaste: Bool, mouseButton: MouseTriggerButton) -> String? {
+        let needsPaste = autoPaste
+        let needsMouse = mouseButton != .off
+        switch (needsPaste, needsMouse) {
+        case (false, false):
+            return nil
+        case (true, false):
+            return SettingsExplanation.accessibilityForPaste
+        case (false, true):
+            return SettingsExplanation.accessibilityForMouse
+        case (true, true):
+            return SettingsExplanation.accessibilityForBoth
+        }
     }
 }
