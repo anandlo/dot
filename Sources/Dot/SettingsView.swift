@@ -427,19 +427,45 @@ struct SettingsView: View {
 
     // MARK: - General
 
+    /// The General page's sections, top to bottom.
+    enum GeneralSection: CaseIterable {
+        case recording, output, microphone, formatting
+
+        var title: String {
+            switch self {
+            case .recording: "Recording"
+            case .output: "Output"
+            case .microphone: "Microphone"
+            case .formatting: "Formatting"
+            }
+        }
+    }
+
     private var generalPage: some View {
         VStack(alignment: .leading, spacing: 22) {
-            recordingSection
-            outputSection
-            microphoneSection
-            formattingSection
-            historySection
+            ForEach(GeneralSection.allCases, id: \.self) { section in
+                generalSection(section)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func generalSection(_ section: GeneralSection) -> some View {
+        switch section {
+        case .recording: recordingSection
+        case .output: outputSection
+        case .microphone: microphoneSection
+        case .formatting: formattingSection
         }
     }
 
     private var recordingSection: some View {
-        SettingsSection("Recording") {
-            SettingsRow("Recording mode") {
+        SettingsSection(GeneralSection.recording.title) {
+            SettingsRow(
+                "Recording mode",
+                subtitle: SettingsExplanation.recordingModeSubtitle,
+                help: SettingsExplanation.recordingModeSubtitle
+            ) {
                 DotSelect(
                     label: "Recording mode",
                     options: RecordingMode.allCases.map { mode in
@@ -453,10 +479,11 @@ struct SettingsView: View {
     }
 
     private var outputSection: some View {
-        SettingsSection("Output") {
+        SettingsSection(GeneralSection.output.title) {
             toggleRow(
                 title: "Paste into the active app",
-                subtitle: "When off, transcripts are copied to the clipboard.",
+                subtitle: SettingsExplanation.pasteSubtitle,
+                help: SettingsExplanation.pasteSubtitle,
                 isOn: autoPasteBinding
             )
             if config.autoPaste && !Paste.accessibilityGranted {
@@ -475,13 +502,15 @@ struct SettingsView: View {
             SettingsDivider()
             toggleRow(
                 title: "Record from the menu bar icon",
-                subtitle: "Clicking the icon starts and stops recording instead of opening the menu.",
+                subtitle: SettingsExplanation.menuBarRecordSubtitle,
+                help: SettingsExplanation.menuBarRecordSubtitle,
                 isOn: fastRecordBinding
             )
             SettingsDivider()
             toggleRow(
                 title: "Open at login",
-                subtitle: launchError,
+                subtitle: launchError ?? SettingsExplanation.launchSubtitle,
+                help: SettingsExplanation.launchSubtitle,
                 isOn: launchBinding
             )
             SettingsDivider()
@@ -489,15 +518,22 @@ struct SettingsView: View {
             SettingsDivider()
             toggleRow(
                 title: "Include transcripts in the log",
-                subtitle: "Off keeps your words out of Dot.log.",
+                subtitle: SettingsExplanation.logTranscriptsSubtitle,
+                help: SettingsExplanation.logTranscriptsSubtitle,
                 isOn: logTranscriptsBinding
             )
+            SettingsDivider()
+            historyLimitRow
         }
     }
 
     private var microphoneSection: some View {
-        SettingsSection("Microphone") {
-            SettingsRow("Microphone") {
+        SettingsSection(GeneralSection.microphone.title) {
+            SettingsRow(
+                "Microphone",
+                subtitle: SettingsExplanation.microphoneSubtitle,
+                help: SettingsExplanation.microphoneSubtitle
+            ) {
                 DotSelect(
                     label: "Microphone",
                     options: microphoneOptions,
@@ -512,9 +548,10 @@ struct SettingsView: View {
     }
 
     private var formattingSection: some View {
-        SettingsSection("Formatting") {
+        SettingsSection(GeneralSection.formatting.title) {
             toggleRow(
                 title: "Format for each app",
+                subtitle: SettingsExplanation.formatSubtitle,
                 help: SettingsExplanation.formatHelp,
                 isOn: grammarEnabledBinding
             )
@@ -534,21 +571,20 @@ struct SettingsView: View {
         }
     }
 
-    private var historySection: some View {
-        SettingsSection("History") {
-            SettingsRow(
-                "Transcripts to keep",
-                help: SettingsExplanation.historyHelp
-            ) {
-                DotSelect(
-                    label: "Transcripts to keep",
-                    options: Self.historyLimitOptions.map { limit in
-                        DotSelectOption(value: limit, title: "\(limit)")
-                    },
-                    selection: historyLimitBinding,
-                    width: nil
-                )
-            }
+    private var historyLimitRow: some View {
+        SettingsRow(
+            "Transcripts to keep",
+            subtitle: SettingsExplanation.historySubtitle,
+            help: SettingsExplanation.historyHelp
+        ) {
+            DotSelect(
+                label: "Transcripts to keep",
+                options: Self.historyLimitOptions.map { limit in
+                    DotSelectOption(value: limit, title: "\(limit)")
+                },
+                selection: historyLimitBinding,
+                width: nil
+            )
         }
     }
 
@@ -557,8 +593,9 @@ struct SettingsView: View {
     private func calibrationRow(_ calibration: MicrophoneCalibration?) -> some View {
         SettingsRow(
             "Microphone noise profile",
-            subtitle: Self.calibrationObservedText(calibration?.observedSamples ?? 0),
-            help: SettingsExplanation.calibrationHelp
+            subtitle: SettingsExplanation.calibrationSubtitle,
+            help: SettingsExplanation.calibrationHelp + " "
+                + Self.calibrationObservedText(calibration?.observedSamples ?? 0)
         ) {
             Button("Reset") {
                 resetCalibration()
@@ -1250,6 +1287,7 @@ struct SettingsView: View {
             if ProviderRegistry.isGenericEndpoint(config: config) {
                 SettingsRow(
                     "Auth header",
+                    subtitle: "Controls how Dot sends your API key.",
                     help: SettingsExplanation.authHelp
                 ) {
                     DotSelect(
@@ -1269,6 +1307,7 @@ struct SettingsView: View {
                 }
                 SettingsRow(
                     "Temperature",
+                    subtitle: "Controls how much wording can vary.",
                     help: SettingsExplanation.temperatureHelp
                 ) {
                     DotSelect(
@@ -1279,7 +1318,7 @@ struct SettingsView: View {
                     )
                 }
                 SettingsDivider()
-                SettingsRow("Response format") {
+                SettingsRow("Response format", subtitle: "Sets the format returned by the service.", help: "Dot uses the transcript text from the response.") {
                     DotSelect(
                         label: "Response format",
                         options: responseFormatOptions,
@@ -1289,7 +1328,7 @@ struct SettingsView: View {
                 }
                 if responseFormatBinding.wrappedValue == "verbose_json" {
                     SettingsDivider()
-                    SettingsRow("Timestamp granularity") {
+                    SettingsRow("Timestamp granularity", subtitle: "Sets the timing detail the service returns.", help: "Dot requests these timestamps but does not display them.") {
                         DotSelect(
                             label: "Timestamp granularity",
                             options: granularityOptions,
@@ -2052,12 +2091,11 @@ struct SettingsView: View {
         var id: String { rawValue }
         var title: String { rawValue }
 
-        /// The sentence the row's recorder button speaks.
-        var hint: String {
+        var explanation: String {
             switch self {
-            case .record: "Starts and stops a recording. Escape cancels."
-            case .paste: "Opens the recorder for the paste shortcut."
-            case .palette: "Opens the recorder for the palette shortcut."
+            case .record: "Controls recording from any app."
+            case .paste: "Pastes your most recent transcript again."
+            case .palette: "Opens quick actions for dictation."
             }
         }
     }
@@ -2073,7 +2111,7 @@ struct SettingsView: View {
                         title: entry.element.title,
                         keycap: keycap(for: entry.element),
                         action: action(for: entry.element),
-                        hint: entry.element.hint
+                        explanation: entry.element.explanation
                     )
                 }
             }
@@ -2150,6 +2188,7 @@ struct SettingsView: View {
         .buttonStyle(DotPressStyle())
         .accessibilityLabel("\(appearanceName(mode)) window appearance")
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        .help(appearanceHint(mode))
         .accessibilityHint(appearanceHint(mode))
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
@@ -2165,8 +2204,8 @@ struct SettingsView: View {
     private func appearanceHint(_ mode: AppearanceMode) -> String {
         switch mode {
         case .system: "Follows the Mac's light or dark appearance."
-        case .light: "Always uses the warm paper palette."
-        case .dark: "Always uses the deep ink palette."
+        case .light: "Always uses light colors in Dot’s windows."
+        case .dark: "Always uses dark colors in Dot’s windows."
         }
     }
 
@@ -2178,6 +2217,9 @@ struct SettingsView: View {
 
     private func materialCard(_ material: HUDMaterial, name: String) -> some View {
         let isSelected = config.hudMaterial == material
+        let hint = material == .glass
+            ? "Uses a translucent surface for the island."
+            : "Uses a solid black surface for the island."
         return Button {
             guard config.hudMaterial != material else { return }
             if reduceMotion {
@@ -2208,7 +2250,8 @@ struct SettingsView: View {
         .buttonStyle(DotPressStyle())
         .accessibilityLabel("\(name) recording card material")
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
-        .accessibilityHint("Uses the \(name.lowercased()) material for the recording card.")
+        .help(hint)
+        .accessibilityHint(hint)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
@@ -2263,6 +2306,7 @@ struct SettingsView: View {
         .buttonStyle(DotPressStyle())
         .accessibilityLabel("\(visualizer.title) visualizer")
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        .help(visualizer.detail)
         .accessibilityHint(visualizer.detail)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
@@ -2300,15 +2344,16 @@ struct SettingsView: View {
         title: String,
         keycap: String,
         action: @escaping () -> Void,
-        hint: String
+        explanation: String
     ) -> some View {
-        SettingsRow(title) {
+        SettingsRow(title, subtitle: explanation, help: explanation) {
             HStack(spacing: 8) {
                 DotKeycap(text: keycap)
                 Button("Change…", action: action)
                     .buttonStyle(DotSecondaryButtonStyle())
                     .accessibilityLabel("Change \(title.lowercased()) shortcut")
-                    .accessibilityHint(hint)
+                    .help(explanation)
+                    .accessibilityHint(explanation)
             }
         }
     }

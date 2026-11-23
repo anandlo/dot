@@ -241,7 +241,11 @@ struct AssistantPage: View {
 
     private var serviceSection: some View {
         SettingsSection("Service") {
-            SettingsRow("Service") {
+            SettingsRow(
+                "Service",
+                subtitle: "Chooses which service rewrites your text.",
+                help: "Chooses which service rewrites your text."
+            ) {
                 DotSelect(
                     label: "Service",
                     options: serviceOptions,
@@ -270,6 +274,7 @@ struct AssistantPage: View {
                     SettingsDivider()
                     SettingsRow(
                         "Plan",
+                        subtitle: "Matches the service address to your plan.",
                         help: SettingsExplanation.planHelp
                     ) {
                         DotSelect(
@@ -284,7 +289,7 @@ struct AssistantPage: View {
             }
             if isServiceChosen, showsAddressRow {
                 SettingsDivider()
-                SettingsRow("Base URL") {
+                SettingsRow("Base URL", subtitle: "Sets the address Dot sends rewrites to.", help: "Dot saves the address in settings, not in the Keychain.") {
                     TextField(baseURLPlaceholder, text: baseURLBinding)
                         .modifier(DotFieldStyle(focused: focusedField == .baseURL))
                         .focused($focusedField, equals: .baseURL)
@@ -592,7 +597,7 @@ struct AssistantPage: View {
             }
             if showsModelField {
                 SettingsDivider()
-                SettingsRow("Custom model") {
+                SettingsRow("Custom model", subtitle: "Uses the model ID you enter.", help: "Enter the exact model ID listed by the service.") {
                     TextField("Model ID", text: typedModelBinding)
                         .modifier(DotFieldStyle(focused: focusedField == .model))
                         .focused($focusedField, equals: .model)
@@ -604,6 +609,7 @@ struct AssistantPage: View {
                 SettingsDivider()
                 SettingsRow(
                     "Reasoning",
+                    subtitle: "Sets how much the model reasons before answering.",
                     help: SettingsExplanation.reasoningHelp
                 ) {
                     DotSelect(
@@ -1157,28 +1163,17 @@ struct AssistantPage: View {
     /// What the label, the switch and the editor explain about the block.
     static let standingRulesHelp = SettingsExplanation.standingRulesHelp
 
-    /// The block Dot puts under every Agent prompt, and the switch that turns
-    /// it on.
-    ///
-    /// The field is drawn only while the switch is on: a block that is off is
-    /// one line in the card, and a person who turned it on has a text to write.
-    /// Nothing explains the block under the row, because the help on the label,
-    /// the switch and the editor says what the row itself cannot show.
     private var standingRulesControls: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(Self.standingRulesTitle)
-                    .font(DotTheme.rowTitleFont)
-                    .foregroundStyle(DotTheme.ink)
-                    .help(Self.standingRulesHelp)
-                    .accessibilityHint(Self.standingRulesHelp)
-                Spacer(minLength: 8)
+            SettingsRow(
+                Self.standingRulesTitle,
+                subtitle: SettingsExplanation.standingRulesSubtitle,
+                help: Self.standingRulesHelp
+            ) {
                 Toggle("", isOn: standingRulesEnabledBinding)
                     .labelsHidden()
                     .toggleStyle(DotToggleStyle())
                     .accessibilityLabel(Self.standingRulesTitle)
-                    .help(Self.standingRulesHelp)
-                    .accessibilityHint(Self.standingRulesHelp)
             }
             if config.assistant.rewrite.standingRulesEnabled {
                 DotTextEditor(
@@ -1188,9 +1183,9 @@ struct AssistantPage: View {
                     accessibilityHelp: Self.standingRulesHelp
                 )
                 .help(Self.standingRulesHelp)
+                .padding(.bottom, 10)
             }
         }
-        .padding(.vertical, 10)
     }
 
     /// The control that removes a shipped style from the page.
