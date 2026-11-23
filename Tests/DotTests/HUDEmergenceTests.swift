@@ -414,9 +414,9 @@ final class HUDEmergenceTests: XCTestCase {
             "the content was read after the card left"
         )
         XCTAssertLessThanOrEqual(
-            went ?? .infinity, 0.12 + 0.55,
-            "the shape took \(went ?? .nan) s to leave, past the 0.12 s content fade and the 0.55 s "
-                + "the departure is allowed"
+            went ?? .infinity, 0.12 + 0.70,
+            "the shape took \(went ?? .nan) s to leave, past the 0.12 s content fade, the 0.45 s "
+                + "departure and the settle a critically damped spring needs to reach the notch"
         )
         XCTAssertFalse(orderedOutWhileMoving, "the panel was ordered out while the shape was still there")
         let out = try? XCTUnwrap(orderedOut)
@@ -461,6 +461,188 @@ final class HUDEmergenceTests: XCTestCase {
         XCTAssertFalse(
             Self.identical(resting, bare),
             "the rested card draws the same picture with and without its words, so the check is blind"
+        )
+    }
+
+    /// The longer notched springs change the shape the panel draws, not just a number.
+    ///
+    /// At a fifth of a second the 0.65 s pour is still a narrow shape near the
+    /// notch: 291 pt wide with its bottom at 111 pt. The old 0.55 s pour had
+    /// already widened to 309 pt and dropped to 119 pt, so the comparator below
+    /// fails on a shape, not on a duration constant. The same injected clock
+    /// bounds the arrival, follows the shape all the way back before the panel
+    /// is ordered out, reopens mid-retraction without a jump or a fresh start,
+    /// and checks that reduced motion still draws the card at rest.
+    func testNotchedSpringsKeepTheShapeAndPanelInStep() {
+        let hud = HUD(offscreen: true)
+        hud.dwell = 60
+        hud.debugSetReduceMotion(false)
+        hud.debugPlace(on: Self.offscreenNotch)
+        hud.showRecording(elapsed: "0:00")
+        hud.debugStopRenderLoop()
+        XCTAssertTrue(hud.debugPanelVisible, "the panel was not up for the arrival")
+
+        // The comparator is read from the same shape the panel draws, at the
+        // same frame the render loop would have reached.
+        advance(hud, for: 0.20)
+        let source = Self.placement(Self.notched).source
+        let rest = Self.rest(Self.notched, card: Self.recordingCard)
+        let piece = HUDEmergence.shape(
+            progress: hud.debugEmergence, source: source, rest: rest
+        )
+        XCTAssertLessThan(
+            piece.card.width, 300,
+            "at 0.200 s the shape was \(piece.card.width) pt wide, the earlier pour's width"
+        )
+        XCTAssertLessThan(
+            piece.card.maxY, 116,
+            "at 0.200 s the shape's bottom was at \(piece.card.maxY) pt, the earlier pour's drop"
+        )
+        XCTAssertNotNil(piece.neck, "the shape had already left the notch at 0.200 s")
+        print(String(
+            format: "NOTCH comparator t=0.200 e=%.6f width=%.3f bottom=%.3f",
+            hud.debugEmergence,
+            piece.card.width,
+            piece.card.maxY
+        ))
+
+        var arrival = 0.20
+        var arrived: Double?
+        while arrival < 0.70 {
+            hud.debugAdvanceAppearance(by: 1.0 / 240)
+            arrival += 1.0 / 240
+            if arrived == nil, hud.debugEmergence >= 0.999 { arrived = arrival }
+        }
+        let reached = arrived ?? .infinity
+        XCTAssertLessThanOrEqual(
+            reached, 0.70,
+            "the shape arrived at \(reached) s, past the 0.70 s the present gives it"
+        )
+        XCTAssertGreaterThanOrEqual(
+            reached, 0.55,
+            "the shape arrived at \(reached) s, too soon for the 0.65 s pour"
+        )
+        XCTAssertTrue(hud.debugPanelVisible, "the panel went out while the card was arriving")
+
+        // A card reopened during the retraction keeps the value and the velocity
+        // the departure had: no jump on the frame it is shown, no fresh start
+        // from the notch on the frames after it.
+        hud.hide()
+        var retraction = 0.0
+        while retraction < 0.6, hud.debugEmergence > 0.55 {
+            hud.debugAdvanceAppearance(by: 1.0 / 240)
+            retraction += 1.0 / 240
+        }
+        let held = hud.debugEmergence
+        XCTAssertLessThanOrEqual(held, 0.55, "the retraction never reached a revisable shape")
+        XCTAssertGreaterThan(held, 0.35, "the retraction was already inside the notch")
+        XCTAssertTrue(hud.debugPanelVisible, "the panel left before the shape was back")
+        hud.showRecording(elapsed: "0:01")
+        hud.debugStopRenderLoop()
+        XCTAssertEqual(
+            hud.debugEmergence, held, accuracy: 1e-12,
+            "reopening jumped the shape from \(held) to \(hud.debugEmergence)"
+        )
+        XCTAssertTrue(hud.debugPanelVisible, "reopening did not bring the panel back")
+        var lowest = held
+        for _ in 0 ..< 48 {
+            hud.debugAdvanceAppearance(by: 1.0 / 240)
+            lowest = min(lowest, hud.debugEmergence)
+        }
+        XCTAssertLessThan(lowest, held, "reopening dropped the departure's velocity")
+        XCTAssertGreaterThan(
+            lowest, held - 0.2,
+            "reopening restarted the shape at \(lowest) instead of turning it around"
+        )
+        XCTAssertGreaterThan(
+            hud.debugEmergence, held + 0.1,
+            "the reopened shape never recovered from \(held)"
+        )
+        print(String(
+            format: "NOTCH reopen held=%.6f lowest=%.6f after=%.6f",
+            held, lowest, hud.debugEmergence
+        ))
+
+        var secondArrival = 0.0
+        var secondArrived = false
+        while secondArrival < 0.70 {
+            hud.debugAdvanceAppearance(by: 1.0 / 240)
+            secondArrival += 1.0 / 240
+            if hud.debugEmergence >= 0.999 { secondArrived = true; break }
+        }
+        XCTAssertTrue(secondArrived, "the reopened card never settled")
+
+        // The second departure is the one the window has to wait for. Its shape
+        // reaches the notch inside the 1.0 s and 1.05 s deadlines with room to
+        // spare, and the panel is not ordered out one frame before it does.
+        hud.hide()
+        var departed = 0.0
+        var left: Double?
+        var orderedOutWhileMoving = false
+        while departed < 1.0 {
+            hud.debugAdvanceAppearance(by: 1.0 / 240)
+            departed += 1.0 / 240
+            if left == nil, hud.debugEmergence <= 0.001 { left = departed }
+            if left == nil, !hud.debugPanelVisible { orderedOutWhileMoving = true }
+        }
+        let went = left ?? .infinity
+        XCTAssertGreaterThan(
+            went, 0.72,
+            "the shape left at \(went) s, too soon for the 0.45 s departure"
+        )
+        XCTAssertLessThanOrEqual(
+            went, 0.82,
+            "the shape took \(went) s to leave, with no room left before the deadlines"
+        )
+        XCTAssertLessThanOrEqual(went, 1.0 - 0.15, "no headroom before the 1.0 s deadline")
+        XCTAssertLessThanOrEqual(went, 1.05 - 0.15, "no headroom before the 1.05 s deadline")
+        XCTAssertFalse(orderedOutWhileMoving, "the panel was ordered out while the shape was moving")
+        XCTAssertFalse(hud.debugPanelVisible, "the panel was never ordered out")
+        print(String(format: "NOTCH departure left=%.6f panel_visible=%d", went, hud.debugPanelVisible))
+
+        // Reduce motion has no shape to retime: every frame of the fade still
+        // draws the card at rest.
+        let reduced = HUD(offscreen: true)
+        reduced.dwell = 60
+        reduced.debugSetReduceMotion(true)
+        reduced.debugPlace(on: Self.offscreenNotch)
+        reduced.showRecording(elapsed: "0:00")
+        reduced.debugStopRenderLoop()
+        let restingCard = Self.rest(Self.notched, card: Self.recordingCard).rect
+        var shown: Double?
+        for frame in 1 ... 48 {
+            reduced.debugAdvanceAppearance(by: 1.0 / 240)
+            if shown == nil, reduced.debugPresence >= 0.999 { shown = Double(frame) / 240 }
+            let progress = HUDEmergence.progress(reduced.debugEmergence, reduceMotion: true)
+            XCTAssertEqual(progress, 1, "reduced motion moved the shape")
+            XCTAssertEqual(
+                HUDEmergence.shape(progress: progress, source: source, rest: rest).card,
+                restingCard,
+                "reduced motion moved the card off its rest rectangle"
+            )
+        }
+        XCTAssertLessThanOrEqual(
+            shown ?? .infinity, 0.20,
+            "reduced motion did not finish its crossfade in within 0.20 s"
+        )
+        reduced.hide()
+        var faded: Double?
+        for frame in 1 ... 48 {
+            reduced.debugAdvanceAppearance(by: 1.0 / 240)
+            if faded == nil, reduced.debugPresence <= 0.001, !reduced.debugPanelVisible {
+                faded = Double(frame) / 240
+            }
+            let progress = HUDEmergence.progress(reduced.debugEmergence, reduceMotion: true)
+            XCTAssertEqual(progress, 1, "reduced motion moved the shape on the way out")
+            XCTAssertEqual(
+                HUDEmergence.shape(progress: progress, source: source, rest: rest).card,
+                restingCard,
+                "reduced motion moved the card during the fade out"
+            )
+        }
+        XCTAssertLessThanOrEqual(
+            faded ?? .infinity, 0.20,
+            "reduced motion did not fade out and order the panel out within 0.20 s"
         )
     }
 
@@ -631,6 +813,19 @@ extension HUDEmergenceTests {
         let time: TimeInterval
         let emergence: Double
         let content: Double
+    }
+
+    /// The first arrival frame whose picture is final: the shape has drawn its
+    /// rest rectangle and the content has finished fading in, to within half
+    /// an 8-bit step.
+    static func arrivalRestFrame(_ pieces: [HUDEmergence.Shape], _ samples: [Sample]) -> Int {
+        let rest = Self.rest(Self.notched, card: Self.recordingCard)
+        return (0 ..< samples.count).first { index in
+            pieces[index].isRest(rest)
+                && HUDEmergence.contentOpacity(
+                    content: samples[index].content, progress: samples[index].emergence
+                ) >= 1 - 0.5 / 255
+        } ?? (samples.count - 1)
     }
 
     /// The strip the panel's top edge is rendered into, in points.
@@ -972,7 +1167,10 @@ extension HUDEmergenceTests {
         }
         var samples = [Sample(time: 0, emergence: hud.debugEmergence, content: hud.debugContent)]
         var elapsed = 0.0
-        while elapsed < 0.70 - 1e-9 {
+        // The departure is the longer of the two: its 0.45 s spring starts
+        // after the 0.12 s content fade and reaches the notch near 0.75 s.
+        let length = presenting ? 0.70 : 0.90
+        while elapsed < length - 1e-9 {
             hud.debugAdvanceAppearance(by: 0.016)
             elapsed += 0.016
             samples.append(Sample(time: elapsed, emergence: hud.debugEmergence, content: hud.debugContent))
@@ -1019,8 +1217,7 @@ extension HUDEmergenceTests {
     func testEveryFrameOfTheArrivalMoves() throws {
         try WindowCapture.requireFullMotion()
         let motion = try motionFrames(presenting: true)
-        let restFrame = motion.samples.firstIndex { abs($0.emergence - 1) <= 0.001 }
-            ?? (motion.frames.count - 1)
+        let restFrame = Self.arrivalRestFrame(motion.pieces, motion.samples)
         if Self.ciEvidence != nil {
             for (index, frame) in motion.frames.enumerated() {
                 Self.writeCIFrame(frame, named: String(format: "arrival-%02d", index))
@@ -1126,9 +1323,20 @@ extension HUDEmergenceTests {
 
         // (b) The motion never stops between the first frame that moved and the
         // frame the spring reaches its rest.
-        let restFrame = samples.firstIndex { abs($0.emergence - resting) <= 0.001 }
-            ?? (samples.count - 1)
+        // The spring keeps changing after the shape has already drawn its rest
+        // rectangle: its last fractions of a percent move no edge by a pixel.
+        // For the arrival the end of the visible motion is the shape's rest,
+        // not the spring's numeric tolerance. The departure has no such tail:
+        // its shape reaches the notch only when the spring gets there.
+        let restFrame: Int
+        if resting == 1 {
+            restFrame = Self.arrivalRestFrame(pieces, samples)
+        } else {
+            restFrame = samples.firstIndex { abs($0.emergence - resting) <= 0.001 }
+                ?? (samples.count - 1)
+        }
         let moving = (0 ..< diffs.count).first { diffs[$0] > 0 } ?? 0
+        XCTAssertGreaterThan(restFrame, moving, "\(sequence): the picture never moved before its rest")
         var stalls = 0
         // diffs[index] is the change into frame `index + 1`, so the frames
         // between the first that moved and the rest frame are indices
@@ -1275,10 +1483,10 @@ extension HUDEmergenceTests {
     static let baseTranscriptHash = "ec7429b8f2d9e2e627936397df0d5ecf09008c3fc7011045a587955df4b9fe54"
 
     /// The moments the strips are written at, in seconds.
-    static let stripTimes: [Double] = [0, 0.048, 0.096, 0.144, 0.192, 0.240, 0.288, 0.352, 0.432, 0.550]
+    static let stripTimes: [Double] = [0, 0.064, 0.128, 0.192, 0.256, 0.320, 0.400, 0.480, 0.560, 0.650]
 
     /// The moments the glass frames are written at, in seconds.
-    static let glassTimes: [Double] = [0, 0.144, 0.288, 0.432, 0.550]
+    static let glassTimes: [Double] = [0, 0.160, 0.320, 0.480, 0.650]
 
     /// Draws the frames the motion is judged on, when the run asks for them.
     ///
