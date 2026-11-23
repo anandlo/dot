@@ -564,7 +564,190 @@ enum UIPreview {
             }
         }
 
+        try renderAboutMarkSamples(to: directory)
         try renderAssistantSettings(to: directory, providers: providers)
+    }
+
+    /// Renders settled mark states from one mounted host, then two control
+    /// fills. No synthetic system pointer is moved.
+    ///
+    /// The target phases all run through one `AboutPage` and one `NSHostingView`.
+    /// They are settled state captures, not interpolated spring frames. The
+    /// renderer has no way to pulse the live spring without a real pointer, so
+    /// the log says `state-settled` and does not claim return animation proof.
+    static func renderAboutMarkSamples(to directory: URL) throws {
+        let size = CGSize(width: 565, height: 600)
+        let target = AboutMarkTargetBox()
+        let box = AboutMarkSampleBox()
+        let root = AboutMarkSampleRoot(target: target) { box.frames = $0.frames }
+        let hosting = NSHostingView(
+            rootView: root
+                .frame(width: size.width, height: size.height)
+                .environment(\.colorScheme, .light)
+                .environment(\.displayScale, 2)
+        )
+        hosting.frame = NSRect(origin: .zero, size: size)
+        hosting.appearance = NSAppearance(named: .aqua)
+        hosting.layoutSubtreeIfNeeded()
+
+        var lines: [String] = []
+        let phases: [(name: String, point: CGPoint)] = [
+            ("about-mark-rest", .zero),
+            ("about-mark-engaged", CGPoint(x: 1, y: 1)),
+            ("about-mark-retarget", CGPoint(x: -1, y: 1)),
+            ("about-mark-exit-settled", .zero),
+            ("about-mark-return-settled", .zero),
+        ]
+
+        for phase in phases {
+            target.value = phase.point
+            for _ in 0..<12 {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+            hosting.layoutSubtreeIfNeeded()
+            let bitmap = try hostedBitmap(hosting, size: size)
+            try write(bitmap, to: directory.appendingPathComponent("\(phase.name).png"))
+
+            let disc = box.frames["disc"] ?? .zero
+            let actual = renderedDiscFrame(in: bitmap) ?? disc
+            let region = box.frames["markRegion"] ?? .zero
+            let centre = CGPoint(x: actual.midX, y: actual.midY)
+            let inner = CGPoint(x: actual.midX - 16, y: actual.midY + 16)
+            let outside = CGPoint(x: actual.minX - 4, y: actual.midY)
+            let centrePixel = pixel(centre, in: bitmap)
+            let innerPixel = pixel(inner, in: bitmap)
+            let outsidePixel = pixel(outside, in: bitmap)
+            lines.append(
+                "\(phase.name) kind=state-settled target \(phase.point.x) \(phase.point.y) "
+                    + "disc \(disc.origin.x) \(disc.origin.y) \(disc.size.width) \(disc.size.height) "
+                    + "actual \(actual.origin.x) \(actual.origin.y) \(actual.size.width) \(actual.size.height) "
+                    + "region \(region.origin.x) \(region.origin.y) \(region.size.width) \(region.size.height) "
+                    + "centre \(centrePixel.0) \(centrePixel.1) \(centrePixel.2) "
+                    + "inner \(innerPixel.0) \(innerPixel.1) \(innerPixel.2) "
+                    + "outside \(outsidePixel.0) \(outsidePixel.1) \(outsidePixel.2)"
+            )
+        }
+
+        for state in [
+            (name: "about-control-rest", update: AboutUpdateState.upToDate, highlighted: false),
+            (name: "about-control-enabled-highlight", update: AboutUpdateState.upToDate, highlighted: true),
+            (name: "about-control-disabled-highlight", update: AboutUpdateState.checking, highlighted: true),
+        ] {
+            let controlBox = AboutMarkSampleBox()
+            let controlPage = AboutPage(
+                version: "1.0",
+                build: "1",
+                previewUpdate: state.update,
+                onLayout: { controlBox.frames = $0.frames },
+                previewControlHighlighted: state.highlighted
+            )
+            try writeHosted(
+                controlPage.frame(width: size.width, height: size.height),
+                size: size,
+                scheme: .light,
+                to: directory.appendingPathComponent("\(state.name).png")
+            )
+            let control = controlBox.frames["control"] ?? .zero
+            let bitmap = try bitmap(at: directory.appendingPathComponent("\(state.name).png"))
+            let sample = CGPoint(x: control.minX + 8, y: control.midY)
+            let fill = pixel(sample, in: bitmap)
+            lines.append(
+                "\(state.name) kind=control-state "
+                    + "control \(control.origin.x) \(control.origin.y) "
+                    + "\(control.size.width) \(control.size.height) "
+                    + "fill \(fill.0) \(fill.1) \(fill.2)"
+            )
+        }
+
+        try lines.joined(separator: "\n").appending("\n").write(
+            to: directory.appendingPathComponent("about-mark-frames.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private static func hostedBitmap(
+        _ hosting: NSHostingView<some View>,
+        size: CGSize
+    ) throws -> NSBitmapImageRep {
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width) * 2,
+            pixelsHigh: Int(size.height) * 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { throw RenderError.couldNotRender }
+        bitmap.size = size
+        hosting.cacheDisplay(in: NSRect(origin: .zero, size: size), to: bitmap)
+        return bitmap
+    }
+
+    private static func bitmap(at url: URL) throws -> NSBitmapImageRep {
+        let data = try Data(contentsOf: url)
+        guard let bitmap = NSBitmapImageRep(data: data) else { throw RenderError.couldNotRender }
+        return bitmap
+    }
+
+    private static func write(_ bitmap: NSBitmapImageRep, to url: URL) throws {
+        guard let data = bitmap.representation(using: .png, properties: [:]) else {
+            throw RenderError.couldNotEncode
+        }
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// Finds the disc in the rendered pixels instead of trusting the layout
+    /// frame. Offscreen hosting does not drive the live spring presentation,
+    /// so the drawn disc can remain at its printed position while the target
+    /// frame moves. This returns the frame the pixels actually show.
+    private static func renderedDiscFrame(in bitmap: NSBitmapImageRep) -> CGRect? {
+        let resolved = NSColor(AboutDialInk.disc).usingColorSpace(.sRGB) ?? NSColor.white
+        let ink = (
+            Int((resolved.redComponent * 255).rounded()),
+            Int((resolved.greenComponent * 255).rounded()),
+            Int((resolved.blueComponent * 255).rounded())
+        )
+        var minX = Int.max
+        var minY = Int.max
+        var maxX = Int.min
+        var maxY = Int.min
+        let xLimit = min(1_159, bitmap.pixelsWide - 1)
+        let yLimit = min(139, bitmap.pixelsHigh - 1)
+        for y in 0...yLimit {
+            for x in 980...xLimit {
+                let sample = pixel(CGPoint(x: Double(x) / 2, y: Double(y) / 2), in: bitmap)
+                guard abs(sample.0 - ink.0) <= 4,
+                      abs(sample.1 - ink.1) <= 4,
+                      abs(sample.2 - ink.2) <= 4
+                else { continue }
+                minX = min(minX, x)
+                minY = min(minY, y)
+                maxX = max(maxX, x)
+                maxY = max(maxY, y)
+            }
+        }
+        guard minX != Int.max else { return nil }
+        return CGRect(
+            x: Double(minX) / 2,
+            y: Double(minY) / 2,
+            width: Double(maxX - minX + 1) / 2,
+            height: Double(maxY - minY + 1) / 2
+        )
+    }
+
+    private static func pixel(_ point: CGPoint, in bitmap: NSBitmapImageRep) -> (Int, Int, Int) {
+        let x = Int((point.x * 2).rounded())
+        let y = Int((point.y * 2).rounded())
+        guard let colour = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return (0, 0, 0) }
+        return (
+            Int((colour.redComponent * 255).rounded()),
+            Int((colour.greenComponent * 255).rounded()),
+            Int((colour.blueComponent * 255).rounded())
+        )
     }
 
     /// Renders the General page before any take has taught the microphone.
@@ -1333,6 +1516,36 @@ enum UIPreview {
     enum RenderError: Error {
         case couldNotRender
         case couldNotEncode
+    }
+}
+
+/// The frame reader for one offscreen mark sample.
+@MainActor
+private final class AboutMarkSampleBox {
+    var frames: [String: CGRect] = [:]
+}
+
+/// The target one mounted host is driven through.
+@MainActor
+private final class AboutMarkTargetBox: ObservableObject {
+    @Published var value = CGPoint.zero
+}
+
+/// Observing the target here makes a preview-target change invalidate the same
+/// mounted `AboutPage` instead of logging an old frame.
+@MainActor
+private struct AboutMarkSampleRoot: View {
+    @ObservedObject var target: AboutMarkTargetBox
+    let onLayout: (AboutLayoutSnapshot) -> Void
+
+    var body: some View {
+        AboutPage(
+            version: "1.0",
+            build: "1",
+            previewUpdate: .upToDate,
+            onLayout: onLayout,
+            previewMarkTarget: $target.value
+        )
     }
 }
 

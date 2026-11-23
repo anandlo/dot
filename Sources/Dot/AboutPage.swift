@@ -87,6 +87,205 @@ enum AboutUpdateState: Equatable, Sendable {
     var acceptsAnotherCheck: Bool { self != .checking }
 }
 
+/// The decorative response of the mark in the plate's top-right corner.
+///
+/// The mark is a picture, not a control: it answers the pointer only while the
+/// pointer is inside its own corner of the plate, and that answer is bounded to
+/// a few points of offset. The target is a pure value so its limits, its rest
+/// position and its reduced-motion answer can be checked without moving a
+/// system pointer.
+enum AboutMarkMotion {
+    /// The largest horizontal travel, in points.
+    static let horizontalLimit: CGFloat = 6
+    /// The largest vertical travel, in points.
+    static let verticalLimit: CGFloat = 4
+    /// The spring used while the pointer is tracked.
+    static let engagedResponse: Double = 0.24
+    static let engagedDamping: Double = 0.82
+    /// The spring used when the pointer leaves or the window resigns.
+    static let returnResponse: Double = 0.28
+    static let returnDamping: Double = 0.86
+
+    /// Maps a normalized point in the mark's own region to a disc offset.
+    ///
+    /// - Parameters:
+    ///   - x: minus one at the region's left edge, one at its right edge.
+    ///   - y: minus one at the region's top edge, one at its bottom edge.
+    ///   - reduceMotion: whether the person asked for stillness.
+    /// - Returns: the disc's offset from its printed position, or zero.
+    static func target(x: CGFloat, y: CGFloat, reduceMotion: Bool) -> CGPoint {
+        guard !reduceMotion else { return .zero }
+        let boundedX = min(max(x, -1), 1)
+        let boundedY = min(max(y, -1), 1)
+        return CGPoint(x: boundedX * horizontalLimit, y: boundedY * verticalLimit)
+    }
+
+    /// The spring that carries the disc to a target.
+    ///
+    /// A new target retargets the same spring, so an interruption carries the
+    /// current velocity instead of restarting from rest. Reduced motion gets
+    /// no spring at all; the disc stays where it was printed.
+    static func animation(returning: Bool, reduceMotion: Bool) -> Animation? {
+        guard !reduceMotion else { return nil }
+        return returning
+            ? .spring(response: returnResponse, dampingFraction: returnDamping)
+            : .spring(response: engagedResponse, dampingFraction: engagedDamping)
+    }
+}
+
+/// The update control's fill, kept separate from its press feedback.
+///
+/// The highlight is a colour change rather than movement: it still answers a
+/// hover or a keyboard focus when motion is reduced, and the shared press is
+/// left to ``DotPressStyle``.
+enum AboutControlFill {
+    static let rest: Double = 0.08
+    static let highlighted: Double = 0.13
+
+    static func opacity(isHighlighted: Bool) -> Double {
+        isHighlighted ? highlighted : rest
+    }
+}
+
+/// A transparent view that reports the pointer inside the mark's own corner.
+///
+/// It installs only a key-window tracking area and never becomes a hit target.
+/// The point it reports is local to this view and normalized to minus one
+/// through one on each axis. When motion is reduced the coordinator removes the
+/// area, so no pointer event can reach the mark.
+struct AboutMarkPointerRegion: NSViewRepresentable {
+    let enabled: Bool
+    let onMove: (CGPoint?) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onMove: onMove) }
+
+    func makeNSView(context: Context) -> AboutMarkTrackingView {
+        let view = AboutMarkTrackingView()
+        view.wantsLayer = false
+        return view
+    }
+
+    func updateNSView(_ nsView: AboutMarkTrackingView, context: Context) {
+        context.coordinator.onMove = onMove
+        context.coordinator.setEnabled(enabled, in: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: AboutMarkTrackingView, coordinator: Coordinator) {
+        coordinator.stop(in: nsView)
+    }
+
+    @MainActor
+    final class Coordinator {
+        var onMove: (CGPoint?) -> Void
+        private var area: NSTrackingArea?
+        private weak var window: NSWindow?
+        private var observers: [NSObjectProtocol] = []
+
+        init(onMove: @escaping (CGPoint?) -> Void) {
+            self.onMove = onMove
+        }
+
+        func setEnabled(_ enabled: Bool, in view: AboutMarkTrackingView) {
+            guard enabled else {
+                stop(in: view)
+                return
+            }
+            view.onMove = { [weak self] point in self?.onMove(point) }
+            view.onWindowChange = { [weak self] window in self?.watch(window) }
+            install(in: view)
+            watch(view.window)
+        }
+
+        func stop(in view: AboutMarkTrackingView) {
+            remove(from: view)
+            watch(nil)
+        }
+
+        private func install(in view: AboutMarkTrackingView) {
+            guard area == nil else { return }
+            let area = NSTrackingArea(
+                rect: view.bounds,
+                options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
+                owner: view,
+                userInfo: ["AboutMarkPointerRegion": true]
+            )
+            self.area = area
+            view.addTrackingArea(area)
+        }
+
+        func watch(_ window: NSWindow?) {
+            guard self.window !== window else { return }
+            clearObservers()
+            self.window = window
+            guard let window else { return }
+            observers.append(NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.reset() }
+            })
+            observers.append(NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.reset() }
+            })
+        }
+
+        private func clearObservers() {
+            for observer in observers { NotificationCenter.default.removeObserver(observer) }
+            observers.removeAll()
+        }
+
+        func reset() { onMove(nil) }
+
+        private func remove(from view: AboutMarkTrackingView) {
+            if let area { view.removeTrackingArea(area) }
+            area = nil
+            view.onMove = nil
+            view.onWindowChange = nil
+        }
+    }
+}
+
+/// The tracking view's one job is to turn an AppKit mouse event into a local
+/// normalized point. It never draws, never becomes first responder and never
+/// answers a click with an action of its own.
+final class AboutMarkTrackingView: NSView {
+    var onMove: ((CGPoint?) -> Void)?
+    var onWindowChange: ((NSWindow?) -> Void)?
+    var isActiveProvider: () -> Bool = { NSApp.isActive }
+    lazy var isKeyWindowProvider: () -> Bool = { [weak self] in self?.window?.isKeyWindow ?? false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChange?(window)
+    }
+
+    override func mouseEntered(with event: NSEvent) { report(event) }
+    override func mouseMoved(with event: NSEvent) { report(event) }
+    override func mouseExited(with event: NSEvent) { onMove?(nil) }
+
+    private func report(_ event: NSEvent) {
+        guard isActiveProvider(), isKeyWindowProvider() else {
+            onMove?(nil)
+            return
+        }
+        let point = window == nil ? event.locationInWindow : convert(event.locationInWindow, from: nil)
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        onMove?(
+            CGPoint(
+                x: (point.x / bounds.width) * 2 - 1,
+                y: 1 - (point.y / bounds.height) * 2
+            )
+        )
+    }
+}
+
 /// The frames a headless host reads back from the page.
 ///
 /// The renderer draws these views off screen, where AppKit exposes no
@@ -167,10 +366,19 @@ struct AboutPage: View {
     var onPreviewUpdatePress: (() -> Void)?
     /// Reads the laid-out frames in a headless host.
     var onLayout: ((AboutLayoutSnapshot) -> Void)?
+    /// The mark's target for an offscreen frame sample. A live page reads the
+    /// pointer; a render drives the same target on one mounted host.
+    var previewMarkTarget: Binding<CGPoint>?
+    /// Holds the control's highlight for an offscreen disabled-state sample.
+    var previewControlHighlighted: Bool?
 
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @FocusState private var controlFocused: Bool
     @State private var copied = false
     @State private var update: AboutUpdateState = .idle
     @State private var copyReset: Task<Void, Never>?
+    @State private var controlHovered = false
+    @State private var markTarget = CGPoint.zero
 
     /// The coordinate space every reported frame is measured in.
     static let layoutSpace = "AboutPage.content"
@@ -182,6 +390,37 @@ struct AboutPage: View {
     private static let markTopInset: CGFloat = markSquare * DotMarkDial.clipped.centre.y
     /// The trailing room the control leaves for the cropped disc.
     private static let markReserve: CGFloat = 72
+    /// The tracking corner is the reserved disc square, narrow enough to stay
+    /// clear of the update column and the status line.
+    private static let markTrackingSide: CGFloat = 72
+    /// The status reserve is exactly two lines at the face and size it draws.
+    private static let updateStatusLineHeight: CGFloat = {
+        let font = DotType.nsFont(11, .medium)
+        return ceil(font.ascender - font.descender + font.leading)
+    }()
+    private static let statusReserveHeight: CGFloat = updateStatusLineHeight * 2
+
+    private var reducesMotion: Bool {
+        systemReduceMotion || DotMotion.reducesMotion
+    }
+
+    /// The disc's drawn offset. An offscreen sample supplies a target directly;
+    /// the live page uses the last local pointer position.
+    private var markOffset: CGPoint {
+        let target = previewMarkTarget?.wrappedValue ?? markTarget
+        return AboutMarkMotion.target(
+            x: target.x,
+            y: target.y,
+            reduceMotion: reducesMotion
+        )
+    }
+
+    private var markAnimation: Animation? {
+        AboutMarkMotion.animation(
+            returning: markOffset == .zero,
+            reduceMotion: reducesMotion
+        )
+    }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -195,6 +434,7 @@ struct AboutPage: View {
         .onPreferenceChange(AboutFrameKey.self) { frames in
             onLayout?(AboutLayoutSnapshot(frames: frames))
         }
+        .onChange(of: reducesMotion) { markTarget = .zero }
     }
 
     // MARK: Dial plate
@@ -204,22 +444,23 @@ struct AboutPage: View {
     /// The disc is one drawing inside the plate's single clip. Nothing else on
     /// the page draws a mark, a shadow or a second edge.
     private var plate: some View {
-        ZStack(alignment: .topLeading) {
-            VStack(spacing: 0) {
-                upperBand
-                Rectangle()
-                    .fill(AboutDialInk.edge)
-                    .frame(height: 1)
-                    .aboutFrame("rule")
-                colophon
-            }
-            mark
+        VStack(spacing: 0) {
+            upperBand
+            Rectangle()
+                .fill(AboutDialInk.rule)
+                .frame(height: 1)
+                .aboutFrame("rule")
+            colophon
         }
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: DotTheme.cardCorner, style: .continuous)
                 .fill(AboutDialInk.plate)
         )
+        .overlay(alignment: .topLeading) {
+            mark
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
         .clipShape(
             RoundedRectangle(cornerRadius: DotTheme.cardCorner, style: .continuous)
         )
@@ -227,6 +468,9 @@ struct AboutPage: View {
             RoundedRectangle(cornerRadius: DotTheme.cardCorner, style: .continuous)
                 .strokeBorder(AboutDialInk.edge, lineWidth: 1)
         )
+        .overlay(alignment: .topTrailing) {
+            markPointerRegion
+        }
         .aboutFrame("plate")
     }
 
@@ -249,9 +493,23 @@ struct AboutPage: View {
                         x: geometry.size.width - Self.markRightInset,
                         y: Self.markTopInset
                     )
+                    .offset(x: markOffset.x, y: markOffset.y)
+                    .animation(markAnimation, value: markOffset)
             }
         }
         .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    /// The local tracking corner. It is transparent, outside the update
+    /// column, and invisible to the accessibility tree.
+    private var markPointerRegion: some View {
+        AboutMarkPointerRegion(enabled: !reducesMotion) { point in
+            markTarget = point ?? .zero
+        }
+        .frame(width: Self.markTrackingSide, height: Self.markTrackingSide)
+        .aboutFrame("markRegion")
+        .allowsHitTesting(true)
         .accessibilityHidden(true)
     }
 
@@ -263,16 +521,28 @@ struct AboutPage: View {
             width: Self.markDiameter,
             height: Self.markDiameter
         )
+        .offsetBy(dx: markOffset.x, dy: markOffset.y)
     }
 
     private var upperBand: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text("Dot")
-                .font(DotTheme.displayFont(30))
-                .tracking(-0.4)
-                .foregroundStyle(AboutDialInk.value)
-                .accessibilityAddTraits(.isHeader)
-                .aboutFrame("title")
+        let controlCanHighlight = currentUpdate.acceptsAnotherCheck && (controlHovered || controlFocused)
+        let fillHighlighted = currentUpdate.acceptsAnotherCheck
+            && (previewControlHighlighted ?? controlCanHighlight)
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Dot")
+                    .font(DotTheme.displayFont(30))
+                    .tracking(-0.4)
+                    .foregroundStyle(AboutDialInk.value)
+                    .accessibilityAddTraits(.isHeader)
+                    .aboutFrame("title")
+
+                Text(ProductLinks.tagline)
+                    .font(DotType.font(12, .medium))
+                    .foregroundStyle(AboutDialInk.status)
+                    .fixedSize(horizontal: true, vertical: true)
+                    .aboutFrame("tagline")
+            }
 
             Spacer(minLength: 16)
 
@@ -283,8 +553,15 @@ struct AboutPage: View {
                         .foregroundStyle(
                             currentUpdate.acceptsAnotherCheck ? AboutDialInk.value : AboutDialInk.status
                         )
-                        .frame(minHeight: 28)
-                        .padding(.horizontal, 12)
+                        .frame(width: 132, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(AboutDialInk.value.opacity(
+                                    AboutControlFill.opacity(
+                                        isHighlighted: fillHighlighted
+                                    )
+                                ))
+                        )
                         .overlay(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
                                 .strokeBorder(
@@ -296,6 +573,11 @@ struct AboutPage: View {
                 }
                 .buttonStyle(DotPressStyle())
                 .disabled(!currentUpdate.acceptsAnotherCheck)
+                .focused($controlFocused)
+                .onHover { controlHovered = $0 }
+                .onChange(of: currentUpdate.acceptsAnotherCheck) { _, accepts in
+                    if !accepts { controlHovered = false }
+                }
                 .accessibilityLabel(currentUpdate.controlLabel)
                 .accessibilityValue(currentUpdate.statusText)
                 .aboutFrame("control")
@@ -304,9 +586,9 @@ struct AboutPage: View {
                     .font(DotType.font(11, .medium))
                     .foregroundStyle(AboutDialInk.status)
                     .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
                     .multilineTextAlignment(.trailing)
                     .accessibilityHidden(true)
+                    .frame(width: 200, height: Self.statusReserveHeight, alignment: .topTrailing)
                     .aboutFrame("status")
             }
             .padding(.trailing, Self.markReserve)
@@ -339,7 +621,7 @@ struct AboutPage: View {
             .aboutFrame("versionCell")
 
             Rectangle()
-                .fill(AboutDialInk.edge)
+                .fill(AboutDialInk.rule)
                 .frame(width: 1)
                 .aboutFrame("separator")
 
@@ -539,6 +821,8 @@ struct AboutPage: View {
 enum AboutDialInk {
     static let plate = Color(.sRGB, red: 0x24 / 255, green: 0x21 / 255, blue: 0x1E / 255)
     static let edge = Color(.sRGB, red: 0x62 / 255, green: 0x57 / 255, blue: 0x4D / 255)
+    /// The same edge, softened for the two rules drawn inside the plate.
+    static let rule = edge.opacity(0.45)
     static let disc = Color(.sRGB, red: 0xF4 / 255, green: 0xF2 / 255, blue: 0xEE / 255)
     static let value = Color(.sRGB, red: 0xFF / 255, green: 0xF4 / 255, blue: 0xE6 / 255)
     static let status = Color(.sRGB, red: 0xD8 / 255, green: 0xCA / 255, blue: 0xBC / 255)
