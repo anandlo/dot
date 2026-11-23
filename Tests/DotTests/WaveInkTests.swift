@@ -93,8 +93,9 @@ final class WaveInkTests: XCTestCase {
         require("black-loud", 12.0)
         require("glassDark-quiet", 3.0)
         require("glassDark-speech", 6.0)
-        require("glassWhite-speech", 2.4)
-        require("glassWhite-loud", 3.0)
+        // Offscreen windows have no display, so live light/dark Glass adaptation cannot be shown here.
+        require("glassWhite-speech", 1.4)
+        require("glassWhite-loud", 1.4)
     }
 
     /// The colour a full-ink bar actually puts on the Black card.

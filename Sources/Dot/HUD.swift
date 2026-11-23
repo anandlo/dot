@@ -292,11 +292,10 @@ final class HUD {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
-        // The card is dark in every appearance, so the system chrome inside it —
-        // the transcript's scroller above all — is drawn in the dark appearance
-        // even when the rest of the app is light. A scroller that follows a
-        // light appearance would be dark on a dark card.
-        panel.appearance = NSAppearance(named: .darkAqua)
+        // Glass follows the system's own appearance so its ink can adapt to the
+        // backdrop. Black keeps the dark appearance its opaque card has always
+        // used, including for the system chrome inside the transcript.
+        applyPanelAppearance()
         // The buttons need the mouse. The panel is still nonactivating and
         // can never become key: a click never moves keyboard focus.
         panel.ignoresMouseEvents = false
@@ -409,7 +408,15 @@ final class HUD {
     /// What material the HUD island is made of: .glass or .black.
     var material: HUDMaterial {
         get { model.material }
-        set { model.material = newValue }
+        set {
+            model.material = newValue
+            applyPanelAppearance()
+        }
+    }
+
+    /// Glass inherits the system appearance; Black keeps the fixed dark one.
+    private func applyPanelAppearance() {
+        panel.appearance = model.material == .glass ? nil : NSAppearance(named: .darkAqua)
     }
 
     /// The microphone level, read on every frame.

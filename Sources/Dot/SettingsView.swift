@@ -2712,14 +2712,9 @@ struct HUDSwatch: View {
                     Color.clear
                         .frame(width: Self.tileSize.width, height: Self.tileSize.height)
                         .glassEffect(
-                            HUDTheme.glass,
+                            .regular,
                             in: RoundedRectangle(cornerRadius: Self.glassRadius, style: .continuous)
                         )
-                    // The same scrim the card draws over its material, so the
-                    // tile is the card's own two layers and the ink on it reads
-                    // at the contrast the card was measured at.
-                    RoundedRectangle(cornerRadius: Self.glassRadius, style: .continuous)
-                        .fill(Color.black.opacity(HUDTheme.glassScrimOpacity))
                 }
             }
 
@@ -2807,14 +2802,14 @@ struct HUDSwatch: View {
             Text("REC")
                 .font(HUDTheme.labelFont)
                 .tracking(HUDTheme.labelTracking)
-                .foregroundStyle(HUDTheme.ink)
+                .hudInk(.primary)
 
             Color.clear.frame(width: 10)
 
             Text("0:07")
                 .font(HUDTheme.clockFont)
                 .tracking(HUDTheme.clockTracking)
-                .foregroundStyle(HUDTheme.clockInk(material))
+                .foregroundStyle(HUDTheme.clockInk(material, useSystemInk: material == .glass))
 
             Color.clear.frame(width: 14)
 
@@ -2848,6 +2843,7 @@ struct HUDSwatch: View {
         .padding(.horizontal, HUDTheme.padding)
         .frame(maxWidth: .infinity)
         .frame(height: HUDState.recordingHeight)
+        .environment(\.hudUsesSystemInk, material == .glass)
     }
 
     /// The hairline between the wave and the buttons, as the card draws it.
