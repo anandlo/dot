@@ -360,19 +360,30 @@ enum HUDTheme {
     /// - Parameters:
     ///   - colour: the delivery's own colour, or ``live`` for a failure.
     ///   - material: the card's fill.
+    ///   - useSystemInk: whether Glass draws its labels with semantic ink.
+    ///     The measured cream token remains the default for callers that judge
+    ///     that token rather than the live card.
     /// - Returns: the colour the status label and its glyph are drawn in.
-    static func statusInk(_ colour: Color, material: HUDMaterial) -> Color {
+    static func statusInk(
+        _ colour: Color,
+        material: HUDMaterial,
+        useSystemInk: Bool = false
+    ) -> Color {
+        if useSystemInk, material == .glass { return Color.primary }
         guard material == .glass else { return colour }
         return inkBase.opacity(statusInkOpacity)
     }
 
     /// The clock's ink on one material.
     ///
-    /// - Parameter material: the card's fill. The black card's clock is
-    ///   ``ink2``; the glass card's is the same colour at
-    ///   ``clockInkOpacity``.
+    /// - Parameters:
+    ///   - material: the card's fill. The black card's clock is
+    ///     ``ink2``; the glass card's is the same colour at
+    ///     ``clockInkOpacity`` unless semantic ink is requested.
+    ///   - useSystemInk: whether Glass draws its labels with semantic ink.
     /// - Returns: the colour the clock's figures are drawn in.
-    static func clockInk(_ material: HUDMaterial) -> Color {
+    static func clockInk(_ material: HUDMaterial, useSystemInk: Bool = false) -> Color {
+        if useSystemInk, material == .glass { return Color.secondary }
         guard material == .glass else { return ink2 }
         return inkBase.opacity(clockInkOpacity)
     }
@@ -418,14 +429,81 @@ struct VisualEffectBlur: NSViewRepresentable {
     }
 }
 
+/// Which rung of the card's ink ladder a label sits on.
+enum HUDInkLevel {
+    case primary
+    case secondary
+    case tertiary
+}
+
+private struct HUDUsesSystemInkKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Whether the card's labels use the system's semantic ink. Glass sets it;
+    /// Black and the fallback leave it false and keep the cream tokens.
+    var hudUsesSystemInk: Bool {
+        get { self[HUDUsesSystemInkKey.self] }
+        set { self[HUDUsesSystemInkKey.self] = newValue }
+    }
+}
+
+private struct HUDInkModifier: ViewModifier {
+    @Environment(\.hudUsesSystemInk) private var useSystemInk
+    let level: HUDInkLevel
+    let opacity: Double
+
+    func body(content: Content) -> some View {
+        Group {
+            if useSystemInk {
+                switch level {
+                case .primary: content.foregroundStyle(.primary)
+                case .secondary: content.foregroundStyle(.secondary)
+                case .tertiary: content.foregroundStyle(.tertiary)
+                }
+            } else {
+                switch level {
+                case .primary: content.foregroundStyle(HUDTheme.ink.opacity(opacity))
+                case .secondary: content.foregroundStyle(HUDTheme.ink2.opacity(opacity))
+                case .tertiary: content.foregroundStyle(HUDTheme.ink3.opacity(opacity))
+                }
+            }
+        }
+        .opacity(useSystemInk && opacity < 1 ? opacity : 1)
+    }
+}
+
+extension View {
+    /// Applies the card's ink for the current material.
+    func hudInk(_ level: HUDInkLevel, opacity: Double = 1) -> some View {
+        modifier(HUDInkModifier(level: level, opacity: opacity))
+    }
+
+    /// Applies the material's ink in one state and a fixed colour in another,
+    /// for controls whose accent or warning colour must stay unchanged.
+    func hudInk(
+        _ level: HUDInkLevel,
+        when useInk: Bool,
+        otherwise color: Color,
+        opacity: Double = 1
+    ) -> some View {
+        Group {
+            if useInk {
+                self.hudInk(level, opacity: opacity)
+            } else {
+                self.foregroundStyle(color).opacity(opacity)
+            }
+        }
+    }
+}
+
 /// The surface of the card: one shape, one fill, one border, supporting Glass and Black materials.
 ///
-/// On macOS 26 and later the Glass fill is the system's Liquid Glass at the
-/// clear variant: the material draws the backdrop, the refraction and its own
-/// edge, and the app draws neither a blur, a tint, a specular highlight nor a
-/// rim on top of it. The one thing it does draw over the material is the
-/// measured scrim the card's ink is read against, see
-/// ``HUDTheme/glassScrimOpacity``.
+/// On macOS 26 and later the Glass fill is the system's Liquid Glass at its
+/// regular, adaptive variant. The material draws the backdrop, the refraction
+/// and its own edge; the app draws neither a wash, a tint, a specular highlight
+/// nor a rim on top of it, and its labels use the system's semantic ink.
 /// Before macOS 26 there is no such material, so the same shape is filled with
 /// the behind-window blur, the smoky tint and the specular sheen the app has
 /// always drawn, under its own 1.25 point rim. Black is one opaque gradient on
@@ -468,7 +546,6 @@ struct HUDSurface: View {
                 if Self.drawsSystemGlass(material, useSystemGlass: useSystemGlass) {
                     if #available(macOS 26.0, *) {
                         systemGlass
-                        scrim
                     }
                 } else {
                     legacyGlass
@@ -486,31 +563,16 @@ struct HUDSurface: View {
         }
     }
 
-    /// The fill on macOS 26 and later: the system's Liquid Glass.
-    ///
-    /// The variant and the tint are the material's own and not colours laid over
-    /// it, which is why both are properties of the material in ``HUDTheme`` and
-    /// are measured rather than picked by eye. The wash that carries the card's
-    /// ink is the scrim, drawn over the material at the measured
-    /// ``HUDTheme/glassScrimOpacity``.
+    /// The fill on macOS 26 and later: the system's untinted Liquid Glass at its
+    /// regular, adaptive variant. The material's own legibility treatment is used
+    /// instead of an app-drawn wash, so nothing covers the rim or the backdrop.
     @available(macOS 26.0, *)
     private var systemGlass: some View {
         Color.clear
             .glassEffect(
-                HUDTheme.glass,
+                .regular,
                 in: RoundedRectangle(cornerRadius: HUDTheme.cornerRadius, style: .continuous)
             )
-    }
-
-    /// The black scrim that carries the card's ink, clipped to the card's shape.
-    ///
-    /// It is drawn over the material and under the card's content: the content
-    /// sits above this surface, so the scrim darkens what the ink is read against
-    /// and leaves the ink itself untouched. A dim layer under the material was
-    /// measured and rejected, see ``HUDTheme/glassScrimOpacity``.
-    private var scrim: some View {
-        RoundedRectangle(cornerRadius: HUDTheme.cornerRadius, style: .continuous)
-            .fill(Color.black.opacity(HUDTheme.glassScrimOpacity))
     }
 
     /// The fill before Liquid Glass: the behind-window blur, the tint and the sheen.

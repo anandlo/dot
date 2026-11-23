@@ -76,6 +76,11 @@ struct HUDView: View {
     var actions = HUDActions()
     /// Whether the person asked for reduced motion, as the environment says.
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    /// Whether this card's labels use the system's semantic ink.
+    ///
+    /// The environment write below reaches descendants, not `HUDView` itself, so
+    /// the card has to read the material it already owns.
+    var usesSystemInk: Bool { model.material == .glass }
     /// A value the documentation renders can set without a system preference.
     var reduceMotionOverride: Bool? = nil
     /// How far the halo's ring ink is mixed toward the card's ink on the glass
@@ -150,11 +155,14 @@ struct HUDView: View {
 #if DEBUG
         let _ = BodyEvalProbe.record()
 #endif
-        if let emergence {
-            pouring(emergence)
-        } else {
-            fading
+        Group {
+            if let emergence {
+                pouring(emergence)
+            } else {
+                fading
+            }
         }
+        .environment(\.hudUsesSystemInk, model.material == .glass)
     }
 
     /// The card that arrives by fading, drawn where it rests.
@@ -310,9 +318,9 @@ struct HUDView: View {
         case .assistantRecording(let elapsed):
             assistantRecording(elapsed: elapsed)
         case .assistantThinking(let question):
-            assistantLine(text: question, color: HUDTheme.ink2)
+            assistantLine(text: question, style: usesSystemInk ? AnyShapeStyle(.secondary) : AnyShapeStyle(HUDTheme.ink2))
         case .assistantTool(let connectorName):
-            assistantLine(text: "Using \(connectorName)", color: HUDTheme.ink)
+            assistantLine(text: "Using \(connectorName)", style: usesSystemInk ? AnyShapeStyle(.primary) : AnyShapeStyle(HUDTheme.ink))
         case .assistantAnswer(let text, let state):
             assistantAnswer(text: text, state: state)
         case .assistantConfirm(let request):
@@ -341,14 +349,14 @@ struct HUDView: View {
                 Text("REC")
                     .font(HUDTheme.labelFont)
                     .tracking(HUDTheme.labelTracking)
-                    .foregroundStyle(HUDTheme.ink)
+                    .hudInk(.primary)
 
                 Color.clear.frame(width: 10)
 
                 Text(elapsed)
                     .font(HUDTheme.clockFont)
                     .tracking(HUDTheme.clockTracking)
-                    .foregroundStyle(HUDTheme.clockInk(model.material))
+                    .foregroundStyle(HUDTheme.clockInk(model.material, useSystemInk: usesSystemInk))
 
                 Color.clear.frame(width: 14)
 
@@ -373,7 +381,7 @@ struct HUDView: View {
     }
 
     /// One line of the assistant at work: its mark, a sentence, and the dots.
-    private func assistantLine(text: String, color: Color) -> some View {
+    private func assistantLine(text: String, style: AnyShapeStyle) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "sparkle")
                 .font(DotType.font(11, .semibold))
@@ -381,7 +389,7 @@ struct HUDView: View {
 
             Text(text)
                 .font(HUDTheme.assistantFont)
-                .foregroundStyle(color)
+                .foregroundStyle(style)
                 .lineLimit(1)
                 .truncationMode(.tail)
 
@@ -403,7 +411,7 @@ struct HUDView: View {
                 Text(HUDHeader.title(for: state))
                     .font(HUDTheme.labelFont)
                     .tracking(HUDTheme.labelTracking)
-                    .foregroundStyle(assistantLabelColor(state))
+                    .foregroundStyle(assistantLabelStyle(state))
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: HUDHeader.maximumTitleWidth, alignment: .leading)
@@ -430,7 +438,7 @@ struct HUDView: View {
                 Text(text)
                     .font(HUDTheme.transcriptFont)
                     .lineSpacing(HUDTheme.transcriptLineSpacing)
-                    .foregroundStyle(HUDTheme.ink)
+                    .hudInk(.primary)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, HUDTheme.padding)
@@ -446,11 +454,13 @@ struct HUDView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    private func assistantLabelColor(_ state: AssistantAnswerState) -> Color {
+    private func assistantLabelStyle(_ state: AssistantAnswerState) -> AnyShapeStyle {
         switch state {
-        case .pasted, .copied: HUDTheme.mint
-        case .speaking: HUDTheme.recordingInk(model.material)
-        case .streaming, .spoken: HUDTheme.ink2
+        case .pasted, .copied: AnyShapeStyle(HUDTheme.mint)
+        case .speaking: AnyShapeStyle(HUDTheme.recordingInk(model.material))
+        case .streaming, .spoken: usesSystemInk
+            ? AnyShapeStyle(.secondary)
+            : AnyShapeStyle(HUDTheme.ink2)
         }
     }
 
@@ -469,12 +479,12 @@ struct HUDView: View {
             HStack(spacing: 8) {
                 Image(systemName: request.connectorID.symbol)
                     .font(DotType.font(14, .semibold))
-                    .foregroundStyle(HUDTheme.ink2)
+                    .hudInk(.secondary)
 
                 Text(request.connectorName.uppercased())
                     .font(HUDTheme.labelFont)
                     .tracking(HUDTheme.labelTracking)
-                    .foregroundStyle(HUDTheme.ink2)
+                    .hudInk(.secondary)
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
@@ -485,7 +495,7 @@ struct HUDView: View {
 
             Text(request.summary)
                 .font(DotType.font(14, .regular))
-                .foregroundStyle(HUDTheme.ink)
+                .hudInk(.primary)
                 .lineLimit(HUDConfirmLayout.maximumSummaryLines)
                 .lineSpacing(2)
                 .frame(width: HUDConfirmLayout.summaryWidth, alignment: .leading)
@@ -529,14 +539,14 @@ struct HUDView: View {
                 Text("REC")
                     .font(HUDTheme.labelFont)
                     .tracking(HUDTheme.labelTracking)
-                    .foregroundStyle(HUDTheme.ink)
+                    .hudInk(.primary)
 
                 Color.clear.frame(width: 10)
 
                 Text(elapsed)
                     .font(HUDTheme.clockFont)
                     .tracking(HUDTheme.clockTracking)
-                    .foregroundStyle(HUDTheme.clockInk(model.material))
+                    .foregroundStyle(HUDTheme.clockInk(model.material, useSystemInk: usesSystemInk))
 
                 Color.clear.frame(width: 14)
 
@@ -567,7 +577,7 @@ struct HUDView: View {
                         Text(model.liveText)
                             .font(HUDTheme.liveFont)
                             .lineSpacing(HUDTheme.liveLineSpacing)
-                            .foregroundStyle(HUDTheme.ink2)
+                            .hudInk(.secondary)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, HUDTheme.padding)
@@ -611,7 +621,7 @@ struct HUDView: View {
             Text("TRANSCRIBING")
                 .font(HUDTheme.labelFont)
                 .tracking(HUDTheme.labelTracking)
-                .foregroundStyle(HUDTheme.ink2)
+                .hudInk(.secondary)
 
             // Which request of how many is in flight. A spinner alone cannot
             // tell "almost done" from "stuck", and the stop path is short
@@ -619,7 +629,7 @@ struct HUDView: View {
             if !model.workingDetail.isEmpty {
                 Text(model.workingDetail)
                     .font(HUDTheme.clockFont)
-                    .foregroundStyle(HUDTheme.ink3)
+                    .hudInk(.tertiary)
                     .accessibilityLabel(Text("Request \(model.workingDetail)"))
             }
 
@@ -682,7 +692,7 @@ struct HUDView: View {
                 Text(elapsed)
                     .font(HUDTheme.clockFont)
                     .tracking(HUDTheme.clockTracking)
-                    .foregroundStyle(HUDTheme.clockInk(model.material))
+                    .foregroundStyle(HUDTheme.clockInk(model.material, useSystemInk: usesSystemInk))
                     .fixedSize()
 
                 if card?.canUndo == true {
@@ -826,6 +836,7 @@ struct HUDView: View {
         HUDInlineTranscriptView(
             text: text,
             isEditing: model.isEditingTranscript,
+            usesSystemInk: usesSystemInk,
             onBeginEditing: {
                 actions.beginInlineEdit?()
             },
@@ -909,7 +920,7 @@ struct HUDView: View {
 
             Text(text)
                 .font(HUDTheme.messageFont)
-                .foregroundStyle(HUDTheme.ink)
+                .hudInk(.primary)
                 .lineLimit(2)
 
             Spacer(minLength: 8)
@@ -977,7 +988,7 @@ struct HUDView: View {
                 if !model.activeKeyHint.isEmpty {
                     Text("Key \(model.activeKeyHint)")
                         .font(DotType.tabularFont(11.5, .medium))
-                        .foregroundStyle(HUDTheme.ink2)
+                        .hudInk(.secondary)
                         .lineLimit(1)
                 }
             }
@@ -1134,7 +1145,7 @@ private struct GrammarChip: View {
         Text(wasLong ? "\(title) · length kept" : title)
             .font(HUDTheme.labelFont)
             .tracking(1.0)
-            .foregroundStyle(HUDTheme.ink2)
+            .hudInk(.secondary)
             .lineLimit(1)
             .padding(.horizontal, 7)
             .frame(height: 18)
@@ -1259,12 +1270,27 @@ enum HUDAction: Hashable {
         self == .stopRewrite ? HUDTheme.recording : HUDTheme.ink3
     }
 
-    /// The colour the icon takes under the pointer.
     var hoverColor: Color {
         switch self {
         case .stop, .stopRewrite: HUDTheme.recording
         case .cancel, .close: HUDTheme.ink
         case .copy, .paste, .history, .settings: HUDTheme.accent
+        }
+    }
+
+    func restingStyle(useSystemInk: Bool) -> AnyShapeStyle {
+        if self == .stopRewrite { return AnyShapeStyle(HUDTheme.recording) }
+        return useSystemInk ? AnyShapeStyle(.tertiary) : AnyShapeStyle(HUDTheme.ink3)
+    }
+
+    /// The style the icon takes under the pointer.
+    func hoverStyle(useSystemInk: Bool) -> AnyShapeStyle {
+        switch self {
+        case .stop, .stopRewrite: AnyShapeStyle(HUDTheme.recording)
+        case .cancel, .close: useSystemInk
+            ? AnyShapeStyle(.primary)
+            : AnyShapeStyle(HUDTheme.ink)
+        case .copy, .paste, .history, .settings: AnyShapeStyle(HUDTheme.accent)
         }
     }
 }
@@ -1284,7 +1310,7 @@ private struct HUDMessageActionButton: View {
         Button(action: perform) {
             Text(title)
                 .font(HUDTheme.messageActionFont)
-                .foregroundStyle(hovering ? HUDTheme.accentTip : HUDTheme.ink)
+                .hudInk(.primary, when: !hovering, otherwise: HUDTheme.accentTip)
                 .lineLimit(1)
                 .padding(.horizontal, HUDTheme.messageActionHPadding)
                 .frame(height: HUDTheme.messageActionHeight)
@@ -1328,6 +1354,7 @@ struct HUDActionButton: View {
     let perform: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.hudUsesSystemInk) var usesSystemInk
     @State private var hovering = false
 
     private var activeHover: Bool {
@@ -1338,7 +1365,9 @@ struct HUDActionButton: View {
         Button(action: perform) {
             Image(systemName: action.symbol)
                 .font(HUDTheme.actionFont)
-                .foregroundStyle(activeHover ? action.hoverColor : action.restingColor)
+                .foregroundStyle(activeHover
+                    ? action.hoverStyle(useSystemInk: usesSystemInk)
+                    : action.restingStyle(useSystemInk: usesSystemInk))
                 .frame(width: HUDTheme.actionSize, height: HUDTheme.actionSize)
                 .background(
                     Circle()
@@ -1438,6 +1467,7 @@ private struct HUDActionButtonBody: View {
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.hudUsesSystemInk) var usesSystemInk
 
     private var reducesMotion: Bool {
         reduceMotion || systemReduceMotion || DotMotion.reducesMotion
@@ -1634,7 +1664,11 @@ private struct FrameRewriteIdentity: View {
                     .frame(width: HUDTheme.badgeSize, height: HUDTheme.badgeSize)
                 Image(systemName: delivery.glyph)
                     .font(DotType.font(10.5, .bold))
-                    .foregroundStyle(HUDTheme.statusInk(delivery.color, material: material))
+                    .foregroundStyle(HUDTheme.statusInk(
+                        delivery.color,
+                        material: material,
+                        useSystemInk: material == .glass
+                    ))
             }
         }
 
@@ -1644,7 +1678,8 @@ private struct FrameRewriteIdentity: View {
                 .tracking(HUDTheme.labelTracking)
                 .foregroundStyle(HUDTheme.statusInk(
                     failed ? HUDTheme.warning : delivery.color,
-                    material: material
+                    material: material,
+                    useSystemInk: material == .glass
                 ))
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -1768,9 +1803,17 @@ extension HUDDelivery {
 struct HUDInlineTranscriptView: NSViewRepresentable {
     let text: String
     let isEditing: Bool
+    let usesSystemInk: Bool
     var onBeginEditing: () -> Void
     var onEndEditing: () -> Void
     var onUpdateText: (String) -> Void
+
+    /// The fixed cream on Black, or AppKit's adaptive label colour on Glass.
+    private var inkColor: NSColor {
+        usesSystemInk
+            ? .labelColor
+            : NSColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1.0)
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -1795,7 +1838,7 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
         textView.drawsBackground = false
         textView.backgroundColor = .clear
         textView.font = DotType.nsFont(15, .regular)
-        textView.textColor = NSColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1.0)
+        textView.textColor = inkColor
         textView.insertionPointColor = NSColor(red: 0.96, green: 0.62, blue: 0.14, alpha: 1.0)
         textView.textContainerInset = NSSize(
             width: HUDTheme.padding - 5,
@@ -1812,7 +1855,7 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
         textView.defaultParagraphStyle = paragraph
         textView.typingAttributes = [
             .font: DotType.nsFont(15, .regular),
-            .foregroundColor: NSColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1.0),
+            .foregroundColor: inkColor,
             .paragraphStyle: paragraph,
         ]
 
@@ -1839,18 +1882,22 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scrollView.documentView as? HUDTranscriptNSTextView else { return }
-        if textView.string != text {
+        let textChanged = textView.string != text
+        let inkChanged = context.coordinator.appliedUsesSystemInk != usesSystemInk
+        if textChanged || inkChanged {
             let selectedRanges = textView.selectedRanges
+            textView.textColor = inkColor
+            textView.typingAttributes[.foregroundColor] = inkColor
             context.coordinator.isUpdatingProgrammatically = true
             context.coordinator.applyAttributedText(text, to: textView)
             if isEditing {
                 textView.selectedRanges = selectedRanges
-            } else if context.coordinator.hasShownText {
+            } else if textChanged, context.coordinator.hasShownText {
                 // Words that arrive while the card is open are the reason to
                 // follow the end; a sentence that was already complete is read
                 // from its start.
                 Self.scrollToBottomIfNeeded(scrollView: scrollView, textView: textView)
-            } else {
+            } else if textChanged {
                 Self.scrollToStart(scrollView: scrollView)
             }
             context.coordinator.hasShownText = !text.isEmpty
@@ -1888,17 +1935,19 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
         /// card receives is the whole take, and it is read from its first
         /// word; only text that arrives after that follows the end of the card.
         var hasShownText = false
+        var appliedUsesSystemInk: Bool?
 
         init(_ parent: HUDInlineTranscriptView) {
             self.parent = parent
         }
 
         func applyAttributedText(_ string: String, to textView: NSTextView) {
+            appliedUsesSystemInk = parent.usesSystemInk
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = HUDTheme.transcriptLineSpacing
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: DotType.nsFont(15, .regular),
-                .foregroundColor: NSColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1.0),
+                .foregroundColor: parent.inkColor,
                 .paragraphStyle: paragraph,
             ]
             textView.textStorage?.setAttributedString(NSAttributedString(string: string, attributes: attrs))
@@ -2048,7 +2097,7 @@ private struct HUDConfirmButtonBody: View {
     var body: some View {
         configuration.label
             .font(DotType.font(12, .medium))
-            .foregroundStyle(foreground)
+            .foregroundStyle(foregroundStyle)
             .padding(.horizontal, 14)
             .frame(height: HUDConfirmLayout.buttonHeight)
             .background(Capsule(style: .circular).fill(background))
@@ -2074,9 +2123,13 @@ private struct HUDConfirmButtonBody: View {
             .contentShape(Capsule(style: .circular))
     }
 
-    private var foreground: Color {
-        guard isPrimary else { return HUDTheme.ink }
-        return isDestructive ? .white : Color.black.opacity(0.86)
+    @Environment(\.hudUsesSystemInk) var usesSystemInk
+
+    private var foregroundStyle: AnyShapeStyle {
+        guard isPrimary else {
+            return usesSystemInk ? AnyShapeStyle(.primary) : AnyShapeStyle(HUDTheme.ink)
+        }
+        return isDestructive ? AnyShapeStyle(Color.white) : AnyShapeStyle(Color.black.opacity(0.86))
     }
 
     private var background: Color {
