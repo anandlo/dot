@@ -246,11 +246,15 @@ final class HUD {
     /// The row's own reveal is an eased scroll of several frames, and its last
     /// steps are each shorter than the residue's reach. One write that carries
     /// the rail further than that qualifies the ones after it: they are followed
-    /// until the clip holds still for a frame, so the record lands on where the
+    /// until the clip holds still, so the record lands on where the
     /// reveal came to rest rather than on the frame that crossed the window.
     private var railOriginTracks = false
-    /// The clip origin the tracking last read, so a frame without a write ends it.
+    /// The clip origin the tracking last read, so frames without a write can end it.
     private var railTrackedOrigin: CGPoint?
+    /// How many frames in a row have read the clip where the last write left it.
+    private var railStillFrames = 0
+    /// The frame time the tracking last saw the clip move.
+    private var railMovedAt: CFTimeInterval = 0
     /// The rail the appearance is reading, kept between frames.
     ///
     /// The rail is a scroll view inside the card's SwiftUI tree, and finding it
@@ -1080,10 +1084,10 @@ final class HUD {
     /// frame for each write. Waiting for the wall-clock loop lets a loaded
     /// machine deliver a frame with no write, which ends the follow before the
     /// last step. The app never calls this.
-    func debugAdvanceRailTrackingFrame() {
+    func debugAdvanceRailTrackingFrame(now: CFTimeInterval) {
         guard let rail = cardRail() else { return }
         observeTheRailsOrigin(of: rail)
-        trackTheRailsOriginToRest(rail)
+        trackTheRailsOriginToRest(rail, now: now)
     }
 
     /// Starts a new reveal's run of tracking frames at the recorded position.
@@ -2120,7 +2124,7 @@ final class HUD {
         }
 
         advanceAppearance(by: dt)
-        restoreTheRailsOpeningPosition()
+        restoreTheRailsOpeningPosition(now: now)
 
         if case .recording = model.mode {
             if isPreviewingVisualizer {
@@ -2369,10 +2373,10 @@ final class HUD {
     /// wrote. A card with a style selected therefore needs no rule of its own:
     /// the row opens on that style, which is one of the positions the person's
     /// own reveal wrote.
-    private func restoreTheRailsOpeningPosition() {
+    private func restoreTheRailsOpeningPosition(now: CFTimeInterval) {
         guard let rail = cardRail() else { return }
         observeTheRailsOrigin(of: rail)
-        trackTheRailsOriginToRest(rail)
+        trackTheRailsOriginToRest(rail, now: now)
         guard !railPositionRestored, !debugHoldTheOpeningCorrection, debugAppearanceAtRest else { return }
         // The rail's frame changes while the card's own size springs to the
         // layer's height, and a correction made during that would be answered by
@@ -2477,8 +2481,9 @@ final class HUD {
     /// Keeps the rail's position from a write that is the person's.
     ///
     /// A write further than the residue reaches qualifies, and every write after
-    /// it is kept too, at any distance, until the clip holds still for a frame:
-    /// the row's reveal arrives in steps and its last ones are short. The record
+    /// it is kept too, at any distance, until the clip holds still (see
+    /// ``railFollowEnds(stillFrames:stillFor:)``): the row's reveal arrives in
+    /// steps and its last ones are short. The record
     /// keeps following the rail after the opening correction has been decided,
     /// because a person who reaches a style then has still moved the rail.
     ///
@@ -2498,20 +2503,47 @@ final class HUD {
         }
     }
 
-    /// Ends the following once a frame passes without a write to the clip.
+    /// Ends the following once the clip has held still, by frames and by time.
     ///
     /// The origin is read once per frame and held beside the frame before it: a
     /// frame that wrote the clip moved it, and a frame that did not left it where
-    /// the last write put it.
+    /// the last write put it. The reveal's steps and the card's frames run on
+    /// separate clocks, so on a loaded machine one frame can land between two
+    /// steps, and so can a burst of frames the timer delivers back to back. See
+    /// ``railFollowEnds(stillFrames:stillFor:)``.
     ///
-    /// - Parameter rail: the card's rail.
-    private func trackTheRailsOriginToRest(_ rail: NSScrollView) {
+    /// - Parameters:
+    ///   - rail: the card's rail.
+    ///   - now: the frame's time.
+    private func trackTheRailsOriginToRest(_ rail: NSScrollView, now: CFTimeInterval) {
         guard railOriginTracks else { return }
         let origin = rail.contentView.bounds.origin
         if let previous = railTrackedOrigin, previous == origin {
-            railOriginTracks = false
+            railStillFrames += 1
+            if Self.railFollowEnds(stillFrames: railStillFrames, stillFor: now - railMovedAt) {
+                railOriginTracks = false
+            }
+        } else {
+            railStillFrames = 0
+            railMovedAt = now
         }
         railTrackedOrigin = origin
+    }
+
+    /// Whether the clip has held still long enough to end following a reveal.
+    ///
+    /// Both limits have to be met. Three frames rule out the single late frame
+    /// after a stall, which arrives long after the last write but before the
+    /// reveal's next step has run. Fifty milliseconds rule out frames the timer
+    /// fires back to back. A reveal that has stopped meets both within four
+    /// frames at 60 Hz.
+    ///
+    /// - Parameters:
+    ///   - stillFrames: consecutive frames that read the clip unmoved.
+    ///   - stillFor: seconds since the frame that last saw the clip move.
+    /// - Returns: whether the follow ends.
+    static func railFollowEnds(stillFrames: Int, stillFor: TimeInterval) -> Bool {
+        stillFrames >= 3 && stillFor >= 0.05
     }
 
     private func advanceSpectrum(target: AudioSpectrumFrame, dt: Double, now: TimeInterval) {
