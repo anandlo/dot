@@ -40,6 +40,7 @@ final class LogFileTests: XCTestCase {
         XCTAssertTrue(log.openFile(at: url))
         log.info("recording.started")
         log.error("recording.failed", ["error": .string("the microphone is busy")])
+        log.flush()
 
         let lines = try String(contentsOf: url, encoding: .utf8)
             .split(separator: "\n")
@@ -56,6 +57,7 @@ final class LogFileTests: XCTestCase {
         XCTAssertTrue(log.openFile(at: url))
         log.registerSecret("sk-live-0123456789")
         log.info("credential.read", ["detail": .string("the key sk-live-0123456789 was used")])
+        log.flush()
 
         let written = try String(contentsOf: url, encoding: .utf8)
         XCTAssertFalse(written.contains("sk-live-0123456789"))
@@ -70,6 +72,8 @@ final class LogFileTests: XCTestCase {
         for index in 0..<80 {
             log.info("line-\(String(format: "%03d", index))", ["filler": .string(String(repeating: "x", count: 40))])
         }
+
+        log.flush()
 
         let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
         XCTAssertLessThanOrEqual(size, 1_024, "the log grew past its limit")

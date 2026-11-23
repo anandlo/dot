@@ -73,6 +73,18 @@ public final class Log: @unchecked Sendable {
     private let lock = NSLock()
     private var secrets: Set<String> = []
     private var minimumLevel: LogLevel = .info
+    /// Whether a file is open, readable from any thread without the writer's
+    /// queue. It is what keeps a line from being built for a logger with
+    /// nowhere to put it.
+    private var hasFile = false
+    /// Serialises the file work: opening, writing and the rotation.
+    ///
+    /// A line is written on paths a person is waiting on — the press that starts
+    /// a recording, the frame that draws the card — so the payload is built on
+    /// the caller and the file is touched here. One queue also keeps the lines in
+    /// the order they were produced.
+    private let queue = DispatchQueue(label: "com.anandlo.dot.log", qos: .utility)
+    /// The writer's own state, touched only on `queue`.
     private var fileHandle: FileHandle?
     private var fileURL: URL?
     /// How many bytes the file holds, as far as this logger wrote them.
@@ -110,7 +122,9 @@ public final class Log: @unchecked Sendable {
     }
 
     /// The file the logger writes to, when it has one.
-    public var url: URL? { fileURL }
+    public var url: URL? {
+        queue.sync { fileURL }
+    }
 
     /// Sets the lowest level that is written.
     public func setLevel(_ level: LogLevel) {
@@ -122,33 +136,54 @@ public final class Log: @unchecked Sendable {
     /// Starts writing to a file, creating the directory when needed.
     @discardableResult
     public func openFile(at url: URL = defaultURL()) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        do {
-            try SecureFile.createDirectory(at: url.deletingLastPathComponent())
-            if !FileManager.default.fileExists(atPath: url.path) {
-                let descriptor = open(
-                    url.path,
-                    O_WRONLY | O_CREAT | O_APPEND,
-                    mode_t(SecureFile.filePermissions)
-                )
-                guard descriptor >= 0 else { throw SecureFileError.cannotCreate(url.path) }
-                close(descriptor)
+        queue.sync {
+            do {
+                try SecureFile.createDirectory(at: url.deletingLastPathComponent())
+                if !FileManager.default.fileExists(atPath: url.path) {
+                    let descriptor = open(
+                        url.path,
+                        O_WRONLY | O_CREAT | O_APPEND,
+                        mode_t(SecureFile.filePermissions)
+                    )
+                    guard descriptor >= 0 else { throw SecureFileError.cannotCreate(url.path) }
+                    close(descriptor)
+                }
+                // A log an older build wrote is still `0644`.
+                SecureFile.tighten(url)
+                let handle = try FileHandle(forWritingTo: url)
+                let end = try handle.seekToEnd()
+                fileHandle = handle
+                fileURL = url
+                writtenBytes = Int(end)
+                setHasFile(true)
+                rotateIfNeeded()
+                // A rotation that could not reopen the file leaves the logger
+                // with nowhere to write, which is a failed open.
+                return fileHandle != nil
+            } catch {
+                fileHandle = nil
+                fileURL = nil
+                setHasFile(false)
+                return false
             }
-            // A log an older build wrote is still `0644`.
-            SecureFile.tighten(url)
-            let handle = try FileHandle(forWritingTo: url)
-            let end = try handle.seekToEnd()
-            fileHandle = handle
-            fileURL = url
-            writtenBytes = Int(end)
-            rotateIfNeededLocked()
-            return true
-        } catch {
-            fileHandle = nil
-            fileURL = nil
-            return false
         }
+    }
+
+    /// Waits for every line written so far to reach the file.
+    ///
+    /// The lines are written on a queue of their own, so a test that reads the
+    /// file and the app on its way out both have to wait for it. It is a `sync`
+    /// on the serial queue, which is a barrier: everything queued before it has
+    /// run when it returns.
+    public func flush() {
+        queue.sync {}
+    }
+
+    /// Whether a file is open, for a caller deciding to build a line.
+    private func setHasFile(_ open: Bool) {
+        lock.lock()
+        hasFile = open
+        lock.unlock()
     }
 
     /// Registers a value that must never appear in a log line.
@@ -192,53 +227,79 @@ public final class Log: @unchecked Sendable {
     }
 
     /// Writes one line.
+    ///
+    /// The work is split by what belongs to which moment: the timestamp, the
+    /// redaction of the fields and the decision whether the line is written at
+    /// all are taken on the caller, because they describe the instant the line
+    /// is about; the JSON and the file wait on the writer's queue. A caller that
+    /// blocks on a rotation is a caller that drops a frame.
     public func write(_ level: LogLevel, _ event: String, _ fields: [String: LogValue] = [:]) {
         lock.lock()
-        let allowed = level >= minimumLevel && fileHandle != nil
+        let allowed = level >= minimumLevel && hasFile
         lock.unlock()
         guard allowed else { return }
 
-        var payload: [String: Any] = [
-            "ts": Date().formatted(Self.timestamp),
-            "level": level.rawValue,
-            "event": event,
-        ]
+        var redacted: [String: LogValue] = [:]
+        redacted.reserveCapacity(fields.count)
         for (key, value) in fields {
-            switch value {
-            case .string(let text): payload[key] = redact(text)
-            case .int(let number): payload[key] = number
-            case .double(let number): payload[key] = number
-            case .bool(let flag): payload[key] = flag
-            case .null: payload[key] = NSNull()
+            if case .string(let text) = value {
+                redacted[key] = .string(redact(text))
+            } else {
+                redacted[key] = value
             }
+        }
+        let line = Line(
+            timestamp: Date().formatted(Self.timestamp),
+            level: level,
+            event: event,
+            fields: redacted
+        )
+        queue.async { self.append(line) }
+    }
+
+    /// One line, waiting for the writer.
+    private struct Line: Sendable {
+        let timestamp: String
+        let level: LogLevel
+        let event: String
+        let fields: [String: LogValue]
+    }
+
+    /// Serialises and writes one line. Runs on `queue`.
+    private func append(_ line: Line) {
+        var payload: [String: Any] = [
+            "ts": line.timestamp,
+            "level": line.level.rawValue,
+            "event": line.event,
+        ]
+        for (key, value) in line.fields {
+            payload[key] = value.jsonObject
         }
         guard let encoded = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         else { return }
-        var line = encoded
-        line.append(0x0A)
-        lock.lock()
-        defer { lock.unlock() }
+        var data = encoded
+        data.append(0x0A)
         guard let handle = fileHandle else { return }
-        if writtenBytes + line.count > limitBytes {
-            rotateLocked()
+        if writtenBytes + data.count > limitBytes {
+            rotate()
             guard fileHandle != nil else { return }
-            fileHandle?.write(line)
-            writtenBytes += line.count
+            fileHandle?.write(data)
+            writtenBytes += data.count
             return
         }
-        handle.write(line)
-        writtenBytes += line.count
+        handle.write(data)
+        writtenBytes += data.count
     }
 
     /// Whether the file on disk is larger than the limit, and the rotation that
     /// follows.
-    private func rotateIfNeededLocked() {
+    private func rotateIfNeeded() {
         guard let fileURL else { return }
         let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
         let size = (attributes?[.size] as? NSNumber)?.intValue ?? 0
         writtenBytes = size
         guard size > limitBytes else { return }
-        rotateLocked()
+        rotate()
     }
 
     /// Keeps the newest whole lines and replaces the file with them.
@@ -247,7 +308,7 @@ public final class Log: @unchecked Sendable {
     /// just grew to the limit, and none of the part that is dropped is needed.
     /// The replacement is written through ``SecureFile``, so the rotated file
     /// is still `0600`.
-    private func rotateLocked() {
+    private func rotate() {
         guard let fileURL, let handle = fileHandle else { return }
         let keep = min(retainBytes, max(0, writtenBytes))
         do {
@@ -276,6 +337,7 @@ public final class Log: @unchecked Sendable {
             } else {
                 fileHandle = nil
                 self.fileURL = nil
+                setHasFile(false)
             }
         }
     }

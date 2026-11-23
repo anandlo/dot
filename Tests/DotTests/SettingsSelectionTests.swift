@@ -327,6 +327,7 @@ final class SettingsSelectionTests: XCTestCase {
 
         let harness = try makeHarness()
         harness.pick("no-such-row")
+        Log.shared.flush()
         let text = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(text.contains("settings.pick.dropped"), "a dropped pick left no trace")
         XCTAssertTrue(text.contains("no-such-row"), "the line does not name the row that was dropped")

@@ -225,6 +225,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .calibration(for: recordingDeviceUID, in: config.microphoneCalibration)?
             .noiseFloorDBFS
     }
+    /// The observer of the catalog's first load, which the menu redraws from.
+    private var catalogLoadObserver: NSObjectProtocol?
+
     /// The part of the configuration a provider is built from.
     ///
     /// Appearance, dwell, the microphone and the shortcuts live outside this, so
@@ -246,6 +249,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The state of the app.
     enum State {
         case idle
+        /// The microphone is opening. Nothing is recorded yet and the card is
+        /// not up, but a stop already means something: it takes the take back.
+        case starting
         case recording
         case working
     }
@@ -263,6 +269,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DotType.registerFonts(at: resources.appendingPathComponent("Fonts"))
         }
         Log.shared.openFile()
+        // The device list is enumerated once, on the catalog's own queue, so the
+        // launch card, the menu and the press only ever read the answer.
+        MicrophoneCatalog.warm()
         heartbeat.start()
         // A dictation app is asked to do its one job by a key press that may
         // arrive hours after the last one. App Nap will happily put an idle,
@@ -310,9 +319,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onAction = { [weak self] action in
             self?.handle(action)
         }
+        // A menu that is about to be read re-reads the two facts that can have
+        // changed without Dot being told: the login item, which the person can
+        // switch in System Settings, and the device list, which the cache keeps
+        // current from the system's own notifications.
+        statusItem.onMenuOpen = { [weak self] in
+            guard let self else { return }
+            LaunchAtLogin.refresh()
+            self.refreshMenu()
+        }
+        // The menu is built from a device list that is empty until the catalog's
+        // first load finishes: this is the one line that puts the devices in it.
+        catalogLoadObserver = NotificationCenter.default.addObserver(
+            forName: MicrophoneCatalog.didLoadNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainThreadTick.run { [weak self] in
+                self?.refreshMenu()
+            }
+        }
 
         recorder.onFailure = { [weak self] message in
             self?.failRecording(message)
+        }
+        // A route change that rebuilds the take onto another device is filed under
+        // the device it is recording on now, the same way its start was: the
+        // calibration of the take follows the engine, never the configuration.
+        recorder.onDeviceChange = { [weak self] deviceUID in
+            guard let self else { return }
+            self.recordingDeviceUID = deviceUID
+            self.hud.setCalibration(
+                MicrophoneCalibrationBook.calibration(
+                    for: deviceUID,
+                    in: self.config.microphoneCalibration
+                )
+            )
         }
         // The clock of the recording card is the real length of the
         // recording, not a number that was set once.
@@ -385,6 +427,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         providerRefreshTimer?.invalidate()
         statusItem.tearDown()
         Log.shared.info("app.stopped")
+        // The lines are written on a queue of their own, and this is the last
+        // moment anything can wait for them.
+        Log.shared.flush()
     }
 
     /// The virtual key code of Escape.
@@ -852,7 +897,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func toggleRecording() {
         switch state {
-        case .recording:
+        case .starting, .recording:
+            // The menu says "stop" while the microphone is opening, and it
+            // means the same thing as the key: the take is taken back.
             stopRecording()
         case .idle, .working:
             startRecording()
@@ -920,6 +967,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func cancelAssistantCapture() {
+        if state == .starting {
+            cancelStartingTake()
+            return
+        }
         guard state == .recording else { return }
         stopLiveTranscription()
         ledger = nil
@@ -932,13 +983,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.shared.info("recording.cancelled", ["purpose": .string("assistant")])
     }
 
+    /// Takes back a take whose microphone is still opening.
+    ///
+    /// There is no card to close and no audio to drop: the take never became a
+    /// recording, so the only trace it leaves is the line that says why it is
+    /// gone.
+    private func cancelStartingTake() {
+        recorder.cancel()
+        capturePurpose = .dictation
+        state = .idle
+        Log.shared.info("recording.cancelled", [
+            "reason": .string("stopped before the microphone started"),
+        ])
+    }
+
     /// The state the assistant's key is answered in.
     ///
     /// A take that is recording a question is the assistant's own capture, so it
     /// reads as ``AssistantPhase/recording``. Every other state is whatever the
     /// turn is doing; a dictation never reaches this table.
     private var assistantPhase: AssistantPhase {
-        if state == .recording, capturePurpose == .assistant { return .recording }
+        // A question whose microphone is still opening is the assistant's
+        // capture as well: Escape has to take it back, not leave it running
+        // behind a turn that already ended.
+        if state == .recording || state == .starting, capturePurpose == .assistant {
+            return .recording
+        }
         return assistant.phase
     }
 
@@ -961,9 +1031,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The state the record key is answered in.
     private var phase: RecordingPhase {
+        Self.phase(for: state)
+    }
+
+    /// How a state answers the record key.
+    ///
+    /// A take that is starting is answered as a recording: the microphone is
+    /// being opened for it, and the press or the release that ends it means the
+    /// person changed their mind, not that they want a second take.
+    nonisolated static func phase(for state: State) -> RecordingPhase {
         switch state {
         case .idle: .idle
-        case .recording: .recording
+        case .starting, .recording: .recording
         case .working: .working
         }
     }
@@ -1030,38 +1109,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         startedFromHotkey = false
-        do {
-            try recorder.start(deviceUID: config.microphoneDeviceUID)
-        } catch RecorderError.permissionDenied {
-            showMicrophoneDenied()
-            return
-        } catch {
-            hud.showMessage(text: error.localizedDescription, action: nil)
-            Log.shared.error("recorder.start.failed", ["error": .string(error.localizedDescription)])
-            return
-        }
-        // The card only appears once the microphone really runs: a live-looking
-        // meter over a system dialog would be a lie. The device is resolved
-        // before the card exists, because the card seeds its meter from the
-        // calibration of the device that is recording. It is written directly
-        // rather than through ``applyCalibration(for:)``, which refuses to touch
-        // a take that is already running.
-        recordingDeviceUID = MicrophoneCatalog.recordingDeviceUID(
-            configured: config.microphoneDeviceUID
-        )
-        hud.setCalibration(
-            MicrophoneCalibrationBook.calibration(
-                for: recordingDeviceUID,
-                in: config.microphoneCalibration
-            )
-        )
-        state = .recording
+        // The paste target is the app that was frontmost at the press. Opening
+        // the microphone takes as long as the device takes, and by the time the
+        // take ends a card of Dot's own may have been in front: asking now is
+        // asking the right question.
         let frontmost = NSWorkspace.shared.frontmostApplication
         frontmostAtPress = FrontmostApp(
             processIdentifier: frontmost?.processIdentifier,
             bundleIdentifier: frontmost?.bundleIdentifier
         )
         frontmostNameAtPress = frontmost?.localizedName
+        let pressedAt = CACurrentMediaTime()
+        state = .starting
+        recorder.start(deviceUID: config.microphoneDeviceUID) { [weak self] report in
+            guard let self else { return }
+            // A start that a stop took back can still answer while the next take
+            // is opening: only the newest start's answer is the app's to act on.
+            guard report.generation == self.recorder.startGeneration else { return }
+            switch report.result {
+            case .success:
+                self.microphoneOpened(
+                    pressedAt: pressedAt,
+                    openedDeviceUID: report.openedDeviceUID
+                )
+            case .failure(.permissionDenied):
+                self.state = .idle
+                self.showMicrophoneDenied()
+            case .failure(.cancelled):
+                // A stop or an Escape took the take back while the engine was
+                // opening; that path has already said so in the log and set
+                // the state. Nothing is left here to undo.
+                break
+            case .failure(let error):
+                self.state = .idle
+                self.hud.showMessage(text: error.localizedDescription, action: nil)
+                Log.shared.error("recorder.start.failed", [
+                    "error": .string(error.localizedDescription),
+                ])
+            }
+        }
+    }
+
+    /// Opens the card for a take whose microphone is running.
+    ///
+    /// Everything here used to run on the press, after a synchronous start. It
+    /// runs in the start's completion now, so the press is answered as soon as
+    /// the audio queue has been handed the work.
+    ///
+    /// - Parameters:
+    ///   - pressedAt: when the record key was answered, for the timing line.
+    ///   - openedDeviceUID: the microphone the take actually opened, which is the
+    ///     device every calibration of this take belongs to.
+    private func microphoneOpened(pressedAt: CFTimeInterval, openedDeviceUID: String?) {
+        guard state == .starting else { return }
+        // The card only appears once the microphone really runs: a live-looking
+        // meter over a system dialog would be a lie. The device is the one the
+        // take opened, not the one the configuration asks for: a take that fell
+        // back to the system default input because the device list did not answer
+        // must not be calibrated as the configured microphone. It is written
+        // directly rather than through ``applyCalibration(for:)``, which refuses
+        // to touch a take that is already running.
+        recordingDeviceUID = openedDeviceUID
+        hud.setCalibration(
+            MicrophoneCalibrationBook.calibration(
+                for: openedDeviceUID,
+                in: config.microphoneCalibration
+            )
+        )
+        state = .recording
         if capturePurpose == .assistant {
             // A question is one short sentence: a live partial would be a second
             // paid request that only repeats what the answer is about to use.
@@ -1075,9 +1190,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.shared.info("recording.started", [
             "purpose": .string(capturePurpose == .assistant ? "assistant" : "dictation"),
         ])
+        // One line with the three numbers that say where a take's first
+        // instant went: the wait for the audio queue, the engine, and the whole
+        // of it up to the card being on screen.
+        if let timing = recorder.lastStartTiming {
+            Log.shared.info("recording.start.timing", [
+                "queue_wait": .int(timing.queueWaitMilliseconds),
+                "engine": .int(timing.engineMilliseconds),
+                "total": .int(Int(((CACurrentMediaTime() - pressedAt) * 1000).rounded())),
+            ])
+        }
     }
 
     private func stopRecording() {
+        // A take whose microphone is still opening has nothing to stop yet: the
+        // press takes it back before the card ever appears.
+        if state == .starting {
+            cancelStartingTake()
+            return
+        }
         guard state == .recording else { return }
         let inFlightLiveTask = liveTask
         liveTask = nil
@@ -1181,6 +1312,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Drops the recording without sending it anywhere.
     private func cancelRecording() {
+        if state == .starting {
+            cancelStartingTake()
+            return
+        }
         guard state == .recording else { return }
         stopLiveTranscription()
         ledger = nil
@@ -1214,8 +1349,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// samples are never scaled, filtered or gated, so the WAV a provider
     /// receives is byte for byte the WAV it would have received before the
     /// calibration existed.
+    /// The device a finished take's calibration belongs to, if any.
+    ///
+    /// A take that ran on two devices has no single microphone to teach: its
+    /// floor and its peak are a mixture, so nothing is folded for it. A take
+    /// whose device was never named has nothing to file against. The decision is
+    /// made from the take alone, which is what keeps a stale `recordingDeviceUID`
+    /// out of the calibration book.
+    nonisolated static func calibrationTarget(for recording: Recorder.Recording) -> String? {
+        guard !recording.spannedDevices else { return nil }
+        return recording.deviceUID
+    }
+
     private func learn(from recording: Recorder.Recording) {
-        guard let device = recordingDeviceUID,
+        guard let device = Self.calibrationTarget(for: recording),
               let observation = MicrophoneCalibrationBook.observation(
                   samples: recording.samples,
                   peakDBFS: recording.peakDBFS
@@ -2154,7 +2301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Devices and language
 
     private func selectMicrophone(_ id: String?) {
-        guard state != .recording else {
+        if state == .recording || state == .starting {
             hud.showMessage(text: "The microphone cannot change during a recording.", symbol: "mic.slash")
             return
         }
@@ -2602,13 +2749,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 self.applyAppearance()
                 self.refreshMenu()
-                // One line, no audio and no transcript: a settings change that
-                // ever costs real time shows up in the log as a number instead
-                // of as a feeling.
-                let milliseconds = (CACurrentMediaTime() - started) * 1000
-                if milliseconds > 40 {
-                    Log.shared.warn("settings.slow", ["ms": .double(milliseconds)])
-                }
                 // Only a change the provider is built from justifies rebuilding
                 // it. A colour, a dwell or a microphone does not, and rebuilding
                 // costs a probe of every provider.
@@ -2616,9 +2756,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     provider: self.config.provider,
                     providers: self.config.providers
                 )
-                guard signature != self.providerSignature else { return }
-                self.rebuildProvider()
-                self.refreshProviders()
+                let providerRebuilt = signature != self.providerSignature
+                if providerRebuilt {
+                    self.rebuildProvider()
+                    self.refreshProviders()
+                }
+                // One line, no audio and no transcript: a settings change that
+                // ever costs real time shows up in the log as a number instead
+                // of as a feeling. The clock stops after the provider work,
+                // because a change that rebuilds it is the slow one and a
+                // measurement that ends before it is the wrong number.
+                let milliseconds = (CACurrentMediaTime() - started) * 1000
+                if milliseconds > 40 {
+                    Log.shared.warn("settings.slow", [
+                        "ms": .double(milliseconds),
+                        "provider_rebuilt": .bool(providerRebuilt),
+                    ])
+                }
             },
             onSetAPIKey: { [weak self] secret, providerID in
                 guard let self else { return "Dot is not running." }
