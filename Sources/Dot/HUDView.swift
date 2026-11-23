@@ -332,7 +332,7 @@ struct HUDView: View {
             HStack(spacing: 0) {
                 Image(systemName: "sparkle")
                     .font(DotType.font(11, .semibold))
-                    .foregroundStyle(HUDTheme.live)
+                    .foregroundStyle(HUDTheme.recordingInk(model.material))
                     .modifier(HUDPulseOpacity(model: model, source: frameSource))
                     .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
 
@@ -377,7 +377,7 @@ struct HUDView: View {
         HStack(spacing: 10) {
             Image(systemName: "sparkle")
                 .font(DotType.font(11, .semibold))
-                .foregroundStyle(HUDTheme.live)
+                .foregroundStyle(HUDTheme.recordingInk(model.material))
 
             Text(text)
                 .font(HUDTheme.assistantFont)
@@ -413,7 +413,7 @@ struct HUDView: View {
                 if state == .speaking {
                     Image(systemName: "speaker.wave.2")
                         .font(DotType.font(11, .semibold))
-                        .foregroundStyle(HUDTheme.live)
+                        .foregroundStyle(HUDTheme.recordingInk(model.material))
                         .modifier(HUDClockOpacity(model: model, source: frameSource))
                 }
 
@@ -449,7 +449,7 @@ struct HUDView: View {
     private func assistantLabelColor(_ state: AssistantAnswerState) -> Color {
         switch state {
         case .pasted, .copied: HUDTheme.mint
-        case .speaking: HUDTheme.live
+        case .speaking: HUDTheme.recordingInk(model.material)
         case .streaming, .spoken: HUDTheme.ink2
         }
     }
@@ -904,7 +904,7 @@ struct HUDView: View {
             Image(systemName: symbol)
                 .font(DotType.font(15, .semibold))
                 .foregroundStyle(symbol.contains("exclamation") || symbol.contains("xmark")
-                    ? HUDTheme.live
+                    ? HUDTheme.warning
                     : HUDTheme.accent)
 
             Text(text)
@@ -1256,13 +1256,13 @@ enum HUDAction: Hashable {
     /// because it is the only control on the surface that answers something in
     /// flight.
     var restingColor: Color {
-        self == .stopRewrite ? HUDTheme.live : HUDTheme.ink3
+        self == .stopRewrite ? HUDTheme.recording : HUDTheme.ink3
     }
 
     /// The colour the icon takes under the pointer.
     var hoverColor: Color {
         switch self {
-        case .stop, .stopRewrite: HUDTheme.live
+        case .stop, .stopRewrite: HUDTheme.recording
         case .cancel, .close: HUDTheme.ink
         case .copy, .paste, .history, .settings: HUDTheme.accent
         }
@@ -1506,7 +1506,7 @@ private struct FrameLiveDot: View {
 #if DEBUG
         let _ = FrameLeafProbe.captures ? { FrameLeafProbe.liveDotBodies += 1 }() : ()
 #endif
-        LiveDot(level: source.level, pulse: source.pulse)
+        LiveDot(level: source.level, pulse: source.pulse, material: model.material)
     }
 }
 
@@ -1539,7 +1539,7 @@ private struct FrameAssistantPulseDots: View {
     let reduceMotion: Bool
 
     var body: some View {
-        AssistantPulseDots(time: source.time, reduceMotion: reduceMotion)
+        AssistantPulseDots(time: source.time, reduceMotion: reduceMotion, material: model.material)
     }
 }
 
@@ -1623,11 +1623,11 @@ private struct FrameRewriteIdentity: View {
                 .accessibilityLabel(Text(HUDView.rewritingAccessibilityLabel(ringStyleTitle)))
             } else if failed {
                 Circle()
-                    .fill(HUDTheme.live.opacity(0.14))
+                    .fill(HUDTheme.warning.opacity(0.14))
                     .frame(width: HUDTheme.badgeSize, height: HUDTheme.badgeSize)
                 Image(systemName: "exclamationmark.triangle")
                     .font(DotType.font(10.5, .bold))
-                    .foregroundStyle(HUDTheme.live)
+                    .foregroundStyle(HUDTheme.warning)
             } else {
                 Circle()
                     .fill(delivery.color.opacity(0.14))
@@ -1643,7 +1643,7 @@ private struct FrameRewriteIdentity: View {
                 .font(HUDTheme.labelFont)
                 .tracking(HUDTheme.labelTracking)
                 .foregroundStyle(HUDTheme.statusInk(
-                    failed ? HUDTheme.live : delivery.color,
+                    failed ? HUDTheme.warning : delivery.color,
                     material: material
                 ))
                 .lineLimit(1)
@@ -1690,6 +1690,8 @@ struct LiveDot: View {
     let level: Double
     /// The phase of the pulse, from `0` to `1`.
     let pulse: Double
+    /// The card material the ring and shadow are drawn on.
+    var material: HUDMaterial = .black
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1704,14 +1706,14 @@ struct LiveDot: View {
     }
 
     private var core: Color {
-        HUDTheme.meter(0.42 + 0.58 * presence, ceiling: 1)
+        HUDTheme.meter(0.42 + 0.58 * presence, ceiling: 1, material: material)
     }
 
     var body: some View {
         ZStack {
             if !reduceMotion {
                 Circle()
-                    .stroke(HUDTheme.live.opacity((0.42 + 0.30 * presence) * (1 - pulse)), lineWidth: 1.5)
+                    .stroke(HUDTheme.recordingInk(material).opacity((0.42 + 0.30 * presence) * (1 - pulse)), lineWidth: 1.5)
                     .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
                     .scaleEffect(1 + pulse * (1.15 + 0.45 * presence))
             }
@@ -1721,7 +1723,7 @@ struct LiveDot: View {
                 .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
                 .scaleEffect(1 + presence * 0.26)
                 .shadow(
-                    color: HUDTheme.live.opacity(0.30 + 0.55 * presence),
+                    color: HUDTheme.recordingInk(material).opacity(0.30 + 0.55 * presence),
                     radius: 2.5 + 4.5 * presence
                 )
         }
@@ -1743,7 +1745,7 @@ extension HUDDelivery {
     var color: Color {
         switch self {
         case .copied, .pasted: HUDTheme.silver
-        case .failed: HUDTheme.live
+        case .failed: HUDTheme.warning
         }
     }
 
@@ -1978,6 +1980,8 @@ struct AssistantPulseDots: View {
     var time: Double
     /// Whether the motion is reduced.
     var reduceMotion: Bool
+    /// The card material the dots are drawn on.
+    var material: HUDMaterial = .black
 
     /// The length of one pulse, in seconds.
     static let cycle: Double = 1.2
@@ -1990,7 +1994,7 @@ struct AssistantPulseDots: View {
         HStack(spacing: Self.gap) {
             ForEach(0..<3, id: \.self) { index in
                 Circle()
-                    .fill(HUDTheme.live)
+                    .fill(HUDTheme.recordingInk(material))
                     .frame(width: Self.diameter, height: Self.diameter)
                     .opacity(alpha(index))
             }

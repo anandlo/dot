@@ -69,10 +69,10 @@ final class WaveInkTests: XCTestCase {
         XCTAssertEqual(WaveInk.speechPosition, 0.52, accuracy: 1e-12)
         XCTAssertEqual(WaveInk.tipPosition, 0.70, accuracy: 1e-12)
         let rows = samples(.black)
-        assertColour(rows[0].tint, stop(229.0 / 255, 173.0 / 255, 26.0 / 255), .black, 0)
-        assertColour(rows[1].tint, stop(1, 212.0 / 255, 59.0 / 255), .black, WaveInk.speechPosition)
-        assertColour(rows[2].tint, stop(1, 233.0 / 255, 74.0 / 255), .black, WaveInk.tipPosition)
-        assertColour(rows[3].tint, stop(1, 233.0 / 255, 74.0 / 255), .black, 1)
+        assertColour(rows[0].tint, MeterRamp.rgb(level: 0, material: .black), .black, 0)
+        assertColour(rows[1].tint, MeterRamp.rgb(level: WaveInk.speechPosition, material: .black), .black, WaveInk.speechPosition)
+        assertColour(rows[2].tint, MeterRamp.rgb(level: WaveInk.tipPosition, material: .black), .black, WaveInk.tipPosition)
+        assertColour(rows[3].tint, MeterRamp.rgb(level: 1, material: .black), .black, 1)
 
         XCTAssertEqual(rows[0].tint.opacity, 0.34, accuracy: 1e-12)
         XCTAssertEqual(
@@ -86,10 +86,10 @@ final class WaveInkTests: XCTestCase {
 
     func testGlassStopsAndOpacities() {
         let rows = samples(.glass)
-        assertColour(rows[0].tint, stop(242.0 / 255, 194.0 / 255, 41.0 / 255), .glass, 0)
-        assertColour(rows[1].tint, stop(1, 226.0 / 255, 77.0 / 255), .glass, WaveInk.speechPosition)
-        assertColour(rows[2].tint, stop(1, 242.0 / 255, 61.0 / 255), .glass, WaveInk.tipPosition)
-        assertColour(rows[3].tint, stop(1, 242.0 / 255, 61.0 / 255), .glass, 1)
+        assertColour(rows[0].tint, MeterRamp.rgb(level: 0, material: .glass), .glass, 0)
+        assertColour(rows[1].tint, MeterRamp.rgb(level: WaveInk.speechPosition, material: .glass), .glass, WaveInk.speechPosition)
+        assertColour(rows[2].tint, MeterRamp.rgb(level: WaveInk.tipPosition, material: .glass), .glass, WaveInk.tipPosition)
+        assertColour(rows[3].tint, MeterRamp.rgb(level: 1, material: .glass), .glass, 1)
 
         XCTAssertEqual(rows[0].tint.opacity, 0.55, accuracy: 1e-12)
         XCTAssertEqual(

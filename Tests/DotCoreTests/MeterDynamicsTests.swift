@@ -222,20 +222,25 @@ final class MeterRampTests: XCTestCase {
         XCTAssertLessThan(previous.opacity, 1.01)
     }
 
-    func testTheQuietEndIsDimAndTheLiveColourIsTheProductAmber() {
+    func testTheQuietEndIsDimAndTheBodyIsTheProductGold() {
         let floor = MeterRamp.tint(level: 0, ceiling: 1)
         XCTAssertLessThan(floor.opacity, 0.4)
-        XCTAssertLessThan(floor.green, MeterRamp.live.green, "the floor is deeper than the live amber")
+        let body = MeterRamp.stops(for: .black).body
+        XCTAssertLessThan(floor.green, body.green, "the floor is deeper than the body")
 
-        // The colour at ordinary speech is the product's own `#F5B944`.
-        XCTAssertEqual(MeterRamp.live.red, 0.961, accuracy: 0.001)
-        XCTAssertEqual(MeterRamp.live.green, 0.725, accuracy: 0.001)
-        XCTAssertEqual(MeterRamp.live.blue, 0.267, accuracy: 0.001)
+        // Ordinary speech sits on the saturated body stop, `#FFC414`.
+        XCTAssertEqual(body.red, 1, accuracy: 0.001)
+        XCTAssertEqual(body.green, 196.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(body.blue, 20.0 / 255, accuracy: 0.001)
     }
 
-    func testAPeakIsWarmerThanTheSameHeightInAQuietTake() {
+    func testTheLevelDoesNotDependOnTheTakeCeiling() {
+        // One shared fixed ramp is now the colour contract: a peak is drawn
+        // brighter by its own level, not by rescaling the take's history.
         let quietTake = MeterRamp.tint(level: 0.55, ceiling: 0.55)
         let loudTake = MeterRamp.tint(level: 0.55, ceiling: 1)
-        XCTAssertGreaterThan(quietTake.blue, loudTake.blue, "a peak of a quiet take is warmer")
+        XCTAssertEqual(quietTake.red, loudTake.red, accuracy: 1e-12)
+        XCTAssertEqual(quietTake.green, loudTake.green, accuracy: 1e-12)
+        XCTAssertEqual(quietTake.blue, loudTake.blue, accuracy: 1e-12)
     }
 }

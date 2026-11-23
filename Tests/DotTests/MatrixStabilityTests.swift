@@ -219,7 +219,6 @@ final class MatrixStabilityTests: XCTestCase {
                 XCTAssertEqual(left.energy.bitPattern, right.energy.bitPattern, "a dot reads a different measurement")
                 XCTAssertEqual(left.display.bitPattern, right.display.bitPattern, "a dot's lamp is a different value")
                 XCTAssertEqual(left.reveal.bitPattern, right.reveal.bitPattern, "a dot's reveal is a different value")
-                XCTAssertEqual(left.glint.bitPattern, right.glint.bitPattern, "a dot's glint is a different value")
             }
             let left = try MatrixSlideTests.rasterise(tile, size: size, scale: 2)
             let right = try MatrixSlideTests.rasterise(island, size: size, scale: 2)
@@ -229,46 +228,41 @@ final class MatrixStabilityTests: XCTestCase {
         }
     }
 
-    // MARK: - The glint
+    // MARK: - The specular is not a clock
 
-    /// The glint of one measurement falls as the measurement travels.
+    /// A dot's shine follows its measurement, not its age.
     ///
-    /// With the specimen fixed the spark is a function of the measurement and of
-    /// the dot's age alone, so from full ink it can only fall. The dot is also
-    /// faded in at the canvas's edge over its first pitch of travel
-    /// (``MatrixLattice/edgeFade``, two ticks), which is a property of where the
-    /// dot is rather than of the glint: a dot born at the edge carries no ink at
-    /// all, so its glint rises over those two frames before the freshness term
-    /// takes it down. The criterion is therefore monotone non-increasing from the
-    /// first frame that carries full edge ink, and that 33 ms rise is the edge
-    /// fade-in rather than a flicker. The frames before it are printed.
-    func testGlintDecaysMonotonically() throws {
+    /// The old crossed glint depended on how recently a dot had been born. The
+    /// specular core is now a fixed mix of the peak and specular stops at the
+    /// dot's display value, so a steady voice gives every dot of one band the
+    /// same core wherever it is on the row.
+    func testSpecularCoreDoesNotDependOnAge() throws {
         let frames = Self.steadyFrames(seconds: Self.seconds, band: 0.95)
         let samples = frames[frames.count / 2].dots(in: Self.canvas).map(\.sampleTick)
         let tracked = try XCTUnwrap(samples.min(), "the frame drew no dot")
 
         var ages: [Double] = []
-        var inks: [Double] = []
-        var fades: [Double] = []
+        var displays: [Double] = []
+        var reveals: [Double] = []
         for frame in frames {
             guard let dot = frame.dots(in: Self.canvas).first(where: { $0.sampleTick == tracked && $0.row == 2 })
             else { continue }
-            guard dot.age <= MatrixLattice.glintLife else { break }
             ages.append(dot.age)
-            inks.append(dot.glint)
-            fades.append(dot.edgeFade)
+            displays.append(dot.display)
+            reveals.append(dot.reveal)
         }
-        XCTAssertGreaterThan(inks.count, 8, "the glint's life was not followed")
-        print("B6.4 glint " + zip(ages, inks).map { String(format: "%.3fs:%.4f", $0, $1) }.joined(separator: " "))
-        let full = try XCTUnwrap(fades.firstIndex { $0 >= 1 }, "the dot never reached the canvas")
-        for index in (full + 2)..<inks.count {
-            XCTAssertLessThanOrEqual(
-                inks[index], inks[index - 1],
-                String(format: "the glint rose from %.6f to %.6f at %.3f s",
-                       inks[index - 1], inks[index], ages[index])
-            )
+        XCTAssertGreaterThan(displays.count, 8, "the dot's travel was not followed")
+        XCTAssertGreaterThan(ages.last ?? 0, 0.25, "the dot never grew old")
+        let display = displays[0]
+        let reveal = reveals[0]
+        for (index, value) in displays.enumerated() {
+            XCTAssertEqual(value.bitPattern, display.bitPattern,
+                           String(format: "the core changed with age at %.3f s", ages[index]))
+            XCTAssertEqual(reveals[index].bitPattern, reveal.bitPattern,
+                           String(format: "the lamp changed with age at %.3f s", ages[index]))
         }
-        XCTAssertGreaterThan(inks[full], 0, "the glint is not drawn at all")
+        print("B6.4 steady core " + String(format: "%.4f", display) + " over "
+              + String(format: "%d", displays.count) + " frames")
     }
 
     // MARK: - One bad column

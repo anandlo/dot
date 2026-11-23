@@ -38,7 +38,7 @@ enum VisualizerMath {
     /// - Returns: the stop's colour at the given opacity. At a lift of zero it is
     ///   the tint itself, component for component, so a canvas that asks for no
     ///   lift draws the picture it always drew. The glass material asks for
-    ///   ``HUDTheme/visualizerGlassLift`` and the black material asks for nothing,
+    ///   the material's own gold stops and the black material asks for nothing,
     ///   see ``HUDWaveform/material``.
     static func ramp(_ tint: MeterTint, opacity: Double, lift: Double = 0) -> Color {
         let alpha = min(max(opacity, 0), 1)
@@ -132,11 +132,8 @@ struct HUDWaveform: View {
     /// and settle back into it when the recording ends, instead of appearing at
     /// a full height it had from nowhere.
     var reveal: Double = 1
-    /// Whether a shining dot carries its specular highlight.
-    ///
-    /// The highlight is the one part of the shine that is a picture rather than a
-    /// measurement: it is drawn in the renders beside a version without it, and
-    /// the picture that reads better is the one the card keeps.
+    /// Whether a shining dot draws its centred specular die. Tests turn this off
+    /// to isolate the specular against the body.
     var highlight: Bool = true
     /// A reduce-motion setting a still render can pass without a system
     /// preference. The card's own view carries the same override.
@@ -146,13 +143,11 @@ struct HUDWaveform: View {
     /// It is the one input that decides whether the lit ink is lifted: the clear
     /// glass behind the canvas is a light surface that the amber was not measured
     /// on, and the black material is the surface every mark in this file was
-    /// drawn for. See ``HUDTheme/visualizerGlassLift``.
+    /// drawn for. Each material reads its own stops from ``MeterRamp``.
     var material: HUDMaterial = .black
-    /// How far the lit ink is mixed toward the card's ink on the glass material.
-    ///
-    /// It is ``HUDTheme/visualizerGlassLift`` and the app passes nothing else: a
-    /// test varies it to prove that the lift never reaches the black material.
-    var glassLift: Double = HUDTheme.visualizerGlassLift
+    /// Kept for callers that still pass a lift; the gold ramp does not mix the
+    /// ink toward white, so the value has no effect on any material.
+    var glassLift: Double = 0
     /// How far the halo's ring ink is mixed toward the card's ink on the glass
     /// material.
     ///
@@ -221,7 +216,7 @@ struct HUDWaveform: View {
     /// card has none. That is what keeps the black card's renders the same
     /// picture they were.
     private var lift: Double {
-        material == .glass ? min(max(glassLift, 0), 1) : 0
+        0
     }
 
     /// One lit colour of a style, on this canvas's material.
@@ -231,7 +226,7 @@ struct HUDWaveform: View {
 
     /// The colour of one lit mark of this frame, on this canvas's material.
     private func tint(_ value: Double) -> Color {
-        lit(MeterRamp.tint(level: value, ceiling: ceiling))
+        lit(MeterRamp.tint(level: value, ceiling: ceiling, material: material))
     }
 
     /// How far the halo's rings are mixed toward the card's ink.
@@ -807,6 +802,33 @@ struct HUDWaveform: View {
                     endPoint: CGPoint(x: rect.midX, y: rect.maxY)
                 )
             )
+
+            // The shine is a narrow column inside the bar, not a gradient across
+            // the row: at two points wide a lateral gradient would shimmer as the
+            // bar scrolls. It is a fixed function of the level, so a loud syllable
+            // makes its own bar gleam without a clock-driven glint.
+            let shine = MeterRamp.smoothstep(0.55, 0.90, bar.value)
+            if shine > 0 {
+                let specular = MeterRamp.specularBand(level: bar.value, material: material)
+                let bandWidth = bar.width * 0.5
+                let straight = bar.height - min(bar.width, bar.height)
+                if straight > 0 {
+                    let band = CGRect(
+                        x: bar.centre - bandWidth / 2,
+                        y: mid - straight / 2,
+                        width: bandWidth,
+                        height: straight
+                    )
+                    context.fill(
+                        Path(roundedRect: band, cornerRadius: min(bandWidth, straight) / 2),
+                        with: .color(Color(
+                            red: specular.red,
+                            green: specular.green,
+                            blue: specular.blue
+                        ).opacity(bar.ink * shine))
+                    )
+                }
+            }
         }
     }
 
@@ -2104,6 +2126,12 @@ struct HUDWaveform: View {
         }
     }
 
+    /// A shared-ramp colour at a ribbon's own ink, without the meter's level
+    /// opacity: Silk multiplies this alpha into overlapping translucent bands.
+    private static func ribbonInk(_ tint: MeterTint, _ ink: Double) -> Color {
+        VisualizerMath.ramp(tint, opacity: ink)
+    }
+
     private func drawSilk(context: GraphicsContext, size: CGSize) {
         let mid = size.height / 2
         let reach = Silk.reach(forHeight: size.height)
@@ -2166,13 +2194,21 @@ struct HUDWaveform: View {
             for point in top.dropFirst() { band.addLine(to: point) }
             for point in bottom.reversed() { band.addLine(to: point) }
             band.closeSubpath()
-            let colour = HUDTheme.meter(Silk.fillStops[ribbon], ceiling: ceiling)
+            // The fill stays on the body of the shared ramp: burnished floor at
+            // its shaded side, saturated body at the lit side. The ribbon's own
+            // inks multiply the RGB stops, so the ramp's level opacity is not
+            // applied a second time.
+            let lit = MeterRamp.rgb(
+                level: min(Silk.fillStops[ribbon], MeterRamp.bodyPosition),
+                material: material
+            )
+            let shaded = MeterRamp.rgb(level: 0, material: material)
             context.fill(
                 band,
                 with: .linearGradient(
                     Gradient(stops: [
-                        .init(color: colour.opacity(Silk.topInk[ribbon]), location: 0),
-                        .init(color: colour.opacity(Silk.bottomInk[ribbon]), location: 1),
+                        .init(color: Self.ribbonInk(lit, Silk.topInk[ribbon]), location: 0),
+                        .init(color: Self.ribbonInk(shaded, Silk.bottomInk[ribbon]), location: 1),
                     ]),
                     startPoint: gradientStart,
                     endPoint: gradientEnd
@@ -2182,8 +2218,14 @@ struct HUDWaveform: View {
             // The rim: each contour stroked on its own, and only over the runs
             // where the ribbon is thick enough for an edge to be a line rather
             // than a smear. A hairline at silence has no rim at all.
-            let rimColour = HUDTheme.meter(Silk.rimStops[ribbon], ceiling: ceiling)
-            for contour in [top, bottom] {
+            // Only the upper contour catches the light: peak gold becomes the
+            // specular stop as the ribbon rises, while the lower contour keeps
+            // the saturated peak. One point of shine on a foil edge reads as
+            // metal; the same shine spread over the fill reads as pale paint.
+            let rimLevel = Silk.rimStops[ribbon]
+            let upper = MeterRamp.specularBand(level: rimLevel, material: material)
+            let lower = MeterRamp.rgb(level: rimLevel, material: material)
+            for (index, contour) in [top, bottom].enumerated() {
                 var run: [CGPoint] = []
                 func flush() {
                     guard run.count > 1 else { run.removeAll(); return }
@@ -2192,7 +2234,7 @@ struct HUDWaveform: View {
                     for point in run.dropFirst() { path.addLine(to: point) }
                     context.stroke(
                         path,
-                        with: .color(rimColour.opacity(Silk.rimInk[ribbon])),
+                        with: .color(Self.ribbonInk(index == 0 ? upper : lower, Silk.rimInk[ribbon])),
                         style: StrokeStyle(
                             lineWidth: Silk.rimWidth,
                             lineCap: .round,
@@ -2223,9 +2265,9 @@ struct HUDWaveform: View {
     /// pitch is the smaller of a row's height and five points, so the rows stay
     /// square and a card of the usual height gets the five point lattice it was
     /// designed for. A dot's radius grows with its band from a quarter of the
-    /// pitch to a third, so the widest dot is `0.66` of the pitch across and two
-    /// neighbours keep `0.34` of the pitch between them at every level, which is
-    /// what makes a loud word a grid of lamps rather than a stain.
+    /// pitch to just under a third, so the widest dot is `0.56` of the pitch
+    /// across and two neighbours keep `0.44` of the pitch between them at every
+    /// level, which is what makes a loud word a grid of lamps rather than a stain.
     ///
     /// The grid slides. One dot is one sample pair of the spectrum, two meter
     /// ticks of it, and it travels one pitch per pair from the right edge to the
@@ -2245,14 +2287,10 @@ struct HUDWaveform: View {
     /// clock and adding the meter's phase afterwards would step the grid by a
     /// third of a pitch on every frame the two disagree.
     ///
-    /// Nothing here can become a blob. A dot's body is at most a third of the pitch
-    /// in radius, its halo stops at `0.45` of a pitch, and the halo is added to the
-    /// card's surface with `plusLighter` and an opacity that already falls to
-    /// nothing at its own bound. The bound is short of the midpoint between two
-    /// neighbours by a twentieth of a pitch, so the one point where two dots face
-    /// each other receives no light from either of them. The halo's ink is
-    /// multiplied by the dot's own reveal as well, so a cell at the floor carries
-    /// no halo at all.
+    /// Nothing here can become a blob. A dot's body is at most `0.28` of the
+    /// pitch in radius and every pixel it lights lies inside that circle. There
+    /// is no halo, no crossed glint and no off-centre disc, so two neighbours
+    /// never share light and a quiet cell carries no ink outside its own rim.
     ///
     /// A dot is drawn whole or faded, never cut. The fade is measured from each
     /// side of the canvas to the edge of a half-pitch band inside it, so a dot is
@@ -2269,9 +2307,9 @@ struct HUDWaveform: View {
         /// The widest pitch, in points.
         static let maximumPitch: CGFloat = 5
         /// The radius of a dot at rest, as a share of the pitch.
-        static let restRadiusShare: CGFloat = 0.25
+        static let restRadiusShare: CGFloat = 0.26
         /// How much of the pitch the radius gains at the top of the range.
-        static let radiusGain: CGFloat = 0.08
+        static let radiusGain: CGFloat = 0.02
         /// The radius of the widest dot, as a share of the pitch.
         static var maximumRadiusShare: CGFloat { restRadiusShare + radiusGain }
         /// How many ticks of the meter one pitch of the grid takes.
@@ -2306,58 +2344,14 @@ struct HUDWaveform: View {
         static let litRamp: Double = 0.35
         /// The display value above which a dot counts as shining.
         static let shineOnset: Double = 0.55
-        /// The display value from which a dot carries a highlight.
-        ///
-        /// Below half heat a dot has no highlight. Above it the highlight grows
-        /// linearly, reaching its full ink at full heat. The glint keeps its own
-        /// onset; this threshold only governs the off-centre specular.
-        static let highlightOnset: Double = 0.5
-        /// The ink of a highlight at full heat.
-        static let highlightInk: Double = 0.75
-        /// The distance from the dot's centre to the highlight's centre, as a
-        /// share of the dot's diameter, measured along the diagonal.
-        static let highlightOffset: CGFloat = 0.18
-        /// The radius of the highlight, as a share of the dot's radius.
-        static let highlightRadius: CGFloat = 0.38
-        /// The reach of a dot's halo, as a share of the pitch.
-        ///
-        /// It is `0.45` of the pitch, which ends the halo `0.05` of a pitch, a
-        /// quarter of a point on the card's lattice, short of the midpoint between
-        /// two neighbours. The midpoint therefore receives no light from either of
-        /// them, and the falloff that was already nothing at its own bound has a
-        /// clear margin to the one place two dots meet.
-        static let glowRadiusShare: CGFloat = 0.45
-        /// The band of the canvas's side over which a dot fades, as a share of the
-        /// pitch.
-        ///
-        /// It is half a pitch, the distance from the edge to the midpoint between
-        /// two neighbours, and it is not the halo's own radius. A fade measured
-        /// from the halo's bound would leave a dot at its full ink after `0.95` of
-        /// a pitch of travel, because the halo no longer reaches the edge on the
-        /// frame the dot is born on; measured from this bound, a dot is born with
-        /// no ink and reaches all of it after exactly one pitch, which is the rule
-        /// the grid's arrival is built on.
+        /// The display value from which a dot's specular die reaches full
+        /// brightness. It is a spatial mix within the dot, never a glint in time.
+        static let specularOnset: Double = 0.35
+        /// The band of the canvas's side over which a dot fades, as a share of
+        /// the pitch. It is half a pitch: the distance from the edge to the
+        /// midpoint between two neighbours.
         static let edgeReachShare: CGFloat = 0.5
-        /// The share of its full ink a halo carries at the dot's own edge.
-        static let glowInk: Double = 0.35
-        /// The share of that ink the halo carries half way out.
-        ///
-        /// It is a quarter, which with the zero at the outer edge is a quadratic
-        /// falloff: the light is at the dot, the space between two dots is the
-        /// card, and nothing is added far from a lamp.
-        static let glowMidInk: Double = 0.25
-        /// The display value from which a dot carries a glint.
-        static let glintOnset: Double = 0.80
-        /// How long a dot keeps its glint, in seconds.
-        static let glintLife: Double = 0.25
-        /// The ink of a glint at the full onset of its dot.
-        static let glintInk: Double = 0.8
-        /// The longest a glint is drawn, as a share of the pitch.
-        static let glintLengthShare: CGFloat = 0.9
-        /// The longest a glint is drawn, as a multiple of its dot's radius.
-        static let glintRadiusShare: CGFloat = 2.6
-        /// The width of a glint at its centre, in points.
-        static let glintWidth: CGFloat = 0.6
+
         /// The band of the canvas's side over which a dot fades, in pitches.
         static let edgeFadeShare: CGFloat = 1
 
@@ -2389,8 +2383,6 @@ struct HUDWaveform: View {
             let reveal: Double
             /// How much of its ink the dot keeps at the canvas's sides.
             let edgeFade: Double
-            /// The ink of the dot's glint, from `0` to `1`.
-            let glint: Double
             /// How long the dot has been travelling, in seconds.
             let age: Double
         }
@@ -2410,9 +2402,8 @@ struct HUDWaveform: View {
         /// It is the smoothstep from ``litOnset`` across ``litRamp``, so the light
         /// of a dot is a continuous function of its level on the whole range: no
         /// level turns a lamp on, and no frame is the first frame of a lamp. Every
-        /// alpha of the lamp is multiplied by it, and the highlight and the halo
-        /// with them, so the dot fades in whole rather than growing a bright core
-        /// over a dim disc.
+        /// alpha of every layer of the lamp is multiplied by it, so the dot fades
+        /// in whole rather than growing a bright core over a dim disc.
         static func reveal(forDisplay display: Double) -> Double {
             MeterRamp.smoothstep(litOnset, litOnset + litRamp, display)
         }
@@ -2504,11 +2495,6 @@ struct HUDWaveform: View {
                 && centre.y + radius <= size.height
         }
 
-        /// The reach of a dot's halo, in points.
-        static func glowRadius(forPitch pitch: CGFloat) -> CGFloat {
-            pitch * glowRadiusShare
-        }
-
         /// The tick of the newest whole sample pair at a moment.
         ///
         /// A dot belongs to a pair of samples, so the pair it reads is the largest
@@ -2536,7 +2522,7 @@ struct HUDWaveform: View {
 
         /// Where the dot of one sample pair stands, in points from the left edge.
         ///
-        /// The dot is born with its halo tangent to the right edge and travels one
+        /// The dot is born with its body tangent to the right edge and travels one
         /// pitch every two ticks, so its place is a continuous function of the
         /// clock: a frame between two ticks draws the grid between two columns
         /// rather than on one of them.
@@ -2554,11 +2540,10 @@ struct HUDWaveform: View {
         ///
         /// The distance is taken from each side to the nearest point half a pitch
         /// in, across one pitch, so a dot has no ink on the frame it is born on and
-        /// all of it once it has travelled a whole pitch inside. The halo is
-        /// smaller than that bound by design, see ``glowRadiusShare``, so the light
-        /// of a dot is always clear of the card's border. Nothing pops at either
-        /// side, and no dot is ever drawn cut: the drawing skips a dot whose disc
-        /// the canvas would cross.
+        /// all of it once it has travelled a whole pitch inside. The dot itself
+        /// is smaller than that bound by design, so its ink is always clear of the
+        /// card's border. Nothing pops at either side, and no dot is ever drawn
+        /// cut: the drawing skips a dot whose disc the canvas would cross.
         static func edgeFade(centreX: CGFloat, pitch: CGFloat, width: CGFloat) -> Double {
             guard pitch > 0 else { return 0 }
             let reach = pitch * edgeReachShare
@@ -2566,41 +2551,6 @@ struct HUDWaveform: View {
             return MeterRamp.smoothstep(0, Double(edgeFadeShare), Double(distance / pitch))
         }
 
-        /// The length of the glint a dot of this radius carries, in points.
-        ///
-        /// A glint is a spark rather than a cross: it is held inside the space a
-        /// dot owns, so a bright cell cannot paint into its neighbour's column.
-        static func glintLength(radius: CGFloat, pitch: CGFloat) -> CGFloat {
-            min(glintLengthShare * pitch, glintRadiusShare * radius)
-        }
-
-        /// The ink of a dot's glint, from `0` to `1`.
-        ///
-        /// The glint is the spark of a lamp at the top of its range. It is drawn
-        /// only above ``glintOnset``, and only for the first ``glintLife`` seconds
-        /// of a dot's travel, so the newest syllables of a word sparkle and the
-        /// trace they leave does not.
-        static func glint(display: Double, age: Double, edgeFade: Double) -> Double {
-            let spark = MeterRamp.smoothstep(glintOnset, 1, display)
-            let fresh = 1 - MeterRamp.smoothstep(0, glintLife, age)
-            return spark * glintInk * fresh * min(max(edgeFade, 0), 1)
-        }
-    }
-
-    /// The ink of the card's own marks, `#FFF4E6`, which a lit dot carries in the
-    /// centre of its light and in its highlight.
-    private static let matrixInk = Color(red: 1.0, green: 0.957, blue: 0.902)
-
-    /// The warm tip of the ramp mixed towards the card's ink.
-    ///
-    /// The mix itself is ``MeterRamp/hot(_:)``: the rewrite card's lattice draws
-    /// its centres with the same one, so the two dot surfaces stay one material.
-    ///
-    /// - Parameter amount: how far towards the ink to go, from `0` to `1`.
-    /// - Returns: the colour of the centre of a dot at that heat.
-    private static func hot(_ amount: Double) -> Color {
-        let tint = MeterRamp.hot(amount)
-        return Color(red: tint.red, green: tint.green, blue: tint.blue)
     }
 
     /// The dots one frame of the grid draws, by the view's own rules.
@@ -2621,9 +2571,8 @@ struct HUDWaveform: View {
             // A grid asked not to move keeps the lattice the card has always
             // drawn: the newest pair in the rightmost whole column, every column
             // whole, and no dot entering or leaving, so a still of a voice does
-            // not depend on the clock. Its glow is the same glow, and its glint is
-            // off: a glint is a moment of a dot's travel rather than a measurement
-            // of the voice.
+            // not depend on the clock. Its specular die is the same function of
+            // the band as a travelling dot's, so neither picture carries a glint.
             return (0..<MatrixLattice.columnCount(for: size)).flatMap { column in
                 (0..<MatrixLattice.rows).map { row in
                     dot(
@@ -2639,8 +2588,7 @@ struct HUDWaveform: View {
                         pitch: pitch,
                         energy: band(offset: column * MatrixLattice.ticksPerPitch, row: row),
                         edgeFade: 1,
-                        age: 0,
-                        glint: false
+                        age: 0
                     )
                 }
             }
@@ -2654,7 +2602,7 @@ struct HUDWaveform: View {
         let tick = spectrumHistory.last?.sample ?? HUDWaveform.Stretch.newestSample(at: time, phase: phase)
         let clock = Double(tick) + min(max(phase, 0), 1)
         let newest = MatrixLattice.newestPairTick(clock: clock, tick: tick)
-        let reach = MatrixLattice.glowRadius(forPitch: pitch)
+        let reach = pitch * MatrixLattice.maximumRadiusShare
         // A ring bounds how far back the grid can read: a pair it no longer holds
         // has left the canvas. The envelope fallback clamps instead of running
         // out, which is what a card with no spectrum draws at every column.
@@ -2670,8 +2618,8 @@ struct HUDWaveform: View {
                 pitch: pitch,
                 width: size.width
             )
-            // A dot leaves by its halo rather than by its centre, and the fade has
-            // taken its ink to nothing before the halo can reach the edge, so the
+            // A dot leaves by its body rather than by its centre, and the fade has
+            // taken its ink to nothing before the body can reach the edge, so the
             // grid neither cuts a dot nor paints on the card's border. A column
             // that is off the canvas is skipped rather than ending the walk: one
             // column that cannot be drawn must not take the columns behind it with
@@ -2702,8 +2650,7 @@ struct HUDWaveform: View {
                     pitch: pitch,
                     energy: energy,
                     edgeFade: fade,
-                    age: MatrixLattice.age(sampleTick: sample, clock: clock),
-                    glint: true
+                    age: MatrixLattice.age(sampleTick: sample, clock: clock)
                 ))
             }
         }
@@ -2722,7 +2669,6 @@ struct HUDWaveform: View {
     ///   - energy: the band the dot holds, from `0` to `1`.
     ///   - edgeFade: how much of its ink the dot keeps at the canvas's sides.
     ///   - age: how long the dot has been travelling, in seconds.
-    ///   - glint: whether the dot may carry a glint.
     /// - Returns: the dot, with its band, its lamp and its spark.
     private func dot(
         sampleTick: Int,
@@ -2732,8 +2678,7 @@ struct HUDWaveform: View {
         pitch: CGFloat,
         energy: Double,
         edgeFade: Double,
-        age: Double,
-        glint: Bool
+        age: Double
     ) -> MatrixLattice.Dot {
         let energy = min(1, max(0, energy))
         let display = pow(energy, 1.6)
@@ -2748,7 +2693,6 @@ struct HUDWaveform: View {
             display: display,
             reveal: reveal,
             edgeFade: edgeFade,
-            glint: glint ? MatrixLattice.glint(display: display, age: age, edgeFade: edgeFade) : 0,
             age: age
         )
     }
@@ -2799,32 +2743,10 @@ struct HUDWaveform: View {
     /// One mark of the grid at an opacity of its own.
     ///
     /// It is the ramp's own colour with the alpha this frame asks for, so the
-    /// floor at full ink, every stop of a body and every part of the halo are the
-    /// same amber and only their weights differ.
+    /// floor at full ink, every stop of a body and the specular die are the same
+    /// gold ramp and only their weights differ.
     private static func matrixColour(_ tint: MeterTint, opacity: Double) -> Color {
         VisualizerMath.ramp(tint, opacity: min(1, max(0, opacity)))
-    }
-
-    /// One arm of a glint: a thin diamond from a dot's centre out to both tips.
-    ///
-    /// The diamond is what tapers the spark: it is ``MatrixLattice/glintWidth``
-    /// wide at the centre and nothing at either tip, so the arm reads as light
-    /// rather than as a stroke with an end on it.
-    private static func glintArm(centre: CGPoint, horizontal: Bool, half: CGFloat, halfWidth: CGFloat) -> Path {
-        var path = Path()
-        if horizontal {
-            path.move(to: CGPoint(x: centre.x - half, y: centre.y))
-            path.addLine(to: CGPoint(x: centre.x, y: centre.y - halfWidth))
-            path.addLine(to: CGPoint(x: centre.x + half, y: centre.y))
-            path.addLine(to: CGPoint(x: centre.x, y: centre.y + halfWidth))
-        } else {
-            path.move(to: CGPoint(x: centre.x, y: centre.y - half))
-            path.addLine(to: CGPoint(x: centre.x + halfWidth, y: centre.y))
-            path.addLine(to: CGPoint(x: centre.x, y: centre.y + half))
-            path.addLine(to: CGPoint(x: centre.x - halfWidth, y: centre.y))
-        }
-        path.closeSubpath()
-        return path
     }
 
     private func drawMatrix(context: GraphicsContext, size: CGSize) {
@@ -2835,8 +2757,9 @@ struct HUDWaveform: View {
         var drawnDots = 0
         defer { CanvasDrawProbe.recordMatrix(duration: CFAbsoluteTimeGetCurrent() - started, dots: drawnDots) }
 #endif
-        let glowRadius = MatrixLattice.glowRadius(forPitch: pitch)
-        let floorTint = MeterRamp.tint(level: 0, ceiling: ceiling)
+        let floorTint = MeterRamp.rgb(level: 0, material: material)
+        let floorOpacity = MeterRamp.tint(level: 0, ceiling: 1, material: material).opacity
+        let stops = MeterRamp.stops(for: material)
 
         let dots = matrixDots(in: size)
 #if DEBUG
@@ -2855,40 +2778,44 @@ struct HUDWaveform: View {
                 height: dot.radius * 2
             )
 
-            // The floor: a cell with nothing in it is still a dot, drawn at the
-            // floor's own amber, so the grid is a grid at rest rather than a
-            // scatter of dots that appear where the voice is.
+            // The floor: a cell with nothing in it is still a dot, so the grid is
+            // a grid at rest rather than a scatter that appears where the voice is.
             context.fill(
                 Path(ellipseIn: rect),
-                with: .color(Self.matrixColour(floorTint, opacity: floorTint.opacity * fade))
+                with: .color(Self.matrixColour(
+                    floorTint,
+                    opacity: floorOpacity * fade
+                ))
             )
 
-            // A lit dot is a lamp, not a disc of paint: it is filled from a hot
-            // centre through its own colour to a slightly deeper edge, so the dot
-            // itself carries the shine. The body is drawn at the alpha of a lamp
-            // rather than of a wash: at ordinary speech the middle of a dot is
-            // most of the way to opaque, so the grid reads as lit dots on the
-            // card's dark surface instead of as a grey field.
             guard dot.reveal > 0 else { continue }
+            let body = MeterRamp.rgb(level: dot.display, material: material)
+            let rim = MeterRamp.mix(body, floorTint, 0.20)
+            let specularWeight = highlight
+                ? MeterRamp.smoothstep(MatrixLattice.specularOnset, 1, dot.display)
+                : 0
+            let die = MeterRamp.mix(body, stops.specular, specularWeight)
+            // Everything the lamp paints is inside its own ellipse. The body
+            // reaches a crisp saturated rim; the specular die is a separate,
+            // centred source-over layer, so its light is added to the body
+            // rather than replacing it. That keeps the edge gold while the
+            // middle reads as an LED die, without a halo outside the circle.
             context.fill(
                 Path(ellipseIn: rect),
                 with: .radialGradient(
                     Gradient(stops: [
-                        .init(color: Self.hot(0.75 * dot.display).opacity(dot.reveal * fade), location: 0.0),
-                        .init(
-                            color: Self.matrixColour(
-                                MeterRamp.tint(level: dot.display, ceiling: 1),
-                                opacity: (0.55 + 0.40 * dot.display) * dot.reveal * fade
-                            ),
-                            location: 0.45
-                        ),
-                        .init(
-                            color: Self.matrixColour(
-                                MeterRamp.tint(level: dot.display, ceiling: 1),
-                                opacity: (0.45 + 0.50 * dot.display) * dot.reveal * fade
-                            ),
-                            location: 1.0
-                        ),
+                        .init(color: Self.matrixColour(
+                            die, opacity: (0.85 + 0.15 * dot.display) * dot.reveal * fade
+                        ), location: 0.0),
+                        .init(color: Self.matrixColour(
+                            die, opacity: (0.85 + 0.15 * dot.display) * dot.reveal * fade
+                        ), location: 0.22),
+                        .init(color: Self.matrixColour(
+                            body, opacity: (0.55 + 0.40 * dot.display) * dot.reveal * fade
+                        ), location: 0.45),
+                        .init(color: Self.matrixColour(
+                            rim, opacity: (0.92 + 0.08 * dot.display) * dot.reveal * fade
+                        ), location: 1.0),
                     ]),
                     center: dot.centre,
                     startRadius: 0,
@@ -2896,97 +2823,24 @@ struct HUDWaveform: View {
                 )
             )
 
-            // The halo. It is light rather than ink: an annulus from the dot's own
-            // radius to the bound of ``MatrixLattice/glowRadiusShare``, added to
-            // the card's surface so the dot reads as a lamp with a warm edge
-            // rather than as a bright disc with a hard rim. The quadratic falloff
-            // puts a quarter of the ink half way out and nothing at the bound,
-            // which stops a twentieth of a pitch short of the midpoint between two
-            // neighbours, so the halo can never join two of them. A halo the
-            // canvas would cut is not drawn: the body is the measurement, and the
-            // light around it must not paint on the card's border.
-            if dot.centre.x - glowRadius > 0, dot.centre.x + glowRadius < size.width {
-                var halo = Path(
-                    ellipseIn: CGRect(
-                        x: dot.centre.x - glowRadius,
-                        y: dot.centre.y - glowRadius,
-                        width: glowRadius * 2,
-                        height: glowRadius * 2
-                    )
+            if specularWeight > 0 {
+                let dieRadius = dot.radius * 0.22
+                let dieColour = Color(
+                    red: stops.specular.red,
+                    green: stops.specular.green,
+                    blue: stops.specular.blue
                 )
-                halo.addPath(Path(ellipseIn: rect))
-                let ink = MatrixLattice.glowInk * dot.display * dot.reveal * fade
-                var light = context
-                light.blendMode = .plusLighter
-                light.fill(
-                    halo,
-                    with: .radialGradient(
-                        Gradient(stops: [
-                            .init(
-                                color: Self.matrixColour(
-                                    MeterRamp.tint(level: dot.display, ceiling: 1),
-                                    opacity: ink
-                                ),
-                                location: 0.0
-                            ),
-                            .init(
-                                color: Self.matrixColour(
-                                    MeterRamp.tint(level: dot.display, ceiling: 1),
-                                    opacity: ink * MatrixLattice.glowMidInk
-                                ),
-                                location: 0.5
-                            ),
-                            .init(color: .clear, location: 1.0),
-                        ]),
-                        center: dot.centre,
-                        startRadius: dot.radius,
-                        endRadius: glowRadius
-                    ),
-                    style: FillStyle(eoFill: true)
+                let ink = specularWeight * dot.reveal * fade
+                context.fill(
+                    Path(ellipseIn: CGRect(
+                        x: dot.centre.x - dieRadius,
+                        y: dot.centre.y - dieRadius,
+                        width: dieRadius * 2,
+                        height: dieRadius * 2
+                    )),
+                    with: .color(dieColour.opacity(ink))
                 )
             }
-
-            // A lamp above half heat has one highlight, strengthening to full ink
-            // at the top of its range. It is what the eye reads as round rather
-            // than flat. It is inside the dot, off its centre, and it is the only
-            // porcelain the grid carries.
-            if highlight {
-                let ramp = min(1, max(0, (dot.display - MatrixLattice.highlightOnset)
-                    / (1 - MatrixLattice.highlightOnset)))
-                if ramp > 0 {
-                    let sparkle = MatrixLattice.highlightRadius * dot.radius
-                    let offset = MatrixLattice.highlightOffset * 2 * dot.radius / sqrt(2)
-                    context.fill(
-                        Path(ellipseIn: CGRect(
-                            x: dot.centre.x - offset - sparkle,
-                            y: dot.centre.y - offset - sparkle,
-                            width: sparkle * 2,
-                            height: sparkle * 2
-                        )),
-                        with: .color(Self.matrixInk.opacity(
-                            MatrixLattice.highlightInk * ramp * dot.reveal * fade
-                        ))
-                    )
-                }
-            }
-
-            // The glint: two crossed arms on a dot at the top of its range, for the
-            // first quarter second of its travel. It is added to the dot as light,
-            // so a peak sparkles while the contrast of the lamp underneath is left
-            // as it was.
-            guard dot.glint > 0 else { continue }
-            let half = MatrixLattice.glintLength(radius: dot.radius, pitch: pitch) / 2
-            let halfWidth = MatrixLattice.glintWidth / 2
-            var spark = context
-            spark.blendMode = .plusLighter
-            spark.fill(
-                Self.glintArm(centre: dot.centre, horizontal: true, half: half, halfWidth: halfWidth),
-                with: .color(Self.matrixInk.opacity(dot.glint))
-            )
-            spark.fill(
-                Self.glintArm(centre: dot.centre, horizontal: false, half: half, halfWidth: halfWidth),
-                with: .color(Self.matrixInk.opacity(dot.glint))
-            )
         }
     }
 
@@ -3134,9 +2988,8 @@ struct HUDWaveform: View {
         ///
         /// The material behind the canvas is a light surface, and a core drawn only
         /// in the meter's amber tops out at 2.71 to 1 on it, under the 3 to 1 the
-        /// halo is held to, see ``HUDTheme/visualizerGlassLift``. The centre is
-        /// therefore the card's ink at full opacity out to this share, and the amber
-        /// ramp the core already had continues from it to the edge.
+        /// halo is held to. The centre is therefore the gold specular stop out to
+        /// this share, and the body ramp the core already had continues from it.
         static let hotCentreShare: Double = 0.35
         /// The horizontal room the rings keep clear, in points.
         static let horizontalInset: CGFloat = 4
@@ -3218,7 +3071,7 @@ struct HUDWaveform: View {
         /// material.
         ///
         /// It is the lift ``VisualizerMath/ramp(_:opacity:lift:)`` takes, and the
-        /// value is the ring's own rather than ``HUDTheme/visualizerGlassLift``
+        /// value is the ring's own rather than a card-wide lift
         /// because a ring is drawn at a fraction of the opacity a bar is: the
         /// clear glass puts the page behind the canvas, so a pale amber ring
         /// reads faint over a bright one where the full amber of a bar still
@@ -3232,7 +3085,7 @@ struct HUDWaveform: View {
         /// pixels it inks reads 1.65 to 1, the near half of the rings carries
         /// 1.62 times the far half's ink, and the ink keeps a warmth of 0.26 on
         /// the dark page.
-        static let glassRingLift: Double = 0.65
+        static let glassRingLift: Double = 0
         /// How much more opaque a ring's track, its trails and its particles are
         /// drawn on the glass material.
         ///
@@ -3952,7 +3805,7 @@ struct HUDWaveform: View {
         let reach = Halo.glowReach * radius
         let ink = Halo.glowInk * (Halo.glowRestShare + (1 - Halo.glowRestShare) * energy)
         let colour = VisualizerMath.ramp(
-            MeterRamp.tint(level: energy, ceiling: ceiling),
+            MeterRamp.tint(level: energy, ceiling: ceiling, material: material),
             opacity: ink,
             lift: lift
         )
@@ -4001,7 +3854,7 @@ struct HUDWaveform: View {
         let stretch = min(1.35, max(0, (radius - Halo.restCoreRadius) / Halo.coreGain))
         let turn = reduceMotion ? 0 : 2 * Double.pi * time / Halo.rayTurnSeconds
         let ink = VisualizerMath.ramp(
-            MeterRamp.tint(level: energy, ceiling: ceiling),
+            MeterRamp.tint(level: energy, ceiling: ceiling, material: material),
             opacity: min(1, Halo.rayInk * ringInkGain),
             lift: ringLift
         )
@@ -4055,20 +3908,30 @@ struct HUDWaveform: View {
         energy: Double
     ) {
         let colour = tint(energy)
-        let apex = VisualizerMath.ramp(MeterRamp.tip, opacity: 1, lift: lift)
+        let ramp = MeterRamp.stops(for: material)
+        let apex = VisualizerMath.ramp(
+            MeterRamp.rgb(level: MeterRamp.peakPosition, material: material),
+            opacity: 1,
+            lift: lift
+        )
+        let specular = Color(
+            red: ramp.specular.red,
+            green: ramp.specular.green,
+            blue: ramp.specular.blue
+        )
         let stops: [Gradient.Stop]
         if material == .glass {
             let share = Halo.hotCentreShare
             stops = [
-                .init(color: HUDTheme.inkBase, location: 0),
-                .init(color: HUDTheme.inkBase, location: share),
+                .init(color: specular, location: 0),
+                .init(color: specular, location: share),
                 .init(color: apex, location: share),
                 .init(color: colour, location: 0.75),
                 .init(color: colour.opacity(0), location: 1),
             ]
         } else {
             stops = [
-                .init(color: HUDTheme.inkBase.opacity(0.95), location: 0),
+                .init(color: specular, location: 0),
                 .init(color: apex, location: 0.30),
                 .init(color: colour, location: 0.70),
                 .init(color: colour.opacity(0), location: 1),
@@ -4109,8 +3972,8 @@ struct HUDWaveform: View {
         centre: CGPoint,
         clock: Double
     ) {
-        let ringTint = MeterRamp.tint(level: frame.energy, ceiling: ceiling)
-        let colour = VisualizerMath.ramp(ringTint, opacity: ringTint.opacity, lift: ringLift)
+        let ringTint = MeterRamp.rgb(level: frame.energy, material: material)
+        let colour = VisualizerMath.ramp(ringTint, opacity: 1, lift: ringLift)
         let gain = ringInkGain
         let trackInk = Halo.trackFloor + Halo.trackGain * frame.energy
         context.stroke(
