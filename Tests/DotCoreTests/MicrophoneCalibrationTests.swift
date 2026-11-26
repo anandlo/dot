@@ -226,6 +226,79 @@ final class MicrophoneCalibrationTests: XCTestCase {
         XCTAssertGreaterThan(observation?.peakDBFS ?? -100, -12, "the loud moment is measured")
     }
 
+    /// One second of room, then a voice: forty frames of ordinary syllables at
+    /// -35 dBFS, ten louder ones at -25, and one plosive at -3. The speech level
+    /// is the louder syllables; the plosive moves the peak and nothing else.
+    func testTheSpeechLevelIsTheLouderSyllablesAndIgnoresAPlosive() {
+        let frame = Double(MicrophoneCalibrationBook.frameSamples) / Double(rate)
+        var samples = square(decibels: -70, seconds: 1)
+        samples += square(decibels: -35, seconds: frame * 40)
+        samples += square(decibels: -25, seconds: frame * 10)
+        samples += square(decibels: -3, seconds: frame)
+        let observation = MicrophoneCalibrationBook.observation(
+            samples: samples,
+            peakDBFS: AudioLevel.peakDBFS(samples: samples)
+        )
+        XCTAssertEqual(observation?.noiseFloorDBFS ?? 0, -70, accuracy: 1)
+        XCTAssertEqual(observation?.speechDBFS ?? 0, -25, accuracy: 0.5)
+        XCTAssertGreaterThan(observation?.peakDBFS ?? -100, -6)
+    }
+
+    func testATakeWithTooLittleVoiceHasNoSpeechLevel() {
+        let frame = Double(MicrophoneCalibrationBook.frameSamples) / Double(rate)
+        var samples = square(decibels: -70, seconds: 1)
+        samples += square(decibels: -25, seconds: frame * Double(MicrophoneCalibrationBook.minimumVoicedFrames - 1))
+        let observation = MicrophoneCalibrationBook.observation(
+            samples: samples,
+            peakDBFS: AudioLevel.peakDBFS(samples: samples)
+        )
+        XCTAssertNotNil(observation)
+        XCTAssertNil(observation?.speechDBFS)
+    }
+
+    func testTheSpeechLevelIsAveragedAndATakeWithoutOneKeepsIt() {
+        let first = MicrophoneCalibrationBook.folding(
+            [:],
+            observation: MicrophoneObservation(noiseFloorDBFS: -60, peakDBFS: -8, speechDBFS: -30),
+            device: "mic-1",
+            now: Date(timeIntervalSinceReferenceDate: 1)
+        )
+        XCTAssertEqual(first["mic-1"]?.speechDBFS, -30)
+
+        let silent = MicrophoneCalibrationBook.folding(
+            first,
+            observation: MicrophoneObservation(noiseFloorDBFS: -60, peakDBFS: -40),
+            device: "mic-1",
+            now: Date(timeIntervalSinceReferenceDate: 2)
+        )
+        XCTAssertEqual(silent["mic-1"]?.speechDBFS, -30, "a take without voice leaves the level alone")
+
+        let louder = MicrophoneCalibrationBook.folding(
+            silent,
+            observation: MicrophoneObservation(noiseFloorDBFS: -60, peakDBFS: -8, speechDBFS: -20),
+            device: "mic-1",
+            now: Date(timeIntervalSinceReferenceDate: 3)
+        )
+        let level = louder["mic-1"]?.speechDBFS ?? 0
+        XCTAssertGreaterThan(level, -30)
+        XCTAssertLessThan(level, -20, "one take moves the level part of the way")
+    }
+
+    /// An entry saved before Dot measured speech has no speech key; it loads,
+    /// and the first take with a voice seeds the level.
+    func testAnEntryWithoutASpeechLevelLoadsAndIsSeeded() throws {
+        let json = #"{"noiseFloorDBFS":-50,"peakDBFS":-9,"observedSamples":4,"updatedAt":0}"#
+        let decoded = try JSONDecoder().decode(MicrophoneCalibration.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.speechDBFS)
+        let book = MicrophoneCalibrationBook.folding(
+            ["mic-1": decoded],
+            observation: MicrophoneObservation(noiseFloorDBFS: -50, peakDBFS: -9, speechDBFS: -27),
+            device: "mic-1",
+            now: Date(timeIntervalSinceReferenceDate: 5)
+        )
+        XCTAssertEqual(book["mic-1"]?.speechDBFS, -27)
+    }
+
     // MARK: - The book in the configuration
 
     func testAConfigurationWithoutTheBookLoads() throws {

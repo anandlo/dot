@@ -14,6 +14,10 @@ final class HUDFrameModel {
     @ObservationIgnored var level: Double = 0
     /// The loudest moment of the recording so far, from `0` to `1`.
     @ObservationIgnored var ceiling: Double = 1
+    /// Where the speaker's loud speech sits in the meter window.
+    @ObservationIgnored var speechTop: Double = VoiceMeter.defaultSpeechTop
+    /// ``speechTop`` as it was at each sample of ``history``, oldest first.
+    @ObservationIgnored var speechTops: [Double] = []
     /// How much of the shape has arrived, from `0` to `1`.
     @ObservationIgnored var reveal: Double = 0
     /// The half height of every column of the waveform, in points.
@@ -64,6 +68,8 @@ final class HUDFrameModel {
             phase: phase,
             pulse: pulse,
             ceiling: ceiling,
+            speechTop: speechTop,
+            speechTops: speechTops,
             reveal: reveal,
             reduceMotion: reduceMotion,
             highlight: true,

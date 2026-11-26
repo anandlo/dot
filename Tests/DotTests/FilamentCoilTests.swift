@@ -680,7 +680,7 @@ extension FilamentCoilTests {
         XCTAssertLessThanOrEqual(crossing, 0.30, "the wire heated too sluggishly at \(crossing) s")
 
         // A medium voice warms over several tenths of a second.
-        let mediumPower = Filament.fullPower(envelope: LevelScale.perceptual(0.5 * Filament.fullScalePosition))
+        let mediumPower = Filament.fullPower(envelope: LevelScale.perceptual(0.5 * VoiceMeter.defaultSpeechTop))
         let mediumTarget = Filament.equilibriumTemperature(drive: mediumPower)
         var mediumTheta = 0.0
         var mediumTicks = 0

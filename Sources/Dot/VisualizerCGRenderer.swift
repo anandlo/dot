@@ -16,6 +16,8 @@ struct VisualizerFrame: Sendable {
     var phase: Double = 0
     var pulse: Double = 0
     var ceiling: Double = 1
+    var speechTop: Double = VoiceMeter.defaultSpeechTop
+    var speechTops: [Double] = []
     var reveal: Double = 1
     var reduceMotion: Bool = false
     var highlight: Bool = true
@@ -1037,7 +1039,9 @@ enum VisualizerCGRenderer {
             history: frame.history,
             spectrum: frame.spectrumHistory,
             reveal: shown,
-            reduceMotion: frame.reduceMotion
+            reduceMotion: frame.reduceMotion,
+            speechTop: frame.speechTop,
+            speechTops: frame.speechTops
         )
         let meanHeat = Filament.mean(profile)
         let cached = Filament.template(for: bulb, stepsPerTurn: 10)

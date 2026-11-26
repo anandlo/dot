@@ -133,11 +133,18 @@ final class AbsoluteLevelTests: XCTestCase {
             ).max() ?? 0
         }
 
+        // The heat the same syllable reaches when held for two seconds, so the
+        // rise is judged against its own destination rather than an absolute
+        // number the range can move.
         let fourth = heat(afterTicks: 4)
         let thirtieth = heat(afterTicks: 30)
-        print(String(format: "B5.4 filament heat 67 ms after the step %.4f, 500 ms after it %.4f", fourth, thirtieth))
-        XCTAssertLessThan(fourth, 0.35, "the wire heated too fast four frames into a medium syllable")
-        XCTAssertLessThan(thirtieth, 0.65, "the wire saturated half a second into a medium syllable")
+        let settled = heat(afterTicks: 120)
+        print(String(
+            format: "B5.4 filament heat 67 ms after the step %.4f, 500 ms after it %.4f, 2 s after it %.4f",
+            fourth, thirtieth, settled
+        ))
+        XCTAssertLessThan(fourth, 0.5 * settled, "the wire covered half its rise four frames into a medium syllable")
+        XCTAssertLessThanOrEqual(thirtieth, settled + 0.02, "the wire overshoots its settled heat")
         XCTAssertGreaterThan(thirtieth, fourth, "the wire does not go on heating as the syllable is held")
     }
 
@@ -157,54 +164,165 @@ final class AbsoluteLevelTests: XCTestCase {
         }
     }
 
-    /// The wire's peak coil heat across seven steady loudnesses from `-40` to `0 dBFS`;
-    /// `-3 dBFS` below `0 dBFS` shows the range is not clipped short of full scale.
-    func testTheFilamentFullReadingLadder() throws {
-        var heats: [(decibels: Double, heat: Double)] = []
-        for decibels in [-40.0, -30, -20, -15, -10, -3, 0] {
-            let meter = VoiceMeter()
-            meter.setCalibration(nil)
-            var history: [Double] = []
-            var spectrum: [AudioSpectrumFrame] = []
-            var written = 0
-            for _ in 0...Int(3.5 * Self.rate) {
-                meter.push(decibels: decibels, now: Double(written) / Self.rate)
-                written += 1
-                meter.copyOrderedHistory(into: &history)
-                let shape = meter.shape
-                spectrum.append(AudioSpectrumFrame(bands: (shape, shape, shape, shape, shape)))
-            }
-            let peakHeat = HUDWaveform.Filament.heatProfile(
-                history: history,
-                spectrum: spectrum,
-                reveal: 1,
-                reduceMotion: false
-            ).max() ?? 0
-            heats.append((decibels, peakHeat))
-        }
-        print("B5.5 " + heats.map { String(format: "%.0f dBFS heat %.4f", $0.decibels, $0.heat) }
+    /// The steady heat of the wire for a level on a calibrated microphone.
+    ///
+    /// The history is built from the device's own window rather than pushed
+    /// through a meter: a steady tone held for seconds is what the meter's
+    /// room tracker is built to treat as the room, and speech is not steady.
+    private func steadyHeat(decibels: Double, calibration: MicrophoneCalibration) -> Double {
+        let meter = VoiceMeter()
+        meter.setCalibration(calibration)
+        let window = LevelScale.window(for: calibration)
+        let level = LevelScale.level(decibels: decibels, window: window)
+        let count = HUDWaveform.Filament.lagSamples
+        let history = [Double](repeating: level, count: count)
+        let spectrum = [AudioSpectrumFrame](
+            repeating: AudioSpectrumFrame(bands: (level, level, level, level, level)),
+            count: count
+        )
+        return HUDWaveform.Filament.heatProfile(
+            history: history,
+            spectrum: spectrum,
+            reveal: 1,
+            reduceMotion: false,
+            speechTop: meter.speechTop
+        ).max() ?? 0
+    }
+
+    /// On a quiet laptop microphone ordinary speech reaches amber and loud
+    /// speech the white core: the wire spans the voice, not the headroom.
+    func testTheFilamentSpansAQuietMicrophonesVoice() throws {
+        let calibration = MicrophoneCalibration(
+            noiseFloorDBFS: -47.4,
+            peakDBFS: -8.6,
+            observedSamples: 2,
+            updatedAt: Date(timeIntervalSince1970: 0)
+        )
+        let ladder = [-47.0, -38, -30, -26, -22, -15, -6]
+        let heats = ladder.map { steadyHeat(decibels: $0, calibration: calibration) }
+        print("FIL-QUIET " + zip(ladder, heats).map { String(format: "%.0f dBFS %.4f", $0, $1) }
             .joined(separator: ", "))
-        XCTAssertEqual(heats.count, 7, "a loudness was not measured")
-
-        for idx in 1..<heats.count {
-            XCTAssertGreaterThan(
-                heats[idx].heat,
-                heats[idx - 1].heat,
-                "\(heats[idx].decibels) dBFS did not heat above \(heats[idx - 1].decibels) dBFS"
+        for index in 1..<heats.count {
+            XCTAssertGreaterThanOrEqual(
+                heats[index], heats[index - 1],
+                "\(ladder[index]) dBFS is cooler than \(ladder[index - 1]) dBFS"
             )
+            if heats[index - 1] < 0.99 {
+                XCTAssertGreaterThan(
+                    heats[index], heats[index - 1],
+                    "\(ladder[index]) dBFS does not heat above \(ladder[index - 1]) dBFS"
+                )
+            }
         }
+        XCTAssertLessThanOrEqual(heats[0], 0.20, "the room is past an ember")
+        XCTAssertGreaterThanOrEqual(heats[1], 0.30, "quiet speech (-38 dBFS) does not glow")
+        XCTAssertLessThanOrEqual(heats[1], 0.60, "quiet speech (-38 dBFS) is already amber")
+        XCTAssertGreaterThanOrEqual(heats[2], 0.60, "normal speech (-30 dBFS) stays red")
+        XCTAssertGreaterThanOrEqual(heats[4], HUDWaveform.Filament.coreOnset, "loud speech (-22 dBFS) does not reach the white core")
+    }
 
-        // The uncalibrated window starts at -52 dBFS, lower than a typical room
-        // floor, so it is the most sensitive case a voice is drawn on.
-        let quiet = try XCTUnwrap(heats.first { $0.decibels == -30 }?.heat)
-        let mid = try XCTUnwrap(heats.first { $0.decibels == -20 }?.heat)
-        let loud = try XCTUnwrap(heats.first { $0.decibels == -10 }?.heat)
-        let top = try XCTUnwrap(heats.first { $0.decibels == 0 }?.heat)
-        print(String(format: "B5.5 heat at -30 %.4f, -20 %.4f, -10 %.4f, 0 dBFS %.4f", quiet, mid, loud, top))
-        XCTAssertLessThanOrEqual(quiet, 0.40, "a low voice (-30 dBFS) is past a red glow")
-        XCTAssertLessThanOrEqual(mid, 0.58, "a medium voice (-20 dBFS) is crowding the top of the range")
-        XCTAssertLessThan(loud, HUDWaveform.Filament.coreOnset, "a loud voice (-10 dBFS) already lights the white core")
-        XCTAssertGreaterThanOrEqual(loud - quiet, 0.30, "-30 to -10 dBFS uses too little of the range")
-        XCTAssertGreaterThanOrEqual(top, 0.99, "the loudest voice (0 dBFS) does not reach the top of the wire")
+    /// On a hot microphone ordinary speech is not white: the reference follows
+    /// the device's own loudness.
+    func testTheFilamentDoesNotSaturateOnAHotMicrophone() throws {
+        let calibration = MicrophoneCalibration(
+            noiseFloorDBFS: -57,
+            peakDBFS: 0,
+            observedSamples: 2,
+            updatedAt: Date(timeIntervalSince1970: 0)
+        )
+        // Its loud speech is taken to sit at -12 dBFS (the peak less the crest);
+        // ordinary speech is a crest below that again.
+        let normal = steadyHeat(decibels: -24, calibration: calibration)
+        let quiet = steadyHeat(decibels: -35, calibration: calibration)
+        print(String(format: "FIL-HOT -35 dBFS %.4f, -24 dBFS %.4f", quiet, normal))
+        XCTAssertLessThan(normal, HUDWaveform.Filament.coreOnset, "normal speech on a hot microphone lights the white core")
+        XCTAssertLessThan(quiet, normal, "the hot microphone's range is flat")
+    }
+
+    /// Above the speaker's loud speech the wire keeps a little room, so a shout
+    /// reads hotter than loud speech instead of the two drawing the same.
+    func testTheFilamentKeepsHeadroomAboveLoudSpeech() {
+        let calibration = MicrophoneCalibration(
+            noiseFloorDBFS: -47.4,
+            peakDBFS: -8.6,
+            observedSamples: 2,
+            updatedAt: Date(timeIntervalSince1970: 0),
+            speechDBFS: -24
+        )
+        let speech = steadyHeat(decibels: -24, calibration: calibration)
+        let louder = steadyHeat(decibels: -18, calibration: calibration)
+        let shout = steadyHeat(decibels: -8, calibration: calibration)
+        print(String(format: "FIL-HEADROOM speech %.4f, +6 dB %.4f, shout %.4f", speech, louder, shout))
+        XCTAssertGreaterThanOrEqual(speech, HUDWaveform.Filament.coreOnset, "loud speech does not reach the white core")
+        XCTAssertLessThan(speech, 0.98, "loud speech leaves no room above it")
+        XCTAssertGreaterThan(louder, speech + 0.005, "6 dB above loud speech draws the same")
+        XCTAssertGreaterThan(shout, louder, "a shout draws the same as raised speech")
+    }
+
+    /// A fan that lifts the room before the speaker talks does not cool their
+    /// loud speech: the meter and the reference share one window.
+    /// The coil reads each sample against the reference stored with it, not
+    /// the reference the meter holds now.
+    func testTheCoilReadsEachSampleAgainstItsOwnReference() {
+        let level = LevelScale.level(decibels: -24, window: LevelScale.fixedWindow)
+        let history = [Double](repeating: level, count: VoiceMeter.historyLength)
+        let written = 0.5
+        func heat(speechTop: Double, speechTops: [Double]) -> Double {
+            HUDWaveform.Filament.heatProfile(
+                history: history,
+                spectrum: [],
+                reveal: 1,
+                reduceMotion: false,
+                speechTop: speechTop,
+                speechTops: speechTops
+            ).max() ?? 0
+        }
+        let expected = heat(speechTop: written, speechTops: [])
+        let stored = heat(
+            speechTop: 0.70,
+            speechTops: [Double](repeating: written, count: history.count)
+        )
+        XCTAssertEqual(stored, expected, accuracy: 1e-12)
+        XCTAssertNotEqual(heat(speechTop: 0.70, speechTops: []), expected, accuracy: 1e-3, "the two references draw the same, so the test proves nothing")
+    }
+
+    func testLoudSpeechStaysHotAfterTheRoomRises() throws {
+        let calibration = MicrophoneCalibration(
+            noiseFloorDBFS: -47.4,
+            peakDBFS: -8.6,
+            observedSamples: 2,
+            updatedAt: Date(timeIntervalSince1970: 0),
+            speechDBFS: -24
+        )
+        let meter = VoiceMeter()
+        meter.setCalibration(calibration)
+        meter.seed(floor: calibration.noiseFloorDBFS)
+        let rate = VoiceMeter.sampleRate
+        var tick = 0
+        func push(_ decibels: Double, seconds: Double) {
+            for _ in 0..<Int(seconds * rate) {
+                meter.push(decibels: decibels, now: Double(tick) / rate)
+                tick += 1
+            }
+        }
+        push(-36, seconds: 5)
+        XCTAssertGreaterThan(try XCTUnwrap(meter.floorDBFS), -41, "the room did not rise, so the test proves nothing")
+        push(-24, seconds: 3)
+
+        var history: [Double] = []
+        var tops: [Double] = []
+        meter.copyOrderedHistory(into: &history)
+        meter.copyOrderedSpeechTops(into: &tops)
+        let heat = HUDWaveform.Filament.heatProfile(
+            history: history,
+            spectrum: [],
+            reveal: 1,
+            reduceMotion: false,
+            speechTop: meter.speechTop,
+            speechTops: tops
+        ).max() ?? 0
+        print(String(format: "FIL-ROOM speech after the room rose %.4f", heat))
+        XCTAssertGreaterThanOrEqual(heat, HUDWaveform.Filament.coreOnset, "a risen room cooled loud speech")
+        XCTAssertGreaterThan(heat, 0.9)
     }
 }

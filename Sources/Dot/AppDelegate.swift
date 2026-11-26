@@ -1449,6 +1449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "recordings": .int(entry.observedSamples),
                     "floor_dbfs": .double(entry.noiseFloorDBFS),
                     "peak_dbfs": .double(entry.peakDBFS),
+                    "speech_dbfs": entry.speechDBFS.map(LogValue.double) ?? .null,
                 ])
             },
             observe: { samples, peak, device, book, at in
@@ -1603,6 +1604,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "recordings": .int(entry?.observedSamples ?? 0),
             "floor_dbfs": .double(entry?.noiseFloorDBFS ?? 0),
             "peak_dbfs": .double(entry?.peakDBFS ?? 0),
+            "speech_dbfs": entry?.speechDBFS.map(LogValue.double) ?? .null,
         ])
     }
 

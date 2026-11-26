@@ -170,6 +170,7 @@ final class HUD {
     }
     /// Reusable envelope history buffer to avoid CoW allocations across ticks.
     private var historyBuffer: [Double] = []
+    private var speechTopBuffer: [Double] = []
     private var lastPublishedWrittenSamples = -1
     /// How much of the shape has arrived, from `0` to `1`.
     ///
@@ -517,6 +518,7 @@ final class HUD {
         spectrum.reset()
         spectrumBuffer.removeAll(keepingCapacity: true)
         historyBuffer.removeAll(keepingCapacity: true)
+        speechTopBuffer.removeAll(keepingCapacity: true)
         lastPublishedWrittenSamples = -1
         reveal = 0
         frameModel.reveal = 0
@@ -2419,6 +2421,8 @@ final class HUD {
             if isRecording || reveal > 0 || !historyBuffer.isEmpty {
                 meter.copyOrderedHistory(into: &historyBuffer)
                 frameModel.history = historyBuffer
+                meter.copyOrderedSpeechTops(into: &speechTopBuffer)
+                frameModel.speechTops = speechTopBuffer
             }
             if isRecording || reveal > 0 || !spectrumBuffer.isEmpty {
                 spectrum.copyOrderedRing(into: &spectrumBuffer)
@@ -2448,6 +2452,8 @@ final class HUD {
         if frameModel.phase != nextPhase { frameModel.phase = nextPhase }
         let nextCeiling = meter.ceiling
         if frameModel.ceiling != nextCeiling { frameModel.ceiling = nextCeiling }
+        let nextSpeechTop = meter.speechTop
+        if frameModel.speechTop != nextSpeechTop { frameModel.speechTop = nextSpeechTop }
         if isRecording || isTranscriptAnimating || frameModel.reveal > 0 {
             let nextTime = reduceMotion ? 1.8 : now
             if frameModel.time != nextTime { frameModel.time = nextTime }

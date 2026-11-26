@@ -148,6 +148,9 @@ struct HUDWaveform: View {
     /// The loudest moment of this take, from `0` to `1`, so a peak is drawn as a
     /// peak of this voice rather than as a peak of any voice.
     var ceiling: Double = 1
+    /// Where the speaker's loud speech sits in the meter window; see
+    /// ``VoiceMeter/speechTop``.
+    var speechTop: Double = VoiceMeter.defaultSpeechTop
     /// How much of the shape has arrived, from `0` to `1`.
     ///
     /// It is what makes the shape grow out of the axis when a recording starts
@@ -1033,13 +1036,15 @@ struct HUDWaveform: View {
         static let ember: Double = 0.14
         /// How much of the wire's heat range above the ember the voice drives.
         static let emberGain: Double = 0.86
-        /// Where 0 dBFS sits inside the meter window, as a decibel-linear position.
-        /// The window's top is +6 dBFS and its bottom follows the room's noise
-        /// floor, which puts 0 dBFS between 0.86 and 0.90.
-        static let fullScalePosition: Double = 0.88
-        /// The steady temperature is `(position / fullScalePosition)^responseExponent`,
-        /// so it rises evenly in decibels and white-hot is left for the last few dB.
-        static let responseExponent: Double = 1.25
+        /// The steady temperature at the speaker's own loud speech
+        /// (``VoiceMeter/speechTop``): past ``coreOnset``, so the core is lit, with
+        /// the last few percent left for louder voices. Below it the temperature is
+        /// linear in decibels from the room's gate, so the wire spans the voice it
+        /// hears rather than the microphone's headroom above it.
+        static let speechHeat: Double = 0.96
+        /// How far above loud speech the wire reaches `1`, as a window position:
+        /// about 12 dB on a window 50 dB tall.
+        static let headroomSpan: Double = 0.24
         /// Minimum envelope-gated drive share carried regardless of per-band contrast.
         static let bandFloor: Double = 0.08
         /// What is added to every band before it is compared with the frame's
@@ -1400,17 +1405,21 @@ struct HUDWaveform: View {
         }
 
         /// The temperature the wire settles at for a sustained meter level: linear
-        /// in decibels through ``responseExponent``, `1` at 0 dBFS.
-        static func targetTemperature(envelope: Double) -> Double {
+        /// in decibels up to ``speechHeat`` at the speaker's loud speech, then
+        /// easing to `1` across ``headroomSpan`` so a shout still reads hotter.
+        static func targetTemperature(envelope: Double, speechTop: Double = VoiceMeter.defaultSpeechTop) -> Double {
             let position = LevelScale.position(perceptual: envelope)
-            return pow(min(1, max(0, position / fullScalePosition)), responseExponent)
+            let top = min(max(speechTop, VoiceMeter.speechTopRange.lowerBound), VoiceMeter.speechTopRange.upperBound)
+            guard position > top else { return max(0, speechHeat * position / top) }
+            let rest = 1 - min(1, (position - top) / headroomSpan)
+            return 1 - (1 - speechHeat) * pow(rest, 1.5)
         }
 
         /// The Joule power that holds the wire at ``targetTemperature(envelope:)``:
         /// the power whose radiative and conductive losses balance there, so the
         /// fourth-power loss sets only the warm-up and cool-down, never the range.
-        static func fullPower(envelope: Double) -> Double {
-            let t = targetTemperature(envelope: envelope)
+        static func fullPower(envelope: Double, speechTop: Double = VoiceMeter.defaultSpeechTop) -> Double {
+            let t = targetTemperature(envelope: envelope, speechTop: speechTop)
             return (linearCooling * t + radiativeCooling * t * t * t * t) / heatingRate
         }
 
@@ -1459,7 +1468,9 @@ struct HUDWaveform: View {
         static func bandTemperatures(
             history: [Double],
             spectrum: [AudioSpectrumFrame],
-            reduceMotion: Bool
+            reduceMotion: Bool,
+            speechTop: Double = VoiceMeter.defaultSpeechTop,
+            speechTops: [Double] = []
         ) -> [Double] {
             guard !history.isEmpty else { return [0, 0, 0, 0, 0] }
             let n = min(lagSamples, max(history.count, spectrum.count))
@@ -1475,7 +1486,11 @@ struct HUDWaveform: View {
                 let env = age < history.count
                     ? VisualizerMath.displayEnergy(history[history.count - 1 - age])
                     : 0
-                let power = fullPower(envelope: env)
+                // Each sample is read against the reference it was written with.
+                let top = speechTops.count == history.count && age < history.count
+                    ? speechTops[history.count - 1 - age]
+                    : speechTop
+                let power = fullPower(envelope: env, speechTop: top)
                 if age < spectrum.count {
                     let index = spectrum.count - 1 - age
                     let levels = (
@@ -1522,12 +1537,16 @@ struct HUDWaveform: View {
             history: [Double],
             spectrum: [AudioSpectrumFrame],
             reveal: Double,
-            reduceMotion: Bool
+            reduceMotion: Bool,
+            speechTop: Double = VoiceMeter.defaultSpeechTop,
+            speechTops: [Double] = []
         ) -> [Double] {
             let bands = bandTemperatures(
                 history: history,
                 spectrum: spectrum,
-                reduceMotion: reduceMotion
+                reduceMotion: reduceMotion,
+                speechTop: speechTop,
+                speechTops: speechTops
             )
             let shown = min(1, max(0, reveal))
             var profile = [Double](repeating: 0, count: heatSamples)
@@ -1990,7 +2009,8 @@ struct HUDWaveform: View {
             history: history,
             spectrum: spectrumHistory,
             reveal: shown,
-            reduceMotion: reduceMotion
+            reduceMotion: reduceMotion,
+            speechTop: speechTop
         )
         let meanHeat = Filament.mean(profile)
         let cached = Filament.template(for: bulb)
