@@ -1588,9 +1588,9 @@ private struct FrameLiveTextBody: View {
                     .padding(.horizontal, HUDTheme.padding)
                     .padding(.bottom, HUDTheme.liveBottomPadding)
                     .id(Self.bottomAnchor)
+                    .background(DotScrollViewConfigurator(surface: "hud"))
             }
             .scrollIndicators(.never)
-            .scrollBounceBehavior(.basedOnSize)
             .defaultScrollAnchor(.bottom)
             .frame(height: HUDState.liveHeight - HUDState.headerHeight)
             .mask(alignment: .top) {
@@ -1964,6 +1964,9 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.scrollerStyle = .overlay
+        // The body stops at its first and last line; it never pulls past them.
+        scrollView.verticalScrollElasticity = .none
+        scrollView.horizontalScrollElasticity = .none
 
         let contentWidth = max(
             120,
@@ -2022,6 +2025,7 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
         }
 
         context.coordinator.applyAttributedText(text, to: textView)
+        context.coordinator.hasShownText = !text.isEmpty
         scrollView.documentView = textView
 
         // The card opens on the first word. It used to scroll to its own end
@@ -2036,8 +2040,14 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
+        guard let textView = scrollView.documentView as? HUDTranscriptNSTextView else {
+            (scrollView as? HUDTranscriptScrollView)?.syncDocumentWidthIfNeeded()
+            return
+        }
+        // Where the reader is, read before a reflow or new text moves the end.
+        let wasAtEnd = Self.isAtEnd(scrollView: scrollView, textView: textView)
+        let wasAtStart = !wasAtEnd && scrollView.contentView.bounds.origin.y <= 2
         (scrollView as? HUDTranscriptScrollView)?.syncDocumentWidthIfNeeded()
-        guard let textView = scrollView.documentView as? HUDTranscriptNSTextView else { return }
         let textChanged = textView.string != text
         let inkChanged = context.coordinator.appliedUsesSystemInk != usesSystemInk
         if textChanged || inkChanged {
@@ -2050,10 +2060,16 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
                 textView.selectedRanges = selectedRanges
             } else if textChanged, context.coordinator.hasShownText {
                 // Words that arrive while the card is open are the reason to
-                // follow the end; a sentence that was already complete is read
-                // from its start.
-                Self.scrollToBottomIfNeeded(scrollView: scrollView, textView: textView)
-            } else if textChanged {
+                // follow the end, but only for a reader already there: one who
+                // scrolled back keeps their place.
+                if wasAtEnd {
+                    Self.scrollToBottomIfNeeded(scrollView: scrollView, textView: textView)
+                } else if wasAtStart {
+                    Self.scrollToStart(scrollView: scrollView)
+                }
+            } else if textChanged, wasAtStart {
+                // A sentence that was already complete is read from its start,
+                // unless the reader has already moved.
                 Self.scrollToStart(scrollView: scrollView)
             }
             context.coordinator.hasShownText = !text.isEmpty
@@ -2062,6 +2078,13 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
         if !isEditing, textView.window?.firstResponder === textView {
             textView.window?.makeFirstResponder(nil)
         }
+    }
+
+    /// A transcript that still fits has no end to be at: a reader who has
+    /// never scrolled stays on the first word when new text first overflows.
+    private static func isAtEnd(scrollView: NSScrollView, textView: NSTextView) -> Bool {
+        let maxOffset = textView.frame.height - scrollView.contentView.bounds.height
+        return maxOffset > 2 && scrollView.contentView.bounds.origin.y >= maxOffset - 2
     }
 
     private static func scrollToStart(scrollView: NSScrollView) {

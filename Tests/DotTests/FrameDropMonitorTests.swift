@@ -123,7 +123,7 @@ final class FrameDropMonitorTests: XCTestCase {
         XCTAssertEqual(trace.updates, 4)
         XCTAssertEqual(trace.topOverscroll, 28.4, accuracy: 0.001)
         XCTAssertEqual(trace.bottomOverscroll, 31.25, accuracy: 0.001)
-        XCTAssertEqual(trace.maxGapMS, 88, accuracy: 0.01)
+        XCTAssertEqual(trace.maxBoundsGapMS, 88, accuracy: 0.01)
         let fields = trace.fields(now: 10.2, elastic: true)
         guard case .string("settings") = fields["surface"],
               case .int(4) = fields["updates"],

@@ -81,7 +81,7 @@ struct ScrollGestureTrace {
     private(set) var updates = 0
     private(set) var topOverscroll: CGFloat = 0
     private(set) var bottomOverscroll: CGFloat = 0
-    private(set) var maxGapMS: Double = 0
+    private(set) var maxBoundsGapMS: Double = 0
     private var last: CFTimeInterval
 
     init(surface: String, now: CFTimeInterval) {
@@ -95,7 +95,7 @@ struct ScrollGestureTrace {
         topOverscroll = max(topOverscroll, -originY)
         bottomOverscroll = max(bottomOverscroll, originY - maxY)
         if updates > 1 {
-            maxGapMS = max(maxGapMS, (now - last) * 1000)
+            maxBoundsGapMS = max(maxBoundsGapMS, (now - last) * 1000)
         }
         last = now
     }
@@ -107,7 +107,7 @@ struct ScrollGestureTrace {
             "updates": .int(updates),
             "top_overscroll": .double(Double((topOverscroll * 10).rounded() / 10)),
             "bottom_overscroll": .double(Double((bottomOverscroll * 10).rounded() / 10)),
-            "max_gap_ms": .double((maxGapMS * 10).rounded() / 10),
+            "max_bounds_gap_ms": .double((maxBoundsGapMS * 10).rounded() / 10),
             "elastic": .bool(elastic),
         ]
     }
@@ -121,10 +121,10 @@ final class DotFlippedClipView: NSClipView {
 
 /// Pure AppKit scroll view for Settings pages.
 ///
-/// Replaces SwiftUI's `HostingScrollView` to avoid both default bounce on short pages
-/// and the macOS 27.2.1 `.scrollBounceBehavior(.basedOnSize)` issue that disables
-/// elasticity on overflowing pages. Updates `verticalScrollElasticity` explicitly
-/// from document-vs-clip overflow (`docH > clipH + 0.5`).
+/// Replaces SwiftUI's `HostingScrollView`, whose bounce behaviour cannot be set
+/// reliably (macOS 27.2.1 `.scrollBounceBehavior(.basedOnSize)` toggles it by
+/// size). Elasticity is held at `.none` on both axes: a page stops at its first
+/// and last line instead of pulling past them and springing back.
 final class DotPageScrollView: NSScrollView {
     var onMetricsChange: ((CGFloat, CGFloat, CGFloat) -> Void)?
     private(set) var isLiveScrolling = false
@@ -204,10 +204,8 @@ final class DotPageScrollView: NSScrollView {
     func updateScrollMetrics() {
         let docH = documentView?.frame.height ?? 0
         let clipH = contentView.bounds.height
-        let overflows = docH > clipH + 0.5
-        let desiredElasticity: NSScrollView.Elasticity = overflows ? .allowed : .none
-        if verticalScrollElasticity != desiredElasticity {
-            verticalScrollElasticity = desiredElasticity
+        if verticalScrollElasticity != .none {
+            verticalScrollElasticity = .none
         }
         if horizontalScrollElasticity != .none {
             horizontalScrollElasticity = .none
@@ -499,8 +497,8 @@ struct DotPageScrollContainer<Content: View>: NSViewRepresentable {
     }
 }
 
-/// Attaches AppKit scroll elasticity and live-scroll tracking to a SwiftUI `ScrollView`
-/// (used by History and Palette).
+/// Holds a SwiftUI `ScrollView`'s AppKit scroll view at a hard stop and tracks
+/// its live scrolls (used by History, Palette and the island).
 struct DotScrollViewConfigurator: NSViewRepresentable {
     let surface: String
 
@@ -591,15 +589,13 @@ struct DotScrollViewConfigurator: NSViewRepresentable {
             finishLiveScrollIfNeeded()
         }
 
+        /// Holds the scroll view at a hard stop on both axes. SwiftUI may reset
+        /// elasticity when it rebuilds the hosting scroll view, so this runs on
+        /// every layout and bounds change rather than once.
         func syncElasticity() {
             guard let scrollView else { return }
-            let docH = scrollView.documentView?.frame.height ?? 0
-            let insets = scrollView.contentInsets
-            let clipH = scrollView.contentView.bounds.height
-            let overflows = docH + insets.top + insets.bottom > clipH + 0.5
-            let desired: NSScrollView.Elasticity = overflows ? .allowed : .none
-            if scrollView.verticalScrollElasticity != desired {
-                scrollView.verticalScrollElasticity = desired
+            if scrollView.verticalScrollElasticity != .none {
+                scrollView.verticalScrollElasticity = .none
             }
             if scrollView.horizontalScrollElasticity != .none {
                 scrollView.horizontalScrollElasticity = .none
@@ -652,7 +648,10 @@ struct DotScrollViewConfigurator: NSViewRepresentable {
                 object: scrollView,
                 queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.startLiveScrollIfNeeded() }
+                MainActor.assumeIsolated {
+                    self?.syncElasticity()
+                    self?.startLiveScrollIfNeeded()
+                }
             })
             tokens.append(center.addObserver(
                 forName: NSScrollView.didEndLiveScrollNotification,

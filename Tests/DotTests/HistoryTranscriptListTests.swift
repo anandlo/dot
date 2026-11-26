@@ -364,7 +364,7 @@ final class HistoryTranscriptListTests: XCTestCase {
     func testElasticityAndScrollGestureTrace() throws {
         let long = try mount((0..<250).map { "Elastic transcript \($0)" })
         defer { long.window.close() }
-        XCTAssertEqual(long.scrollView.verticalScrollElasticity, .allowed)
+        XCTAssertEqual(long.scrollView.verticalScrollElasticity, .none, "a long list must stop at its edges, not rubber-band")
         XCTAssertEqual(long.scrollView.horizontalScrollElasticity, .none)
 
         let short = try mount(["One", "Two"])

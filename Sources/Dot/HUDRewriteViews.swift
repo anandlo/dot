@@ -49,6 +49,7 @@ extension HUDView {
                             .padding(.horizontal, HUDTheme.padding)
                             .padding(.vertical, HUDTheme.verticalPadding)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(DotScrollViewConfigurator(surface: "hud"))
                             // A body that has no words yet is drawn at nothing, so
                             // the first line of a rewrite does not sit on the
                             // surface as a stray mark before the stream fills it.
@@ -59,7 +60,6 @@ extension HUDView {
                             )
                     }
                     .scrollIndicators(.never)
-                    .scrollBounceBehavior(.basedOnSize)
                     .defaultScrollAnchor(.top)
                     .accessibilityLabel(Text(card.selectedVersion.accessibilityLabel))
                     .accessibilityValue(Text(versionPosition(card)))
@@ -896,9 +896,9 @@ struct RewriteChipRow: View {
                     }
                     // Room for the last chip to scroll clear of the fade.
                     .padding(.trailing, HUDRewriteLayout.chipOverflowWidth)
+                    .background(DotScrollViewConfigurator(surface: "hud"))
                 }
                 .scrollIndicators(.never)
-                .scrollBounceBehavior(.basedOnSize)
                 .background(
                     GeometryReader { geometry in
                         Color.clear.preference(
