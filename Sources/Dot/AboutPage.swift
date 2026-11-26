@@ -574,6 +574,7 @@ struct AboutPage: View {
             AboutHostWindow(
                 onChange: { window in windowChanged(window) },
                 onTeardown: { teardownWindow() },
+                onDismantle: dismantleWork(),
                 reportsWindowMoves: !suppressWindowMoveReports,
                 windowQuery: windowQuery,
                 onKeyDown: { finishEntrance() },
@@ -1612,6 +1613,29 @@ struct AboutPage: View {
         detach()
     }
 
+    /// The work the page holds by reference, stopped when the bridge is
+    /// dismantled with the view graph.
+    ///
+    /// SwiftUI can dismantle the bridge while it invalidates the graph, as
+    /// when the hosting view is released. A state write there is an
+    /// exclusivity violation on macOS 26, so this path reads the page's state
+    /// when the body is evaluated and writes none. A page removed from a live
+    /// graph also runs `teardownWindow()` from `onDisappear`.
+    private func dismantleWork() -> @MainActor () -> Void {
+        let store = store
+        let probe = probe
+        let pendingStatus = statusDismissTask
+        return {
+            pendingStatus?.cancel()
+            store?.lastHoverPoint = nil
+            store?.detach()
+            probe?.windowIdentity = nil
+            probe?.windowPresent = false
+            probe?.pointerActive = false
+            Self.clear(probe)
+        }
+    }
+
     /// A detached host keeps no pointer and no live clock.
     private func detach() {
         hoveredRow = nil
@@ -1646,6 +1670,10 @@ struct AboutPage: View {
     }
 
     private func clearProbe() {
+        Self.clear(probe)
+    }
+
+    private static func clear(_ probe: AboutLiveProbe?) {
         guard let probe else { return }
         probe.requestUpdate = nil
         probe.suppressWindowMoves = nil
@@ -2108,6 +2136,7 @@ private extension View {
 struct AboutHostWindow: NSViewRepresentable {
     let onChange: @MainActor (ObjectIdentifier?) -> Void
     let onTeardown: @MainActor () -> Void
+    let onDismantle: @MainActor () -> Void
     let reportsWindowMoves: Bool
     let windowQuery: Int
     let onKeyDown: @MainActor () -> Void
@@ -2117,6 +2146,7 @@ struct AboutHostWindow: NSViewRepresentable {
         let view = PresenceView()
         view.onChange = onChange
         view.onTeardown = onTeardown
+        view.onDismantle = onDismantle
         view.reportsWindowMoves = reportsWindowMoves
         view.onKeyDown = onKeyDown
         view.onPress = onPress
@@ -2126,6 +2156,7 @@ struct AboutHostWindow: NSViewRepresentable {
     func updateNSView(_ nsView: PresenceView, context: Context) {
         nsView.onChange = onChange
         nsView.onTeardown = onTeardown
+        nsView.onDismantle = onDismantle
         nsView.reportsWindowMoves = reportsWindowMoves
         nsView.onKeyDown = onKeyDown
         nsView.onPress = onPress
@@ -2146,6 +2177,7 @@ struct AboutHostWindow: NSViewRepresentable {
     final class PresenceView: NSView {
         var onChange: (@MainActor (ObjectIdentifier?) -> Void)?
         var onTeardown: (@MainActor () -> Void)?
+        var onDismantle: (@MainActor () -> Void)?
         var reportsWindowMoves = true
         var onKeyDown: (@MainActor () -> Void)?
         var onPress: (@MainActor () -> Void)?
@@ -2196,9 +2228,10 @@ struct AboutHostWindow: NSViewRepresentable {
         func dismantle() {
             guard !dismantled else { return }
             dismantled = true
-            onTeardown?()
+            onDismantle?()
             onChange = nil
             onTeardown = nil
+            onDismantle = nil
             onKeyDown = nil
             onPress = nil
             stop()

@@ -185,6 +185,7 @@ final class AboutLiveTests: XCTestCase {
             AboutHostWindow(
                 onChange: onChange,
                 onTeardown: onTeardown,
+                onDismantle: {},
                 reportsWindowMoves: true,
                 windowQuery: 0,
                 onKeyDown: {},
@@ -1470,15 +1471,42 @@ final class AboutLiveTests: XCTestCase {
         _ = window
     }
 
-    /// The bridge's explicit dismantle signals the page synchronously, once.
+    /// The bridge's explicit dismantle signals the page synchronously, once,
+    /// through the dismantle path that writes no page state.
     func testTheBridgeDismantleSignalsTeardownSynchronously() {
         let view = AboutHostWindow.PresenceView()
         var calls = 0
-        view.onTeardown = { calls += 1 }
+        var stateTeardowns = 0
+        view.onDismantle = { calls += 1 }
+        view.onTeardown = { stateTeardowns += 1 }
         AboutHostWindow.dismantleNSView(view, coordinator: ())
         XCTAssertEqual(calls, 1, "the bridge dismantle did not signal teardown")
         view.dismantle()
         XCTAssertEqual(calls, 1, "a second dismantle signalled teardown again")
+        XCTAssertEqual(stateTeardowns, 0, "the dismantle ran the state-writing teardown")
+    }
+
+    /// SwiftUI can dismantle the bridge while it invalidates the graph, when
+    /// no `onDisappear` follows. The dismantle path alone must stop the
+    /// page's clock and release the probe's hold on it, synchronously.
+    func testTheDismantlePathAloneStopsThePageClock() throws {
+        let clock = TestClock(start)
+        suppressEntrance(clock)
+        let probe = AboutLiveProbe()
+        let scheduler = ManualWakeScheduler(clock: clock)
+        let live = makeLive(clock: clock, probe: probe, wakeScheduler: scheduler)
+        let presence = try XCTUnwrap(findPresenceView(in: live.hosting), "no bridge view")
+        let store = try XCTUnwrap(probe.store, "the page did not attach a store")
+        XCTAssertNotNil(store.loop, "no loop to observe")
+
+        AboutHostWindow.dismantleNSView(presence, coordinator: ())
+
+        XCTAssertNil(store.loop, "the dismantle left the loop running")
+        XCTAssertTrue(store.paused, "the dismantle left the store unpaused")
+        XCTAssertNil(scheduler.nextDue, "the dismantle left a wake")
+        XCTAssertNil(probe.store, "the probe kept the store")
+        XCTAssertNil(probe.requestUpdate, "the probe kept its page callbacks")
+        _ = live
     }
 
     /// A settings page switch removes the page while its window stays. The
