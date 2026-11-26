@@ -53,8 +53,6 @@ public enum HUDRewriteLayout {
     public static let badgeDotSize: CGFloat = 6
     /// The height of the faithfulness badge, in points.
     public static let badgeHeight: CGFloat = 18
-    /// The gap between the header label and the badge, in points.
-    public static let badgeGap: CGFloat = 8
     /// The distance between the body and the first row under it, in points.
     public static let rowTopGap: CGFloat = 12
     /// The gap between a note line and the row under it, in points.

@@ -14,12 +14,6 @@ enum HUDTheme {
     static let surfaceTop = Color(red: 0.071, green: 0.061, blue: 0.051)
     /// The bottom of the card's surface.
     static let surfaceBottom = Color(red: 0.031, green: 0.026, blue: 0.022)
-    /// The opacity of the surface. High enough that nothing reads through it.
-    static let surfaceOpacity: Double = 0.985
-    /// The top of the border.
-    static let borderTop = Color.white.opacity(0.12)
-    /// The bottom of the border.
-    static let borderBottom = Color.white.opacity(0.035)
 
     // MARK: - Ink
 
@@ -84,12 +78,6 @@ enum HUDTheme {
     static let arcOnPill = Color(red: 138 / 255, green: 90 / 255, blue: 15 / 255)
     /// The transcribing state.
     static let amber = Color(red: 0.659, green: 0.639, blue: 0.604)
-    /// The faithfulness badge of a rewrite that kept every fact.
-    ///
-    /// The card's only other status colours are the amber of the live dot and
-    /// the silver of a delivery, and a silver dot beside the word "Faithful"
-    /// read as decoration rather than as "this one is safe".
-    static let faithful = Color(red: 0.361, green: 0.749, blue: 0.435)
 
     /// The colour of one bar of the meter.
     ///
@@ -137,8 +125,6 @@ enum HUDTheme {
     static var liveFont: Font { DotType.font(13, .regular) }
     /// The message.
     static var messageFont: Font { DotType.font(13, .medium) }
-    /// The one line of an assistant card that is not a transcript.
-    static var assistantFont: Font { DotType.font(13, .regular) }
 
     /// The tracking of the small caps labels.
     static let labelTracking: CGFloat = 1.6
@@ -194,35 +180,6 @@ enum HUDTheme {
     static let hairline = Color.white.opacity(0.075)
 
     // MARK: - Glass
-
-    /// The colour the recording card's Liquid Glass is tinted with.
-    static let glassTint = Color(red: 0.05, green: 0.06, blue: 0.09)
-
-    /// How opaque that tint is, measured against the ink the card has to carry.
-    ///
-    /// Liquid Glass is a refracting material, not a wash. On a bright page it
-    /// lifts the backdrop toward white, and ink over it loses contrast faster
-    /// than a tint can put back. The table below was measured on the regular
-    /// variant, through window-server captures of the real 316 by 54 card, over
-    /// a white backdrop (luma 0.92), a mid grey (0.5), a dark page (0.12) and a
-    /// colour photograph, as the WCAG ratio of ``ink`` against the pixels behind
-    /// the REC glyphs:
-    ///
-    /// | tint | white | grey | dark | colour |
-    /// | 0.00 | 1.96  | 3.49 | 10.66 | 6.87 |
-    /// | 0.25 | 1.83  | 3.23 | 9.77  | 6.24 |
-    /// | 0.35 | 1.78  | 3.11 | 9.34  | 6.01 |
-    /// | 0.45 | 1.74  | 2.99 | 9.07  | 5.81 |
-    /// | 0.55 | 1.69  | 2.91 | 8.67  | 5.56 |
-    ///
-    /// Every step of tint lowered all four, because a dark tint on this material
-    /// brightens the fill in the dark appearance the island's panel forces. The
-    /// card therefore ships the material untinted. The contrast the ink needs is
-    /// carried by the scrim in ``glassScrimOpacity`` instead, which is drawn
-    /// over the material, and the card draws the clear variant in
-    /// ``glassVariant``: a tint on the clear variant is not measured, because
-    /// the tint's own table is the reason there is none.
-    static let glassTintOpacity: Double = 0
 
     /// The variant of the system glass the card draws.
     ///
@@ -286,20 +243,6 @@ enum HUDTheme {
     /// was measured too and rejected: it moved the card's interior by 0.46 of
     /// 255 and its contrast by less than 0.05 to 1 on every backdrop.
     static let glassScrimOpacity: Double = 0.30
-
-    /// The system's Liquid Glass at ``glassVariant``, tinted to the measured
-    /// opacity.
-    ///
-    /// A zero-opacity tint is the same picture as no tint with a call that says
-    /// something untrue about the material, so at zero the untinted material is
-    /// asked for.
-    @available(macOS 26.0, *)
-    static var glass: Glass {
-        let material: Glass = glassVariant == .clear ? .clear : .regular
-        return glassTintOpacity > 0
-            ? material.tint(glassTint.opacity(glassTintOpacity))
-            : material
-    }
 
     /// The opacity of the clock's ink on the glass material.
     ///

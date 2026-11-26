@@ -161,8 +161,26 @@ final class RewriteRunner {
     /// the point the text is inserted at, and asking any later would be reading
     /// a field that already holds the words.
     func captureAnchor(insertedText: String, at date: Date? = nil) -> InsertionAnchor? {
+        buildAnchor(from: textFields.focusedField(), insertedText: insertedText, at: date)
+    }
+
+    func captureAnchorAsync(insertedText: String, at date: Date? = nil) async -> InsertionAnchor? {
+        let field: FocusedTextField?
+        if textFields is AccessibilityTextFieldAccess {
+            field = await AccessibilityTextFieldAccess.captureFocusedFieldAsync()
+        } else {
+            field = textFields.focusedField()
+        }
+        return buildAnchor(from: field, insertedText: insertedText, at: date)
+    }
+
+    private func buildAnchor(
+        from field: FocusedTextField?,
+        insertedText: String,
+        at date: Date?
+    ) -> InsertionAnchor? {
         secureFocus = false
-        guard let field = textFields.focusedField() else { return nil }
+        guard let field else { return nil }
         if field.isSecure {
             secureFocus = true
             return nil
@@ -480,13 +498,26 @@ final class RewriteRunner {
     ///
     /// - Parameter text: the words the button was drawn against.
     /// - Returns: whether the version was written and verified in the field.
+    enum RewriteDeliveryOutcome: Equatable, Sendable {
+        case pasted
+        case fallbackCopied
+        case ignored
+    }
+
     @discardableResult
     func pasteSelected(_ text: String) -> Bool {
+        pasteSelectedOutcome(text) == .pasted
+    }
+
+    /// Writes the selected version at the current cursor or selection and
+    /// distinguishes a true cursor paste from a clipboard fallback or no-op.
+    @discardableResult
+    func pasteSelectedOutcome(_ text: String) -> RewriteDeliveryOutcome {
         guard let current = card,
               current.canDeliverSelected,
               current.selectedVersion.text == text,
               let selected = current.versions.first(where: { $0.id == current.selectedVersion.id })
-        else { return false }
+        else { return .ignored }
 
         // The field is captured at the click. The selection comes from this
         // read, never from an old insertion anchor.
@@ -499,7 +530,7 @@ final class RewriteRunner {
               let range = Self.insertionRange(field.selection, insertedText: text)
         else {
             fallBackToClipboard(text, version: selected, note: RewriteCard.pasteFailedNote)
-            return false
+            return .fallbackCopied
         }
 
         // Re-read immediately before the write. The same field must still be
@@ -513,25 +544,25 @@ final class RewriteRunner {
               textFields.isFocused(field)
         else {
             fallBackToClipboard(text, version: selected, note: RewriteCard.pasteFailedNote)
-            return false
+            return .fallbackCopied
         }
 
         // One attempt only. A failed select or write is not retried into
         // whatever happens to hold the focus afterwards.
         guard textFields.select(range, in: field) else {
             fallBackToClipboard(text, version: selected, note: RewriteCard.pasteFailedNote)
-            return false
+            return .fallbackCopied
         }
         guard textFields.setText(text, in: field) else {
             // The setter reported failure, but it may have written before it
             // did. Do not tell the person the field is unchanged.
             fallBackToClipboard(text, version: selected, note: RewriteCard.pasteUnverifiedNote)
-            return false
+            return .fallbackCopied
         }
         let newRange = NSRange(location: range.location, length: text.utf16.count)
         guard textFields.text(in: newRange, of: field) == text else {
             fallBackToClipboard(text, version: selected, note: RewriteCard.pasteUnverifiedNote)
-            return false
+            return .fallbackCopied
         }
 
         // Reading the range back selects it. Leave the caret at the end, so
@@ -551,7 +582,7 @@ final class RewriteRunner {
             "selection": .int(range.location),
             "selection_length": .int(range.length),
         ])
-        return true
+        return .pasted
     }
 
     /// A UTF-16 selection that can be written without overflowing.

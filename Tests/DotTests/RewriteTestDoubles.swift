@@ -322,3 +322,91 @@ final class FakeTextFieldAccess: TextFieldAccess {
 final class MutableDate {
     var value = Date(timeIntervalSinceReferenceDate: 800_000_000)
 }
+
+/// A chat service that answers from a script and remembers what it was asked.
+final class ScriptedChatProvider: ChatProvider, @unchecked Sendable {
+    /// How fast the script is delivered.
+    enum Pace {
+        /// Every event at once.
+        case instant
+        /// One event every `milliseconds`.
+        case paced(Int)
+    }
+
+    private let scripts: [[ChatEvent]]
+    private let pace: Pace
+    private let lock = NSLock()
+    private var received: [[ChatMessage]] = []
+    private var termination: AsyncThrowingStream<ChatEvent, Error>.Continuation.Termination?
+
+    init(scripts: [[ChatEvent]], pace: Pace = .instant) {
+        self.scripts = scripts
+        self.pace = pace
+    }
+
+    convenience init(events: [ChatEvent], pace: Pace = .instant) {
+        self.init(scripts: [events], pace: pace)
+    }
+
+    /// Every conversation the provider was asked to answer, oldest first.
+    var conversations: [[ChatMessage]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return received
+    }
+
+    /// How many requests reached the service.
+    var callCount: Int { conversations.count }
+
+    /// Why the last stream ended, once it has.
+    var lastTermination: AsyncThrowingStream<ChatEvent, Error>.Continuation.Termination? {
+        lock.lock()
+        defer { lock.unlock() }
+        return termination
+    }
+
+    func stream(
+        messages: [ChatMessage],
+        tools: [ChatToolSpec],
+        model: String
+    ) -> AsyncThrowingStream<ChatEvent, Error> {
+        lock.lock()
+        received.append(messages)
+        lock.unlock()
+        let script = nextScript()
+        let pace = self.pace
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                for event in script {
+                    if case .paced(let milliseconds) = pace {
+                        try? await Task.sleep(for: .milliseconds(milliseconds))
+                    }
+                    if Task.isCancelled { break }
+                    continuation.yield(event)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { [weak self] reason in
+                task.cancel()
+                self?.record(reason)
+            }
+        }
+    }
+
+    /// The script the next request is answered from.
+    ///
+    /// A turn with a tool makes two requests, so a script per request keeps the
+    /// second answer from replaying the first one's tool call.
+    private func nextScript() -> [ChatEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        let index = min(max(received.count - 1, 0), scripts.count - 1)
+        return scripts[index]
+    }
+
+    private func record(_ reason: AsyncThrowingStream<ChatEvent, Error>.Continuation.Termination) {
+        lock.lock()
+        termination = reason
+        lock.unlock()
+    }
+}

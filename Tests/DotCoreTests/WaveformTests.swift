@@ -40,8 +40,9 @@ final class WaveformTests: XCTestCase {
     func testTheNewestSampleIsReadAtTheRightEdge() {
         // A history is read oldest at the left and newest at the right; if that
         // is inverted the card shows a recording playing backwards.
-        let newest = Waveform.columns(history: spike(at: 179), phase: 0.99, count: 180)
-        let oldest = Waveform.columns(history: spike(at: 0), phase: 0.99, count: 180)
+        let count = Waveform.historyLength
+        let newest = Waveform.columns(history: spike(at: count - 1), phase: 0.99, count: count)
+        let oldest = Waveform.columns(history: spike(at: 0), phase: 0.99, count: count)
 
         XCTAssertGreaterThan(newest.suffix(20).reduce(0, +), 0.5, "the newest sample is not at the right edge")
         XCTAssertEqual(oldest.suffix(20).reduce(0, +), 0, accuracy: 1e-9, "the oldest sample reached the right edge")
@@ -67,5 +68,38 @@ final class WaveformTests: XCTestCase {
         )
         XCTAssertTrue(first.allSatisfy { $0 >= Waveform.minimumHalfHeight })
         XCTAssertNotEqual(first, later, "silence is a still picture")
+    }
+
+    @MainActor
+    func testCopyOrderedHistoryAtZeroIndexDoesNotAliasInternalRing() {
+        let meter = VoiceMeter()
+        let baseTime = 100.0
+        meter.push(decibels: -20, now: baseTime)
+        for index in 1..<Waveform.historyLength {
+            meter.push(
+                decibels: -40 + Double(index % 15),
+                now: baseTime + Double(index) / VoiceMeter.sampleRate
+            )
+        }
+        XCTAssertEqual(meter.writtenSamples, Waveform.historyLength)
+
+        var copy = [Double](repeating: 0, count: Waveform.historyLength)
+        let beforeAddress = copy.withUnsafeBufferPointer { $0.baseAddress }
+        meter.copyOrderedHistory(into: &copy)
+        XCTAssertEqual(copy.count, Waveform.historyLength)
+        XCTAssertEqual(
+            copy.withUnsafeBufferPointer { $0.baseAddress },
+            beforeAddress,
+            "copyOrderedHistory aliased internal storage instead of writing into the caller buffer"
+        )
+        let originalSnapshot = copy
+        XCTAssertGreaterThan(copy.max() ?? 0, 0.05)
+
+        copy[0] = 999.0
+        copy[copy.count - 1] = -999.0
+
+        var secondRead: [Double] = []
+        meter.copyOrderedHistory(into: &secondRead)
+        XCTAssertEqual(secondRead, originalSnapshot)
     }
 }

@@ -83,6 +83,8 @@ struct HUDView: View {
     var usesSystemInk: Bool { model.material == .glass }
     /// A value the documentation renders can set without a system preference.
     var reduceMotionOverride: Bool? = nil
+    /// Optional telemetry hook reporting `(timestamp, drawDurationMS)` for live visualizers.
+    var onCanvasDraw: (@Sendable (CFTimeInterval, Double) -> Void)? = nil
     /// How far the halo's ring ink is mixed toward the card's ink on the glass
     /// material.
     ///
@@ -135,11 +137,19 @@ struct HUDView: View {
     ///   black, from `0` to `1`.
     /// - Returns: the colour, the radius and the vertical offset of the shadow.
     private func shadow(_ mix: Double = 1) -> (color: Color, radius: CGFloat, y: CGFloat) {
+        Self.shadow(for: model.material, showsShadow: showsShadow, mix: mix)
+    }
+
+    static func shadow(
+        for material: HUDMaterial,
+        showsShadow: Bool,
+        mix: Double = 1
+    ) -> (color: Color, radius: CGFloat, y: CGFloat) {
         guard showsShadow else { return (.clear, 0, 0) }
         let alpha: Double
         let radius: CGFloat
         let offset: CGFloat
-        if HUDSurface.drawsSystemGlass(model.material) {
+        if HUDSurface.drawsSystemGlass(material) {
             alpha = 0.30
             radius = 18
             offset = 8
@@ -175,23 +185,18 @@ struct HUDView: View {
         // The shadow belongs to the surface, not to a group composite that
         // also holds the canvas. Compositing the waveform changed how its ink
         // met the fill while the recording was live.
-        return content
-            .opacity(model.content)
-            .scaleEffect(0.99 + 0.01 * model.content)
-            .offset(y: (1 - model.content) * 6)
-            .frame(width: model.cardSize.width, height: model.cardSize.height)
-            .clipShape(shape)
-            .background(
-                HUDSurface(material: model.material)
-                    .clipShape(shape)
-                    .shadow(color: shade.color, radius: shade.radius, x: 0, y: shade.y)
-            )
-            .overlay(alignment: .topTrailing) { tooltip }
-            .opacity(model.presence)
-            .scaleEffect(0.94 + 0.06 * model.presence)
-            .offset(y: (1 - model.presence) * -10)
-            .blur(radius: (1 - model.presence) * 7)
-            .animation(animation(.shape), value: model.cardSize)
+        return FrameFadingCard(
+            source: frameSource,
+            cardSize: model.cardSize,
+            material: model.material,
+            cornerRadius: HUDTheme.cornerRadius,
+            shadeColor: shade.color,
+            shadeRadius: shade.radius,
+            shadeY: shade.y,
+            content: content,
+            tooltip: tooltip
+        )
+        .animation(animation(.shape), value: model.cardSize)
     }
 
     /// The card that pours out of the notch and back into it.
@@ -213,39 +218,24 @@ struct HUDView: View {
     ///   rectangle begins.
     /// - Returns: the card, drawn at this moment of the emergence.
     private func pouring(_ scene: HUDEmergence.Scene) -> some View {
-        let rest = HUDEmergence.Rest(
-            rect: CGRect(origin: .zero, size: model.cardSize),
-            cornerRadius: HUDTheme.cornerRadius
-        )
-        let source = scene.source(inCardOf: model.cardSize)
-        let progress = HUDEmergence.progress(model.emergence, reduceMotion: reduceMotion)
-        let piece = HUDEmergence.shape(progress: progress, source: source, rest: rest)
-        let shade = shadow(piece.mix)
-        return ZStack(alignment: .topLeading) {
-            ZStack(alignment: .topLeading) {
-                HUDEmergence.path(piece)
-                    .fill(Color(red: 0, green: 0, blue: 0))
-                    .opacity(1 - piece.mix)
+        ZStack(alignment: .topLeading) {
+            FramePouringSurface(
+                source: frameSource,
+                scene: scene,
+                cardSize: model.cardSize,
+                material: model.material,
+                showsShadow: showsShadow,
+                reduceMotion: reduceMotion
+            )
 
-                HUDSurface(material: model.material)
-                    .opacity(piece.mix)
-                    .frame(width: piece.card.width, height: piece.card.height)
-                    .clipShape(clip(piece, rest: rest))
-                    .offset(x: piece.card.minX, y: piece.card.minY)
-            }
-            .compositingGroup()
-            .shadow(color: shade.color, radius: shade.radius, x: 0, y: shade.y)
-
-            content
-                .opacity(HUDEmergence.contentOpacity(
-                    content: model.content,
-                    progress: progress
-                ))
-                .scaleEffect(0.99 + 0.01 * model.content)
-                .offset(y: (1 - model.content) * 6)
-                .frame(width: model.cardSize.width, height: model.cardSize.height)
-                .clipShape(shape)
-                .overlay(alignment: .topTrailing) { tooltip }
+            FramePouringContent(
+                source: frameSource,
+                reduceMotion: reduceMotion,
+                content: content
+            )
+            .frame(width: model.cardSize.width, height: model.cardSize.height)
+            .clipShape(shape)
+            .overlay(alignment: .topTrailing) { tooltip }
         }
         .frame(
             width: model.cardSize.width,
@@ -255,34 +245,52 @@ struct HUDView: View {
         .animation(animation(.shape), value: model.cardSize)
     }
 
-    /// The clip of the card's material while the card is emerging.
-    ///
-    /// At rest it is the card's own shape, the continuous rounded rectangle the
-    /// card has always been, so the last frame of the emergence is the card the
-    /// product draws and nothing else. While the shape is travelling it is the
-    /// shape's own rectangle, with the radius that rectangle can hold.
-    ///
-    /// - Parameters:
-    ///   - piece: the shape at this moment.
-    ///   - rest: the card at rest.
-    /// - Returns: the shape the material is clipped to.
-    private func clip(_ piece: HUDEmergence.Shape, rest: HUDEmergence.Rest) -> AnyShape {
-        guard !piece.isRest(rest) else { return AnyShape(shape) }
-        return AnyShape(Path(roundedRect: piece.card, cornerRadius: piece.cornerRadius))
+    /// The tooltip of the hovered or recently confirmed button, when there is one.
+    private var activeTooltip: (action: HUDAction, confirmation: HUDActionOutcome?)? {
+        if let hovered = model.hoveredAction {
+            if let feedback = model.actionFeedback,
+               feedback.action == hovered,
+               feedback.outcome != .triggered {
+                return (hovered, feedback.outcome)
+            }
+            return (hovered, nil)
+        }
+        if let feedback = model.actionFeedback, feedback.outcome != .triggered {
+            return (feedback.action, feedback.outcome)
+        }
+        return nil
     }
 
-    /// The tooltip of the button under the pointer, when there is one.
     @ViewBuilder
     private var tooltip: some View {
-        if let hovered = model.hoveredAction {
-            HUDActionTooltip(
-                action: hovered,
-                material: model.material,
-                versioned: model.rewrite != nil
-            )
-                .offset(x: tooltipOffsetX(for: hovered), y: -25)
+        let current = activeTooltip
+        let tooltipKey = current.map { "\($0.action)-\(String(describing: $0.confirmation))" } ?? ""
+        ZStack(alignment: .topTrailing) {
+            if let current {
+                HUDActionTooltip(
+                    action: current.action,
+                    material: model.material,
+                    versioned: model.rewrite != nil,
+                    confirmation: current.confirmation
+                )
+                .offset(
+                    x: tooltipOffsetX(
+                        for: current.action,
+                        title: HUDActionTooltip.title(
+                            for: current.action,
+                            versioned: model.rewrite != nil,
+                            confirmation: current.confirmation
+                        )
+                    ),
+                    y: -24
+                )
                 .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
+            }
         }
+        .animation(
+            motion ? .timingCurve(0.23, 1, 0.32, 1, duration: 0.16) : nil,
+            value: tooltipKey
+        )
     }
 
     private func animation(_ kind: Kind) -> Animation? {
@@ -315,214 +323,7 @@ struct HUDView: View {
             message(text: text, symbol: symbol)
         case .ready(let shortcut):
             ready(shortcut: shortcut)
-        case .assistantRecording(let elapsed):
-            assistantRecording(elapsed: elapsed)
-        case .assistantThinking(let question):
-            assistantLine(text: question, style: usesSystemInk ? AnyShapeStyle(.secondary) : AnyShapeStyle(HUDTheme.ink2))
-        case .assistantTool(let connectorName):
-            assistantLine(text: "Using \(connectorName)", style: usesSystemInk ? AnyShapeStyle(.primary) : AnyShapeStyle(HUDTheme.ink))
-        case .assistantAnswer(let text, let state):
-            assistantAnswer(text: text, state: state)
-        case .assistantConfirm(let request):
-            assistantConfirm(request)
         }
-    }
-
-    // MARK: - Assistant
-
-    /// The recording card, with the assistant's mark where the live dot is.
-    ///
-    /// Everything else is the recording card: the clock, the waveform, the two
-    /// buttons. A question is spoken into the same microphone as a dictation, so
-    /// the card that says it is recording is the same card.
-    private func assistantRecording(elapsed: String) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
-                Image(systemName: "sparkle")
-                    .font(DotType.font(11, .semibold))
-                    .foregroundStyle(HUDTheme.recordingInk(model.material))
-                    .modifier(HUDPulseOpacity(model: model, source: frameSource))
-                    .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
-
-                Color.clear.frame(width: 10)
-
-                Text("REC")
-                    .font(HUDTheme.labelFont)
-                    .tracking(HUDTheme.labelTracking)
-                    .hudInk(.primary)
-
-                Color.clear.frame(width: 10)
-
-                Text(elapsed)
-                    .font(HUDTheme.clockFont)
-                    .tracking(HUDTheme.clockTracking)
-                    .foregroundStyle(HUDTheme.clockInk(model.material, useSystemInk: usesSystemInk))
-
-                Color.clear.frame(width: 14)
-
-                FrameHUDWaveform(
-                    model: model,
-                    source: frameSource,
-                    visualizer: model.visualizer,
-                    material: model.material,
-                    glassRingLift: glassRingLift,
-                    glassRingInkGain: glassRingInkGain
-                )
-                .frame(maxWidth: .infinity)
-                .frame(height: HUDTheme.waveformHeight)
-
-                controlsSection([.stop, .cancel])
-            }
-            .padding(.horizontal, HUDTheme.padding)
-            .frame(maxWidth: .infinity)
-            .frame(height: HUDState.recordingHeight)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    /// One line of the assistant at work: its mark, a sentence, and the dots.
-    private func assistantLine(text: String, style: AnyShapeStyle) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "sparkle")
-                .font(DotType.font(11, .semibold))
-                .foregroundStyle(HUDTheme.recordingInk(model.material))
-
-            Text(text)
-                .font(HUDTheme.assistantFont)
-                .foregroundStyle(style)
-                .lineLimit(1)
-                .truncationMode(.tail)
-
-            Spacer(minLength: 8)
-
-            FrameAssistantPulseDots(model: model, source: frameSource, reduceMotion: reduceMotion)
-        }
-        .padding(.horizontal, HUDTheme.padding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-    }
-
-    // MARK: - Assistant answer
-
-    /// The answer, in the transcript's clothes: a labelled header and a body
-    /// that grows to the limit and then scrolls.
-    private func assistantAnswer(text: String, state: AssistantAnswerState) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text(HUDHeader.title(for: state))
-                    .font(HUDTheme.labelFont)
-                    .tracking(HUDTheme.labelTracking)
-                    .foregroundStyle(assistantLabelStyle(state))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: HUDHeader.maximumTitleWidth, alignment: .leading)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .accessibilityLabel(Text(HUDHeader.accessibilityLabel(for: state)))
-
-                if state == .speaking {
-                    Image(systemName: "speaker.wave.2")
-                        .font(DotType.font(11, .semibold))
-                        .foregroundStyle(HUDTheme.recordingInk(model.material))
-                        .modifier(HUDClockOpacity(model: model, source: frameSource))
-                }
-
-                Spacer(minLength: 8)
-            }
-            .padding(.horizontal, HUDTheme.padding)
-            .frame(height: HUDTheme.headerHeight)
-
-            Rectangle()
-                .fill(HUDTheme.hairline)
-                .frame(height: 1)
-
-            ScrollView(.vertical) {
-                Text(text)
-                    .font(HUDTheme.transcriptFont)
-                    .lineSpacing(HUDTheme.transcriptLineSpacing)
-                    .hudInk(.primary)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, HUDTheme.padding)
-                    .padding(.vertical, HUDTheme.verticalPadding)
-                    .id(Self.assistantAnswerAnchor)
-            }
-            .scrollIndicators(.never)
-            .scrollBounceBehavior(.basedOnSize)
-            .defaultScrollAnchor(.top)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .accessibilityLabel(Text("Answer"))
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    private func assistantLabelStyle(_ state: AssistantAnswerState) -> AnyShapeStyle {
-        switch state {
-        case .pasted, .copied: AnyShapeStyle(HUDTheme.mint)
-        case .speaking: AnyShapeStyle(HUDTheme.recordingInk(model.material))
-        case .streaming, .spoken: usesSystemInk
-            ? AnyShapeStyle(.secondary)
-            : AnyShapeStyle(HUDTheme.ink2)
-        }
-    }
-
-    private static let assistantAnswerAnchor = "hud.assistant.answer"
-
-    // MARK: - Assistant confirmation
-
-    /// The card that asks before a connected app does something.
-    ///
-    /// It is not a dialog and it never takes the keyboard: the person is still
-    /// typing into the application behind it, and a Return meant for that
-    /// application must never approve this. The two buttons are the only way to
-    /// answer other than Escape.
-    private func assistantConfirm(_ request: ConfirmationRequest) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: request.connectorID.symbol)
-                    .font(DotType.font(14, .semibold))
-                    .hudInk(.secondary)
-
-                Text(request.connectorName.uppercased())
-                    .font(HUDTheme.labelFont)
-                    .tracking(HUDTheme.labelTracking)
-                    .hudInk(.secondary)
-                    .lineLimit(1)
-
-                Spacer(minLength: 0)
-            }
-            .frame(height: HUDConfirmLayout.headerHeight)
-
-            Color.clear.frame(height: HUDConfirmLayout.rowGap)
-
-            Text(request.summary)
-                .font(DotType.font(14, .regular))
-                .hudInk(.primary)
-                .lineLimit(HUDConfirmLayout.maximumSummaryLines)
-                .lineSpacing(2)
-                .frame(width: HUDConfirmLayout.summaryWidth, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Spacer(minLength: 0)
-
-            HStack(spacing: HUDConfirmLayout.buttonGap) {
-                Spacer(minLength: 0)
-
-                Button("Cancel") {
-                    model.assistantCancel?()
-                }
-                .buttonStyle(HUDConfirmButtonStyle(isPrimary: false, isDestructive: false))
-
-                Button(request.allowTitle) {
-                    model.assistantAllow?()
-                }
-                .buttonStyle(HUDConfirmButtonStyle(
-                    isPrimary: true,
-                    isDestructive: request.isDestructive
-                ))
-            }
-        }
-        .padding(.horizontal, HUDState.padding)
-        .padding(.vertical, HUDState.verticalPadding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     // MARK: - Recording
@@ -531,7 +332,7 @@ struct HUDView: View {
         let showsLiveText = !model.liveText.isEmpty
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
-                FrameLiveDot(model: model, source: frameSource)
+                FrameLiveDot(source: frameSource, material: model.material, reduceMotion: reduceMotion)
                     .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
 
                 Color.clear.frame(width: 10)
@@ -543,20 +344,23 @@ struct HUDView: View {
 
                 Color.clear.frame(width: 10)
 
-                Text(elapsed)
-                    .font(HUDTheme.clockFont)
-                    .tracking(HUDTheme.clockTracking)
-                    .foregroundStyle(HUDTheme.clockInk(model.material, useSystemInk: usesSystemInk))
+                FrameRecordingClock(
+                    source: frameSource,
+                    material: model.material,
+                    fallback: elapsed,
+                    useSystemInk: usesSystemInk
+                )
 
                 Color.clear.frame(width: 14)
 
                 FrameHUDWaveform(
-                    model: model,
                     source: frameSource,
                     visualizer: model.visualizer,
                     material: model.material,
+                    reduceMotion: reduceMotion,
                     glassRingLift: glassRingLift,
-                    glassRingInkGain: glassRingInkGain
+                    glassRingInkGain: glassRingInkGain,
+                    onCanvasDraw: onCanvasDraw
                 )
                 .frame(maxWidth: .infinity)
                 .frame(height: HUDTheme.waveformHeight)
@@ -568,45 +372,11 @@ struct HUDView: View {
             .frame(height: showsLiveText ? HUDState.headerHeight : HUDState.recordingHeight)
 
             if showsLiveText {
-                // The newest words matter while the user is speaking, so the
-                // live body follows the end of the text. Truncating the head
-                // showed two lines and hid the rest of a long dictation; the
-                // body scrolls with the speech instead.
-                ScrollViewReader { proxy in
-                    ScrollView(.vertical) {
-                        Text(model.liveText)
-                            .font(HUDTheme.liveFont)
-                            .lineSpacing(HUDTheme.liveLineSpacing)
-                            .hudInk(.secondary)
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, HUDTheme.padding)
-                            .padding(.bottom, HUDTheme.liveBottomPadding)
-                            .id(Self.liveTextAnchor)
-                    }
-                    .scrollIndicators(.never)
-                    .scrollBounceBehavior(.basedOnSize)
-                    .defaultScrollAnchor(.bottom)
-                    .frame(height: HUDState.liveHeight - HUDState.headerHeight)
-                    // The body follows the end of the sentence, so it is always
-                    // mid line at the foot of the card. Without the fade the
-                    // card ends in the bottom half of a line of text, which is
-                    // the one thing a finished surface cannot look like.
-                    .mask(alignment: .top) {
-                        VStack(spacing: 0) {
-                            Rectangle()
-                            LinearGradient(
-                                colors: [.black, .black.opacity(0)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                            .frame(height: 10)
-                        }
-                    }
-                    .onAppear { followLiveText(proxy) }
-                    .onChange(of: model.liveText) { _, _ in followLiveText(proxy) }
-                    .onChange(of: model.cardSize) { _, _ in followLiveText(proxy) }
-                }
+                FrameLiveTextBody(
+                    source: frameSource,
+                    fallbackText: model.liveText,
+                    cardSize: model.cardSize
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -616,7 +386,7 @@ struct HUDView: View {
 
     private var working: some View {
         HStack(spacing: 10) {
-            FrameWorkingPulse(model: model, source: frameSource)
+            FrameWorkingPulse(source: frameSource)
 
             Text("TRANSCRIBING")
                 .font(HUDTheme.labelFont)
@@ -635,7 +405,7 @@ struct HUDView: View {
 
             Spacer(minLength: 0)
 
-            FrameSpinner(model: model, source: frameSource)
+            FrameSpinner(source: frameSource)
 
             controlsSection([.cancel])
         }
@@ -656,7 +426,6 @@ struct HUDView: View {
         return VStack(spacing: 0) {
             HStack(spacing: 10) {
                 FrameRewriteIdentity(
-                    model: model,
                     source: frameSource,
                     card: card,
                     delivery: delivery,
@@ -853,20 +622,6 @@ struct HUDView: View {
         .accessibilityLabel(Text("Transcript"))
     }
 
-    /// The anchors the two scrollable bodies follow.
-    private static let liveTextAnchor = "hud.live.text"
-    private static let transcriptAnchor = "hud.transcript"
-
-    /// Keeps the live body on its newest words.
-    ///
-    /// The card is presented before the first words arrive, and it grows when
-    /// they do, so the end of the text is what the person is watching. Without
-    /// this the body sat at the top of a long partial and showed the beginning
-    /// of a sentence the person had already finished.
-    private func followLiveText(_ proxy: ScrollViewProxy) {
-        proxy.scrollTo(Self.liveTextAnchor, anchor: .bottom)
-    }
-
     /// The height of the scrollable body inside the card.
     private var transcriptBodyHeight: CGFloat {
         max(0, model.cardSize.height - HUDTheme.headerHeight - 1)
@@ -1060,6 +815,7 @@ struct HUDView: View {
                     isHovered: model.hoveredAction == action,
                     versioned: versioned,
                     isEnabled: deliveryEnabled || !action.deliversVersion,
+                    feedback: model.actionFeedback?.action == action ? model.actionFeedback : nil,
                     onHoverChange: { inside in
                         if inside {
                             model.hoveredAction = action
@@ -1077,7 +833,7 @@ struct HUDView: View {
     private func activeControlItems() -> [HUDAction] {
         let versioned = model.rewrite != nil
         switch model.mode {
-        case .recording, .assistantRecording:
+        case .recording:
             return HUDAction.available([.stop, .cancel], in: actions)
         case .working:
             return HUDAction.available([.cancel], in: actions)
@@ -1091,20 +847,17 @@ struct HUDView: View {
             return HUDAction.available([.close], in: actions)
         case .ready:
             return HUDAction.available([.settings, .close], in: actions)
-        case .assistantThinking, .assistantTool, .assistantAnswer, .assistantConfirm:
-            // The assistant's cards carry no buttons of their own: the shortcut
-            // stops the turn and Escape backs out, and a confirmation draws its
-            // own two.
-            return []
         }
     }
 
-    private func tooltipOffsetX(for action: HUDAction) -> CGFloat {
+    private func tooltipOffsetX(for action: HUDAction, title: String) -> CGFloat {
         let items = activeControlItems()
         guard let idx = items.firstIndex(of: action) else { return -HUDTheme.padding }
         let trailingIndex = items.count - 1 - idx
         let step = HUDTheme.actionSize + 4
-        return -(HUDTheme.padding + CGFloat(trailingIndex) * step * 0.65)
+        let buttonCenterFromTrailing = HUDTheme.padding + HUDTheme.actionSize / 2 + CGFloat(trailingIndex) * step
+        let pillWidth = HUDActionTooltip.estimatedWidth(for: title)
+        return min(-8, -(buttonCenterFromTrailing - pillWidth / 2))
     }
 
     private func perform(_ action: HUDAction, versioned: Bool = false) {
@@ -1350,44 +1103,134 @@ struct HUDActionButton: View {
     var isHovered: Bool = false
     var versioned: Bool = false
     var isEnabled: Bool = true
+    var feedback: HUDActionFeedback? = nil
     var onHoverChange: ((Bool) -> Void)? = nil
     let perform: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.hudUsesSystemInk) var usesSystemInk
     @State private var hovering = false
+
+    private var reducesMotion: Bool {
+        reduceMotion || DotMotion.reducesMotion
+    }
 
     private var activeHover: Bool {
         isEnabled && (hovering || isHovered)
     }
 
+    private var isConfirmed: Bool {
+        feedback != nil
+    }
+
+    private var showsConfirmedSymbol: Bool {
+        switch feedback?.outcome {
+        case .copied, .pasted, .fallbackCopied:
+            return true
+        case .triggered, .none:
+            return false
+        }
+    }
+
+    private var confirmedSymbol: String {
+        switch feedback?.outcome {
+        case .fallbackCopied:
+            return "doc.on.doc"
+        case .copied, .pasted:
+            return "checkmark"
+        case .triggered, .none:
+            return action.symbol
+        }
+    }
+
+    private var confirmationAccent: Color {
+        switch feedback?.outcome {
+        case .copied, .pasted:
+            if usesSystemInk {
+                return colorScheme == .light
+                    ? HUDTheme.arcOnPill
+                    : HUDTheme.recordingGlass
+            }
+            return HUDTheme.recording
+        case .fallbackCopied:
+            if usesSystemInk, colorScheme == .light {
+                return HUDTheme.arcOnPill
+            }
+            return HUDTheme.warning
+        case .triggered, .none:
+            return usesSystemInk ? Color.primary : HUDTheme.accentTip
+        }
+    }
+
+    private var iconStyle: AnyShapeStyle {
+        if isConfirmed {
+            return AnyShapeStyle(confirmationAccent)
+        }
+        return activeHover
+            ? action.hoverStyle(useSystemInk: usesSystemInk)
+            : action.restingStyle(useSystemInk: usesSystemInk)
+    }
+
+    private var buttonFill: Color {
+        if isConfirmed {
+            let opacity = (usesSystemInk && colorScheme == .light) ? 0.16 : 0.18
+            return confirmationAccent.opacity(opacity)
+        }
+        return activeHover ? HUDTheme.actionFillHover : HUDTheme.actionFill
+    }
+
+    private var borderColor: Color {
+        if isConfirmed {
+            return confirmationAccent.opacity(0.90)
+        }
+        return activeHover ? HUDTheme.actionBorderHover : HUDTheme.actionBorder
+    }
+
     var body: some View {
         Button(action: perform) {
-            Image(systemName: action.symbol)
-                .font(HUDTheme.actionFont)
-                .foregroundStyle(activeHover
-                    ? action.hoverStyle(useSystemInk: usesSystemInk)
-                    : action.restingStyle(useSystemInk: usesSystemInk))
-                .frame(width: HUDTheme.actionSize, height: HUDTheme.actionSize)
-                .background(
-                    Circle()
-                        .fill(activeHover ? HUDTheme.actionFillHover : HUDTheme.actionFill)
-                )
-                .overlay(
-                    Circle()
-                        .strokeBorder(
-                            activeHover ? HUDTheme.actionBorderHover : HUDTheme.actionBorder,
-                            lineWidth: 0.75
-                        )
-                )
-                .contentShape(Circle())
-                .opacity(isEnabled ? 1 : 0.45)
-                .animation(
-                    reduceMotion ? nil : .easeOut(duration: 0.14),
-                    value: activeHover
-                )
+            ZStack {
+                Image(systemName: action.symbol)
+                    .font(HUDTheme.actionFont)
+                    .opacity(showsConfirmedSymbol ? 0 : 1)
+                    .scaleEffect(showsConfirmedSymbol ? 0.62 : 1)
+                Image(systemName: confirmedSymbol)
+                    .font(DotType.font(10, .bold))
+                    .opacity(showsConfirmedSymbol ? 1 : 0)
+                    .scaleEffect(showsConfirmedSymbol ? 1 : 0.62)
+            }
+            .foregroundStyle(iconStyle)
+            .animation(
+                reducesMotion ? nil : .spring(response: 0.24, dampingFraction: 0.72),
+                value: showsConfirmedSymbol
+            )
+            .frame(width: HUDTheme.actionSize, height: HUDTheme.actionSize)
+            .background(
+                Circle()
+                    .fill(buttonFill)
+            )
+            .overlay(
+                Circle()
+                    .strokeBorder(borderColor, lineWidth: isConfirmed ? 1.25 : 0.75)
+            )
+            .overlay {
+                if !reducesMotion, let feedback, feedback.outcome != .triggered {
+                    HUDActionPulseRing(accent: confirmationAccent)
+                        .id(feedback.id)
+                }
+            }
+            .contentShape(Circle())
+            .opacity(isEnabled ? 1 : 0.45)
+            .animation(
+                reducesMotion ? nil : .easeOut(duration: 0.14),
+                value: activeHover
+            )
+            .animation(
+                reducesMotion ? nil : .timingCurve(0.23, 1, 0.32, 1, duration: 0.18),
+                value: isConfirmed
+            )
         }
-        .buttonStyle(HUDActionButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(HUDActionButtonStyle(reduceMotion: reducesMotion))
         .disabled(!isEnabled)
         .onHover { inside in
             hovering = inside
@@ -1398,19 +1241,94 @@ struct HUDActionButton: View {
     }
 }
 
+/// Single expanding confirmation ripple emitted around a HUD action button on click.
+private struct HUDActionPulseRing: View {
+    let accent: Color
+    @State private var expanded = false
+
+    var body: some View {
+        Circle()
+            .stroke(accent, lineWidth: 1.25)
+            .frame(width: HUDTheme.actionSize, height: HUDTheme.actionSize)
+            .scaleEffect(expanded ? 1.48 : 1.0)
+            .opacity(expanded ? 0 : 0.65)
+            .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.38), value: expanded)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onAppear {
+                expanded = true
+            }
+    }
+}
+
 /// A themed floating tooltip pill that sits cleanly above the HUD island's top edge
 /// when hovering over an action button, never overlapping the transcript text.
 private struct HUDActionTooltip: View {
     let action: HUDAction
     var material: HUDMaterial = .glass
     var versioned: Bool = false
+    var confirmation: HUDActionOutcome? = nil
+
+    static func title(
+        for action: HUDAction,
+        versioned: Bool,
+        confirmation: HUDActionOutcome?
+    ) -> String {
+        switch confirmation {
+        case .copied:
+            return "Copied"
+        case .pasted:
+            return "Pasted"
+        case .fallbackCopied:
+            return "Copied instead"
+        case .triggered, .none:
+            return action.help(versioned: versioned)
+        }
+    }
+
+    static func estimatedWidth(for title: String) -> CGFloat {
+        let attributes: [NSAttributedString.Key: Any] = [.font: DotType.nsFont(11, .medium)]
+        let textWidth = (title as NSString).size(withAttributes: attributes).width
+        return ceil(textWidth) + 18 + 5 + 12
+    }
+
+    private var iconSymbol: String {
+        switch confirmation {
+        case .copied, .pasted:
+            return "checkmark"
+        case .fallbackCopied:
+            return "doc.on.doc"
+        case .triggered, .none:
+            return action.symbol
+        }
+    }
+
+    private var iconColor: Color {
+        switch confirmation {
+        case .copied, .pasted:
+            return HUDTheme.recordingGlass
+        case .fallbackCopied:
+            return HUDTheme.warning
+        case .triggered, .none:
+            return action.hoverColor
+        }
+    }
+
+    private var topBorderColor: Color {
+        switch confirmation {
+        case .copied, .pasted, .fallbackCopied:
+            return iconColor.opacity(0.45)
+        case .triggered, .none:
+            return Color.white.opacity(0.32)
+        }
+    }
 
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: action.symbol)
+            Image(systemName: iconSymbol)
                 .font(DotType.font(9.5, .semibold))
-                .foregroundStyle(action.hoverColor)
-            Text(action.help(versioned: versioned))
+                .foregroundStyle(iconColor)
+            Text(Self.title(for: action, versioned: versioned, confirmation: confirmation))
                 .font(DotType.font(11, .medium))
                 .foregroundStyle(HUDTheme.ink)
                 .lineLimit(1)
@@ -1435,7 +1353,7 @@ private struct HUDActionTooltip: View {
                 .strokeBorder(
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(0.32),
+                            topBorderColor,
                             Color.white.opacity(0.10),
                         ],
                         startPoint: .top,
@@ -1444,7 +1362,7 @@ private struct HUDActionTooltip: View {
                     lineWidth: 0.85
                 )
         )
-        .shadow(color: Color.black.opacity(0.45), radius: 8, x: 0, y: 3)
+        .shadow(color: Color.black.opacity(0.45), radius: 6, x: 0, y: 2)
         .fixedSize()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -1492,90 +1410,255 @@ private struct HUDActionButtonBody: View {
     }
 }
 
+/// Isolates appearance fade/scale/blur reads onto `HUDFrameSource` so steady
+/// emergence/dismissal ticks do not re-evaluate `HUDView.body`.
+@MainActor
+private struct FrameFadingCard<Content: View, Tooltip: View>: View {
+    let source: HUDFrameSource
+    let cardSize: CGSize
+    let material: HUDMaterial
+    let cornerRadius: CGFloat
+    let shadeColor: Color
+    let shadeRadius: CGFloat
+    let shadeY: CGFloat
+    let content: Content
+    let tooltip: Tooltip
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let presence = source.presence
+        let contentAmount = source.content
+        content
+            .opacity(contentAmount)
+            .scaleEffect(0.99 + 0.01 * contentAmount)
+            .offset(y: (1 - contentAmount) * 6)
+            .frame(width: cardSize.width, height: cardSize.height)
+            .clipShape(shape)
+            .background(
+                HUDSurface(material: material)
+                    .clipShape(shape)
+                    .shadow(color: shadeColor, radius: shadeRadius, x: 0, y: shadeY)
+            )
+            .overlay(alignment: .topTrailing) { tooltip }
+            .opacity(presence)
+            .scaleEffect(0.94 + 0.06 * presence)
+            .offset(y: (1 - presence) * -10)
+            .blur(radius: presence < 0.999 ? (1 - presence) * 7 : 0)
+    }
+}
+
+/// Renders the emerging notch-pour surface during transit and switches to a
+/// direct uncomposited clipped surface with shadow at rest.
+@MainActor
+private struct FramePouringSurface: View {
+    let source: HUDFrameSource
+    let scene: HUDEmergence.Scene
+    let cardSize: CGSize
+    let material: HUDMaterial
+    let showsShadow: Bool
+    let reduceMotion: Bool
+
+    var body: some View {
+        let rest = HUDEmergence.Rest(
+            rect: CGRect(origin: .zero, size: cardSize),
+            cornerRadius: HUDTheme.cornerRadius
+        )
+        let emergenceSource = scene.source(inCardOf: cardSize)
+        let progress = HUDEmergence.progress(source.emergence, reduceMotion: reduceMotion)
+        let piece = HUDEmergence.shape(progress: progress, source: emergenceSource, rest: rest)
+        let shade = HUDView.shadow(for: material, showsShadow: showsShadow, mix: piece.mix)
+
+        if piece.mix >= 0.999 {
+            HUDSurface(material: material)
+                .frame(width: piece.card.width, height: piece.card.height)
+                .clipShape(RoundedRectangle(cornerRadius: piece.cornerRadius, style: .continuous))
+                .offset(x: piece.card.minX, y: piece.card.minY)
+                .shadow(color: shade.color, radius: shade.radius, x: 0, y: shade.y)
+        } else {
+            ZStack(alignment: .topLeading) {
+                HUDEmergence.path(piece)
+                    .fill(Color(red: 0, green: 0, blue: 0))
+                    .opacity(1 - piece.mix)
+
+                HUDSurface(material: material)
+                    .opacity(piece.mix)
+                    .frame(width: piece.card.width, height: piece.card.height)
+                    .clipShape(RoundedRectangle(cornerRadius: piece.cornerRadius, style: .continuous))
+                    .offset(x: piece.card.minX, y: piece.card.minY)
+            }
+            .compositingGroup()
+            .shadow(color: shade.color, radius: shade.radius, x: 0, y: shade.y)
+        }
+    }
+}
+
+/// Isolates the pouring card content opacity/scale/offset on `HUDFrameSource`.
+@MainActor
+private struct FramePouringContent<Content: View>: View {
+    let source: HUDFrameSource
+    let reduceMotion: Bool
+    let content: Content
+
+    var body: some View {
+        let progress = HUDEmergence.progress(source.emergence, reduceMotion: reduceMotion)
+        let contentAmount = source.content
+        content
+            .opacity(HUDEmergence.contentOpacity(
+                content: contentAmount,
+                progress: progress
+            ))
+            .scaleEffect(0.99 + 0.01 * contentAmount)
+            .offset(y: (1 - contentAmount) * 6)
+    }
+}
+
 /// The waveform leaf. It is the only place the card reads the frame's history,
 /// spectrum, level and reveal, so those writes redraw this canvas and nothing
 /// else.
 @MainActor
 private struct FrameHUDWaveform: View {
-    @ObservedObject var model: HUDModel
     let source: HUDFrameSource
     let visualizer: HUDVisualizer
     let material: HUDMaterial
+    let reduceMotion: Bool
     let glassRingLift: Double
     let glassRingInkGain: Double
+    let onCanvasDraw: (@Sendable (CFTimeInterval, Double) -> Void)?
 
     var body: some View {
+        switch source {
+        case .frames(let frameModel):
+            LiveVisualizerView(
+                sink: frameModel.visualizerSink,
+                makeInitialFrame: {
+                    frameModel.currentVisualizerFrame(
+                        visualizer: visualizer,
+                        material: material,
+                        reduceMotion: reduceMotion,
+                        glassRingLift: glassRingLift,
+                        glassRingInkGain: glassRingInkGain
+                    )
+                }
+            )
+        case .snapshot:
 #if DEBUG
-        let _ = FrameLeafProbe.captures ? { FrameLeafProbe.waveformBodies += 1 }() : ()
+            let _ = FrameLeafProbe.captures ? { FrameLeafProbe.waveformBodies += 1 }() : ()
 #endif
-        HUDWaveform(
-            visualizer: visualizer,
-            halfHeights: source.halfHeights,
-            history: source.history,
-            spectrumHistory: source.spectrumHistory,
-            phase: source.phase,
-            time: source.time,
-            level: source.level,
-            pulse: source.pulse,
-            ceiling: source.ceiling,
-            reveal: source.reveal,
-            material: material,
-            glassRingLift: glassRingLift,
-            glassRingInkGain: glassRingInkGain
-        )
+            HUDWaveform(
+                visualizer: visualizer,
+                halfHeights: source.halfHeights,
+                history: source.history,
+                spectrumHistory: source.spectrumHistory,
+                phase: source.phase,
+                time: source.time,
+                level: source.level,
+                pulse: source.pulse,
+                ceiling: source.ceiling,
+                reveal: source.reveal,
+                reduceMotionOverride: reduceMotion,
+                material: material,
+                glassRingLift: glassRingLift,
+                glassRingInkGain: glassRingInkGain,
+                onCanvasDraw: onCanvasDraw
+            )
+        }
     }
 }
 
-/// The recording dot. Its own frame reads keep the level out of the card's body.
+/// Renders incoming live dictation text inside the recording drawer so partial
+/// updates never invalidate `HUDView.body` or `FrameHUDWaveform`.
+@MainActor
+private struct FrameLiveTextBody: View {
+    let source: HUDFrameSource
+    let fallbackText: String
+    let cardSize: CGSize
+
+    private static let bottomAnchor = "hud.live.text"
+
+    var body: some View {
+        let liveText = source.liveText(fallback: fallbackText)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                Text(liveText)
+                    .font(HUDTheme.liveFont)
+                    .lineSpacing(HUDTheme.liveLineSpacing)
+                    .hudInk(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, HUDTheme.padding)
+                    .padding(.bottom, HUDTheme.liveBottomPadding)
+                    .id(Self.bottomAnchor)
+            }
+            .scrollIndicators(.never)
+            .scrollBounceBehavior(.basedOnSize)
+            .defaultScrollAnchor(.bottom)
+            .frame(height: HUDState.liveHeight - HUDState.headerHeight)
+            .mask(alignment: .top) {
+                VStack(spacing: 0) {
+                    Rectangle()
+                    LinearGradient(
+                        colors: [.black, .black.opacity(0)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 10)
+                }
+            }
+            .onAppear { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
+            .onChange(of: liveText) { _, _ in proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
+            .onChange(of: cardSize) { _, _ in proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
+        }
+    }
+}
+
+/// The recording dot. Uses synchronous `LiveDotView` (`CALayer`) for live `.frames`
+/// and keeps SwiftUI `LiveDot` for static `.snapshot` captures.
 @MainActor
 private struct FrameLiveDot: View {
-    @ObservedObject var model: HUDModel
     let source: HUDFrameSource
+    let material: HUDMaterial
+    let reduceMotion: Bool
 
     var body: some View {
 #if DEBUG
         let _ = FrameLeafProbe.captures ? { FrameLeafProbe.liveDotBodies += 1 }() : ()
 #endif
-        LiveDot(level: source.level, pulse: source.pulse, material: model.material)
+        switch source {
+        case .frames(let frameModel):
+            LiveDotView(
+                sink: frameModel.liveDotSink,
+                makeInitialFrame: {
+                    frameModel.currentLiveDotFrame(material: material, reduceMotion: reduceMotion)
+                }
+            )
+            .frame(width: 36, height: 36)
+            .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
+        case .snapshot:
+            LiveDot(level: source.level, pulse: source.pulse, material: material)
+        }
     }
 }
 
-/// The assistant's mark and the speaking label take their brightness from the
-/// same frame pulse without making the card's body depend on it.
+/// Renders the recording elapsed clock directly from the frame model so tick
+/// updates never invalidate the outer card `HUDModel`.
 @MainActor
-private struct HUDPulseOpacity: ViewModifier {
-    @ObservedObject var model: HUDModel
+private struct FrameRecordingClock: View {
     let source: HUDFrameSource
-
-    func body(content: Content) -> some View {
-        content.opacity(0.55 + 0.45 * source.pulse)
-    }
-}
-
-@MainActor
-private struct HUDClockOpacity: ViewModifier {
-    @ObservedObject var model: HUDModel
-    let source: HUDFrameSource
-
-    func body(content: Content) -> some View {
-        content.opacity(0.55 + 0.45 * abs(sin(source.time * .pi * 1.6)))
-    }
-}
-
-@MainActor
-private struct FrameAssistantPulseDots: View {
-    @ObservedObject var model: HUDModel
-    let source: HUDFrameSource
-    let reduceMotion: Bool
+    let material: HUDMaterial
+    let fallback: String
+    let useSystemInk: Bool
 
     var body: some View {
-        AssistantPulseDots(time: source.time, reduceMotion: reduceMotion, material: model.material)
+        let elapsed = source.recordingElapsed(fallback: fallback)
+        Text(elapsed)
+            .font(HUDTheme.clockFont)
+            .tracking(HUDTheme.clockTracking)
+            .foregroundStyle(HUDTheme.clockInk(material, useSystemInk: useSystemInk))
     }
 }
 
 @MainActor
 private struct FrameWorkingPulse: View {
-    @ObservedObject var model: HUDModel
     let source: HUDFrameSource
 
     var body: some View {
@@ -1589,7 +1672,6 @@ private struct FrameWorkingPulse: View {
 
 @MainActor
 private struct FrameSpinner: View {
-    @ObservedObject var model: HUDModel
     let source: HUDFrameSource
 
     var body: some View {
@@ -1606,7 +1688,6 @@ private struct FrameSpinner: View {
 /// Keeping them here means a tick cannot rebuild the card's text or its buttons.
 @MainActor
 private struct FrameRewriteIdentity: View {
-    @ObservedObject var model: HUDModel
     let source: HUDFrameSource
     let card: RewriteCard?
     let delivery: HUDDelivery
@@ -1624,11 +1705,12 @@ private struct FrameRewriteIdentity: View {
         let _ = FrameLeafProbe.captures ? { FrameLeafProbe.rewriteBodies += 1 }() : ()
 #endif
         let rewriting = card?.activeStyleTitle
+        let activeTime = (rewriting != nil || ending != nil) ? source.rewriteTime : 0
         let teardownFade = ending.map { end in
             HUDRewriteActivity.arcFade(
                 isRunning: false,
                 endedAt: end.at,
-                time: source.time,
+                time: activeTime,
                 reduceMotion: reduceMotion
             )
         } ?? 0
@@ -1641,7 +1723,7 @@ private struct FrameRewriteIdentity: View {
                     head: reduceMotion
                         ? HUDRewriteActivity.reducedMotionHeadDegrees
                         : HUDRewriteActivity.arcHeadAngle(
-                            time: source.time,
+                            time: activeTime,
                             reduceMotion: false
                         ),
                     trail: HUDRewriteActivity.arcTrail(reduceMotion: reduceMotion),
@@ -1745,7 +1827,25 @@ struct LiveDot: View {
     }
 
     var body: some View {
-        ZStack {
+        let glowDiameter = HUDTheme.dotDiameter * (1 + presence * 0.26) + (5.0 + 9.0 * presence)
+        let glowAlpha = 0.30 + 0.55 * presence
+        let glowInk = HUDTheme.recordingInk(material)
+        return ZStack {
+            Circle()
+                .fill(
+                    RadialGradient(
+                        stops: [
+                            .init(color: glowInk.opacity(glowAlpha), location: 0.25),
+                            .init(color: glowInk.opacity(glowAlpha * 0.35), location: 0.62),
+                            .init(color: glowInk.opacity(0), location: 1.0),
+                        ],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: glowDiameter / 2
+                    )
+                )
+                .frame(width: glowDiameter, height: glowDiameter)
+
             if !reduceMotion {
                 Circle()
                     .stroke(HUDTheme.recordingInk(material).opacity((0.42 + 0.30 * presence) * (1 - pulse)), lineWidth: 1.5)
@@ -1757,10 +1857,6 @@ struct LiveDot: View {
                 .fill(core)
                 .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
                 .scaleEffect(1 + presence * 0.26)
-                .shadow(
-                    color: HUDTheme.recordingInk(material).opacity(0.30 + 0.55 * presence),
-                    radius: 2.5 + 4.5 * presence
-                )
         }
         .frame(width: HUDTheme.dotDiameter, height: HUDTheme.dotDiameter)
     }
@@ -1800,6 +1896,45 @@ extension HUDDelivery {
 /// enables inline editing and places the cursor (or word selection) at that
 /// exact character position. Pressing `Enter` concludes inline editing and
 /// releases keyboard focus; pressing `Shift + Enter` inserts a newline.
+private final class HUDTranscriptScrollView: NSScrollView {
+    override func layout() {
+        super.layout()
+        syncDocumentWidthIfNeeded()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        syncDocumentWidthIfNeeded()
+    }
+
+    func syncDocumentWidthIfNeeded() {
+        guard let textView = documentView as? NSTextView else { return }
+        let targetWidth = contentView.bounds.width
+        guard targetWidth > 1 else { return }
+        let widthMismatch = abs(textView.frame.width - targetWidth) > 0.5
+        let container = textView.textContainer
+        let insetWidth = textView.textContainerInset.width * 2
+        let targetContainerWidth = max(120, targetWidth - insetWidth)
+        let containerMismatch = container.map {
+            abs($0.containerSize.width - targetContainerWidth) > 0.5
+        } ?? false
+        guard widthMismatch || containerMismatch else { return }
+        if widthMismatch {
+            textView.setFrameSize(NSSize(width: targetWidth, height: textView.frame.height))
+        }
+        if let container {
+            if containerMismatch {
+                container.containerSize = NSSize(
+                    width: targetContainerWidth,
+                    height: .greatestFiniteMagnitude
+                )
+            }
+            textView.layoutManager?.ensureLayout(for: container)
+        }
+        textView.sizeToFit()
+    }
+}
+
 struct HUDInlineTranscriptView: NSViewRepresentable {
     let text: String
     let isEditing: Bool
@@ -1820,7 +1955,9 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let scrollView = HUDTranscriptScrollView(
+            frame: NSRect(x: 0, y: 0, width: HUDState.transcriptWidth, height: 100)
+        )
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
@@ -1828,13 +1965,27 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
         scrollView.autohidesScrollers = true
         scrollView.scrollerStyle = .overlay
 
-        let textView = HUDTranscriptNSTextView()
+        let contentWidth = max(
+            120,
+            HUDState.transcriptWidth - (HUDTheme.padding - 5) * 2
+        )
+        let textView = HUDTranscriptNSTextView(
+            frame: NSRect(x: 0, y: 0, width: HUDState.transcriptWidth, height: 100)
+        )
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = true
         textView.isEditable = true
         textView.isSelectable = true
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticDataDetectionEnabled = false
+        textView.isAutomaticLinkDetectionEnabled = false
         textView.drawsBackground = false
         textView.backgroundColor = .clear
         textView.font = DotType.nsFont(15, .regular)
@@ -1847,6 +1998,10 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
+        textView.textContainer?.containerSize = NSSize(
+            width: contentWidth,
+            height: .greatestFiniteMagnitude
+        )
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.lineFragmentPadding = 5
 
@@ -1881,6 +2036,7 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
+        (scrollView as? HUDTranscriptScrollView)?.syncDocumentWidthIfNeeded()
         guard let textView = scrollView.documentView as? HUDTranscriptNSTextView else { return }
         let textChanged = textView.string != text
         let inkChanged = context.coordinator.appliedUsesSystemInk != usesSystemInk
@@ -1914,7 +2070,9 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
     }
 
     private static func scrollToBottomIfNeeded(scrollView: NSScrollView, textView: NSTextView) {
-        textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+        if let textContainer = textView.textContainer {
+            textView.layoutManager?.ensureLayout(for: textContainer)
+        }
         let docHeight = textView.frame.height
         let clipHeight = scrollView.contentView.bounds.height
         if docHeight > clipHeight {
@@ -1951,8 +2109,10 @@ struct HUDInlineTranscriptView: NSViewRepresentable {
                 .paragraphStyle: paragraph,
             ]
             textView.textStorage?.setAttributedString(NSAttributedString(string: string, attributes: attrs))
-            textView.layoutManager?.ensureLayout(for: textView.textContainer!)
-            textView.sizeToFit()
+            if textView.bounds.width > 1, let textContainer = textView.textContainer {
+                textView.layoutManager?.ensureLayout(for: textContainer)
+                textView.sizeToFit()
+            }
         }
 
         func textDidChange(_ notification: Notification) {
@@ -2015,125 +2175,5 @@ final class HUDTranscriptNSTextView: NSTextView {
             return
         }
         super.keyDown(with: event)
-    }
-}
-
-/// The three dots that say the assistant is working.
-///
-/// They pulse in sequence on a 1.2 second cycle, in the amber of the live dot.
-/// A person who asked for reduced motion gets the three of them at rest: the
-/// state is still readable from the mark and the sentence, and nothing on the
-/// card moves.
-struct AssistantPulseDots: View {
-    /// The seconds the card has been on screen.
-    var time: Double
-    /// Whether the motion is reduced.
-    var reduceMotion: Bool
-    /// The card material the dots are drawn on.
-    var material: HUDMaterial = .black
-
-    /// The length of one pulse, in seconds.
-    static let cycle: Double = 1.2
-    /// The diameter of one dot, in points.
-    static let diameter: CGFloat = 4
-    /// The distance between two dots, in points.
-    static let gap: CGFloat = 4
-
-    var body: some View {
-        HStack(spacing: Self.gap) {
-            ForEach(0..<3, id: \.self) { index in
-                Circle()
-                    .fill(HUDTheme.recordingInk(material))
-                    .frame(width: Self.diameter, height: Self.diameter)
-                    .opacity(alpha(index))
-            }
-        }
-        .frame(height: HUDTheme.dotDiameter)
-        .accessibilityHidden(true)
-    }
-
-    private func alpha(_ index: Int) -> Double {
-        guard !reduceMotion else { return 0.55 }
-        let phase = (time / Self.cycle + Double(index) * 0.18)
-            .truncatingRemainder(dividingBy: 1)
-        let wave = max(0, 1 - abs(phase - 0.5) * 2)
-        return 0.25 + 0.75 * wave
-    }
-}
-
-/// The two capsules of the confirmation card.
-///
-/// The primary one is the porcelain of the card's ink, unreadable nowhere and
-/// unmistakable; a call that destroys something fills it with the system's red
-/// instead, so the button that deletes does not look like the button that
-/// allows.
-private struct HUDConfirmButtonStyle: ButtonStyle {
-    /// Whether this is the button that allows the call.
-    var isPrimary: Bool
-    /// Whether the call destroys something.
-    var isDestructive: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        HUDConfirmButtonBody(
-            configuration: configuration,
-            isPrimary: isPrimary,
-            isDestructive: isDestructive
-        )
-    }
-}
-
-private struct HUDConfirmButtonBody: View {
-    let configuration: ButtonStyleConfiguration
-    let isPrimary: Bool
-    let isDestructive: Bool
-
-    @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var reducesMotion: Bool {
-        reduceMotion || DotMotion.reducesMotion
-    }
-
-    var body: some View {
-        configuration.label
-            .font(DotType.font(12, .medium))
-            .foregroundStyle(foregroundStyle)
-            .padding(.horizontal, 14)
-            .frame(height: HUDConfirmLayout.buttonHeight)
-            .background(Capsule(style: .circular).fill(background))
-            .overlay {
-                if !isPrimary {
-                    Capsule(style: .circular).strokeBorder(HUDTheme.actionBorderHover, lineWidth: 1)
-                }
-            }
-            .scaleEffect(DotPressFeedback.scale(
-                isPressed: configuration.isPressed,
-                isEnabled: isEnabled,
-                reduceMotion: reducesMotion
-            ))
-            .opacity(DotPressFeedback.opacity(
-                isPressed: configuration.isPressed,
-                isEnabled: isEnabled,
-                reduceMotion: reducesMotion
-            ))
-            .animation(
-                DotPressFeedback.animation(reduceMotion: reducesMotion),
-                value: configuration.isPressed
-            )
-            .contentShape(Capsule(style: .circular))
-    }
-
-    @Environment(\.hudUsesSystemInk) var usesSystemInk
-
-    private var foregroundStyle: AnyShapeStyle {
-        guard isPrimary else {
-            return usesSystemInk ? AnyShapeStyle(.primary) : AnyShapeStyle(HUDTheme.ink)
-        }
-        return isDestructive ? AnyShapeStyle(Color.white) : AnyShapeStyle(Color.black.opacity(0.86))
-    }
-
-    private var background: Color {
-        guard isPrimary else { return HUDTheme.actionFill }
-        return isDestructive ? Color(nsColor: .systemRed) : HUDTheme.ink
     }
 }

@@ -13,8 +13,8 @@ struct SettingsRow<Trailing: View>: View {
     let title: String
     /// A concrete fact the title does not already state.
     var subtitle: String?
-    /// An explanation attached to the name and to the control, shown as a
-    /// tooltip and spoken by VoiceOver when either one has focus.
+    /// An explanation attached to the name and to the control, spoken by
+    /// VoiceOver when either one has focus.
     var help: String?
     /// An SF Symbol drawn before the title, at 16 points.
     var symbol: String?
@@ -149,8 +149,7 @@ private extension View {
     @ViewBuilder
     func settingsHelp(_ text: String?) -> some View {
         if let text {
-            self.help(text)
-                .accessibilityHint(text)
+            self.accessibilityHint(text)
                 .environment(\.settingsRowHelp, text)
         } else {
             self

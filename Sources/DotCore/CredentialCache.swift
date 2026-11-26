@@ -362,27 +362,29 @@ public final class CredentialCache: @unchecked Sendable {
         let generation = admission.generation
 
         if let bundle {
-            // The store owns the shared read. Caches built around the same store
-            // and generation wait on one Keychain answer.
-            let started = ProcessInfo.processInfo.systemUptime
-            let outcome: Outcome
-            do {
-                if let key = try await bundle.resolvedKey(
-                    for: providerID,
-                    generation: generation
-                ), !key.isEmpty {
-                    outcome = .key(key)
-                } else {
-                    outcome = bundle.hasKey(for: providerID)
-                        ? .failed("The Keychain holds the key but refused to read it.")
-                        : .missing
+            // The cache's flight table deduplicates concurrent async callers so
+            // finish(...) runs and logs once per resolution generation.
+            let flight = flights.task(for: providerID, generation: generation) { [self] in
+                let started = ProcessInfo.processInfo.systemUptime
+                let outcome: Outcome
+                do {
+                    if let key = try bundle.key(for: providerID), !key.isEmpty {
+                        outcome = .key(key)
+                    } else {
+                        outcome = bundle.hasKey(for: providerID)
+                            ? .failed("The Keychain holds the key but refused to read it.")
+                            : .missing
+                    }
+                } catch {
+                    // An unreadable bundle is never a "no key" answer. The store
+                    // leaves its data untouched and records the read as failed.
+                    outcome = .failed(error.localizedDescription)
                 }
-            } catch {
-                // An unreadable bundle is never a "no key" answer. The store
-                // leaves its data untouched and records the read as failed.
-                outcome = .failed(error.localizedDescription)
+                return finish(outcome, for: providerID, started: started, generation: generation)
             }
-            return finish(outcome, for: providerID, started: started, generation: generation)
+            let key = await flight.task.value
+            flights.remove(id: flight.id, for: providerID)
+            return self.generation(for: providerID) == generation ? key : nil
         }
 
         let flight = flights.task(for: providerID, generation: generation) { [self] in

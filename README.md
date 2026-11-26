@@ -238,6 +238,8 @@ swift test
 ./scripts/install.sh
 ```
 
+`install.sh` first runs the frame pacing and scrolling test suites (`scripts/fluidity-gate.sh`) and installs nothing if any of them fails.
+
 `./scripts/uninstall.sh` removes the app and the LaunchAgent and leaves the configuration and the log in place.
 
 ### Signing

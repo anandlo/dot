@@ -300,4 +300,13 @@ final class LevelScaleTests: XCTestCase {
         XCTAssertEqual(envelope.filter { $0 >= 0.99 }.count, 0)
         XCTAssertEqual(levels.filter { $0 >= 0.99 }.count, 0)
     }
+
+    func testPositionInvertsThePerceptualCurve() {
+        for step in 0...1000 {
+            let x = Double(step) / 1000
+            XCTAssertEqual(LevelScale.position(perceptual: LevelScale.perceptual(x)), x, accuracy: 1e-12)
+        }
+        XCTAssertEqual(LevelScale.position(perceptual: -0.5), 0, accuracy: 1e-12)
+        XCTAssertEqual(LevelScale.position(perceptual: 1.5), 1, accuracy: 1e-12)
+    }
 }

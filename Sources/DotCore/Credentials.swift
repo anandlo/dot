@@ -301,12 +301,54 @@ public final class CredentialBundleStore: @unchecked Sendable {
     /// state lock is never held across that probe. A provider whose legacy
     /// migration already finished is not reported as keyed by an old item.
     public func hasKey(for providerID: String) -> Bool {
+        !hasKeys(for: [providerID]).isEmpty
+    }
+
+    /// Which of `providerIDs` have a key, without decrypting anything.
+    ///
+    /// Reads the bundle's attribute list and migration marker at most once for
+    /// the whole batch rather than once per provider.
+    public func hasKeys(for providerIDs: [String]) -> Set<String> {
+        guard !providerIDs.isEmpty else { return [] }
         let snapshot = self.snapshot()
-        if snapshot.unreadable { return false }
-        if let keys = snapshot.keys, keys[providerID] != nil { return true }
-        if bundleProviderIDs().contains(providerID) { return true }
-        if migrationMarkerIDs(for: providerID).contains(providerID) { return false }
-        return hasLegacyItem(for: providerID)
+        if snapshot.unreadable { return [] }
+
+        var found: Set<String> = []
+        var unchecked: [String] = []
+        for id in providerIDs {
+            if let keys = snapshot.keys, keys[id] != nil {
+                found.insert(id)
+            } else {
+                unchecked.append(id)
+            }
+        }
+        guard !unchecked.isEmpty else { return found }
+
+        let bundleIDs = bundleProviderIDs()
+        var afterBundle: [String] = []
+        for id in unchecked {
+            if bundleIDs.contains(id) {
+                found.insert(id)
+            } else {
+                afterBundle.append(id)
+            }
+        }
+        guard !afterBundle.isEmpty else { return found }
+
+        let markerIDs: Set<String>
+        do {
+            markerIDs = try readMigrationMarkerIDs()
+        } catch {
+            // A failed marker probe suppresses legacy probing for all remaining
+            // unchecked providers so retained legacy items are not reported usable.
+            return found
+        }
+        for id in afterBundle where !markerIDs.contains(id) {
+            if hasLegacyItem(for: id) {
+                found.insert(id)
+            }
+        }
+        return found
     }
 
     /// Writes one key into the bundle, off the caller's actor.
@@ -523,19 +565,6 @@ public final class CredentialBundleStore: @unchecked Sendable {
         }
     }
 
-    /// The nonthrowing view used only by a status probe.
-    ///
-    /// A failed probe suppresses the one provider being asked about instead of
-    /// pretending a retained legacy item is a usable key.
-    private func migrationMarkerIDs(for providerID: String? = nil) -> Set<String> {
-        do {
-            return try readMigrationMarkerIDs()
-        } catch {
-            if let providerID { return [providerID] }
-            return []
-        }
-    }
-
     private func keychainWriteError(_ status: OSStatus) -> CredentialError {
         switch status {
         case errSecUserCanceled, errSecAuthFailed: return .denied(status)
@@ -557,15 +586,15 @@ public final class CredentialBundleStore: @unchecked Sendable {
             kSecAttrService as String: CredentialBundle.migrationService,
             kSecAttrAccount as String: account,
         ]
-        let attributes: [String: Any] = [
-            kSecValueData as String: Data(),
+        let updateAttributes: [String: Any] = [
             kSecAttrGeneric as String: generic,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
         ]
-        let updateStatus = context.update(base, attributes: attributes)
+        let updateStatus = context.update(base, attributes: updateAttributes)
         if updateStatus == errSecItemNotFound {
             var insert = base
-            insert.merge(attributes) { _, new in new }
+            insert[kSecValueData as String] = Data()
+            insert[kSecAttrGeneric as String] = generic
+            insert[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
             let addStatus = context.add(insert)
             // A refused marker write never reports success and never writes a
             // partial marker.
@@ -577,9 +606,8 @@ public final class CredentialBundleStore: @unchecked Sendable {
 
     private func migrateLegacyLocked(for providerID: String) throws -> String? {
         if try readMigrationMarkerIDs().contains(providerID) { return nil }
-        // Only a genuine absence or a finished copy earns a done-marker. An
-        // unusable item or any status Dot did not expect leaves the work open.
-        var sawUnusableLegacyItem = false
+        // Only a finished copy earns a done-marker. Absence or any status Dot
+        // did not expect leaves migration open without touching the Keychain.
         for serviceName in legacyServices(for: providerID) {
             let itemAccount = legacyAccount(for: serviceName)
             let probe: [String: Any] = [
@@ -593,7 +621,6 @@ public final class CredentialBundleStore: @unchecked Sendable {
             switch probeStatus {
             case errSecSuccess:
                 guard probeItem != nil else {
-                    sawUnusableLegacyItem = true
                     continue
                 }
             case errSecItemNotFound:
@@ -625,7 +652,6 @@ public final class CredentialBundleStore: @unchecked Sendable {
                       let secret = String(data: data, encoding: .utf8),
                       !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 else {
-                    sawUnusableLegacyItem = true
                     continue
                 }
                 var updated = snapshot().keys ?? [:]
@@ -653,8 +679,6 @@ public final class CredentialBundleStore: @unchecked Sendable {
                 throw CredentialError.unexpectedStatus(status)
             }
         }
-        guard !sawUnusableLegacyItem else { return nil }
-        try markMigratedLocked(for: providerID)
         return nil
     }
 
@@ -760,6 +784,11 @@ public enum CredentialStore {
     /// Whether a provider has a key, answered without decrypting one.
     public static func hasKey(for providerID: String) -> Bool {
         bundle.hasKey(for: providerID)
+    }
+
+    /// Which of `providerIDs` have a key, answered in one batch without decrypting.
+    public static func hasKeys(for providerIDs: [String]) -> Set<String> {
+        bundle.hasKeys(for: providerIDs)
     }
 
     /// Reads a legacy item's data. Used only by the legacy migration.

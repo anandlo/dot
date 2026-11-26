@@ -60,6 +60,7 @@ final class HUDRewriteFrameClockTests: XCTestCase {
         model.rewrite = card
         model.rewriteEnding = ending
         frame.time = time
+        frame.rewriteTime = time
         frame.level = 0.4
         frame.pulse = 0.25
         return HUDView(

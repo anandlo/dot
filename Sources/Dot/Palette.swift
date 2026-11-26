@@ -128,7 +128,6 @@ struct PaletteView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var searchFocused: Bool
-    @State private var hoveredID: Int?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -208,77 +207,25 @@ struct PaletteView: View {
             emptyState
         } else {
             ScrollView(.vertical) {
-                VStack(spacing: 4) {
+                LazyVStack(spacing: 4) {
                     ForEach(model.rows) { row in
-                        self.row(row)
+                        PaletteRowView(
+                            row: row,
+                            isSelected: model.selectedRow?.id == row.id,
+                            reduceMotion: reduceMotion
+                        ) {
+                            model.select(id: row.id)
+                            insert(row.text)
+                        }
                     }
                 }
+                .background(DotScrollViewConfigurator(surface: "palette"))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
             }
             .scrollIndicators(.never)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-    }
-
-    private func row(_ row: PaletteModel.Row) -> some View {
-        let isSelected = model.selectedRow?.id == row.id
-        let isHovered = hoveredID == row.id
-        return Button {
-            model.select(id: row.id)
-            insert(row.text)
-        } label: {
-            HStack(alignment: .center, spacing: 10) {
-                // One line per transcript: a row is a way to recognise the
-                // words, and the whole transcript is what gets inserted.
-                Text(row.preview)
-                    .font(DotType.font(12.5, .medium))
-                    .foregroundStyle(DotTheme.ink)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if let age = row.age {
-                    Text(age)
-                        .font(DotType.tabularFont(10, .semibold))
-                        .foregroundStyle(DotTheme.ink3)
-                        .frame(minWidth: 46, alignment: .trailing)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(
-                        isSelected
-                            ? DotTheme.cardSelectedFill
-                            : (isHovered ? DotTheme.cardHoverFill : Color.clear)
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(
-                        isSelected ? DotTheme.cardBorderSelected : .clear,
-                        lineWidth: 1
-                    )
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-        }
-        .buttonStyle(DotPressStyle())
-        .onHover { hovering in
-            hoveredID = hovering ? row.id : (hoveredID == row.id ? nil : hoveredID)
-        }
-        // Only the hover wash is eased. Typing, filtering and the arrow keys
-        // move the selection at once: a list that caught up with the keyboard
-        // late would read as a dropped key rather than as motion.
-        .animation(
-            reduceMotion ? nil : .easeOut(duration: DotPressFeedback.duration),
-            value: isHovered
-        )
-        .accessibilityLabel(row.preview)
-        .accessibilityValue(row.age ?? "")
-        .accessibilityHint("Inserts this dictation at the cursor.")
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     /// The palette with nothing to show: no history at all, or a query that
@@ -359,6 +306,74 @@ struct PaletteView: View {
             try? await Task.sleep(for: .milliseconds(60))
             searchFocused = true
         }
+    }
+}
+
+private struct PaletteRowView: View {
+    let row: PaletteModel.Row
+    let isSelected: Bool
+    let reduceMotion: Bool
+    let onSelect: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(alignment: .center, spacing: 10) {
+                // One line per transcript: a row is a way to recognise the
+                // words, and the whole transcript is what gets inserted.
+                Text(row.preview)
+                    .font(DotType.font(12.5, .medium))
+                    .foregroundStyle(DotTheme.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let age = row.age {
+                    Text(age)
+                        .font(DotType.tabularFont(10, .semibold))
+                        .foregroundStyle(DotTheme.ink3)
+                        .frame(minWidth: 46, alignment: .trailing)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(
+                        isSelected
+                            ? DotTheme.cardSelectedFill
+                            : (isHovered ? DotTheme.cardHoverFill : Color.clear)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(
+                        isSelected ? DotTheme.cardBorderSelected : .clear,
+                        lineWidth: 1
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .buttonStyle(DotPressStyle())
+        .onHover { hovering in
+            if DotScrollInteraction.isScrolling {
+                if isHovered { isHovered = false }
+                return
+            }
+            isHovered = hovering
+        }
+        // Only the hover wash is eased. Typing, filtering and the arrow keys
+        // move the selection at once: a list that caught up with the keyboard
+        // late would read as a dropped key rather than as motion.
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: DotPressFeedback.duration),
+            value: isHovered
+        )
+        .accessibilityLabel(row.preview)
+        .accessibilityValue(row.age ?? "")
+        .accessibilityHint("Inserts this dictation at the cursor.")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 

@@ -869,8 +869,12 @@ final class SpeechConnectionSourceGuardTests: XCTestCase {
             "the Status row lost its accessible value"
         )
         XCTAssertTrue(
-            statusDeclaration.contains(".help(credentialStatus.message)"),
-            "the whole Status row lost its tooltip"
+            statusDeclaration.contains(".accessibilityHint(credentialStatus.message)"),
+            "the whole Status row lost its accessibility hint"
+        )
+        XCTAssertFalse(
+            statusDeclaration.contains(".help("),
+            "the Status row must not show a hover tooltip"
         )
         XCTAssertFalse(text.contains("SpeechCredentialLabel"), "the picker-label view came back")
         for helper in ["statusChip", "isServiceConnected", "keyStatus"] {
@@ -882,5 +886,88 @@ final class SpeechConnectionSourceGuardTests: XCTestCase {
         let startIndex = try XCTUnwrap(text.range(of: start)?.lowerBound)
         let endIndex = try XCTUnwrap(text.range(of: end, range: startIndex..<text.endIndex)?.lowerBound)
         return String(text[startIndex..<endIndex])
+    }
+
+    @MainActor
+    func testSwitchingTabsHidesInactiveCachedTabContainers() {
+        var config = DotConfig()
+        config.assistant.rewrite.enabled = true
+        let store = ConfigStore(config: config)
+        let providers = MenuBuilder.providerRows(config: config) { _ in false }
+
+        func makeView(tab: Int) -> AnyView {
+            AnyView(
+                SettingsView(
+                    store: store,
+                    providers: providers,
+                    tab: tab,
+                    onChange: {},
+                    onSetAPIKey: { _, _ in nil },
+                    onChangeShortcut: {}
+                )
+                .environment(\.settingsHeadless, true)
+                .environment(\.assistantKeyedProviders, [])
+            )
+        }
+
+        let host = NSHostingView(rootView: makeView(tab: 0))
+        host.frame = NSRect(x: 0, y: 0, width: 820, height: 600)
+
+        func pump() {
+            for _ in 0 ..< 4 {
+                host.layoutSubtreeIfNeeded()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+        }
+
+        func collectViews(
+            in root: NSView,
+            visibleEditors: inout [NSView],
+            hiddenEditors: inout [NSView],
+            cachedTabs: inout [NSView]
+        ) {
+            let typeName = String(reflecting: type(of: root))
+            if typeName.contains("SettingsCachedTab") && typeName.hasSuffix(".ContainerView") {
+                cachedTabs.append(root)
+            }
+            if root is NSTextField || root is NSTextView {
+                if root.isHiddenOrHasHiddenAncestor {
+                    hiddenEditors.append(root)
+                } else {
+                    visibleEditors.append(root)
+                }
+            }
+            for subview in root.subviews {
+                collectViews(
+                    in: subview,
+                    visibleEditors: &visibleEditors,
+                    hiddenEditors: &hiddenEditors,
+                    cachedTabs: &cachedTabs
+                )
+            }
+        }
+
+        pump()
+        host.rootView = makeView(tab: 1)
+        pump()
+        host.rootView = makeView(tab: 5)
+        pump()
+        host.rootView = makeView(tab: 0)
+        pump()
+
+        var visibleEditors: [NSView] = []
+        var hiddenEditors: [NSView] = []
+        var cachedTabs: [NSView] = []
+        collectViews(
+            in: host,
+            visibleEditors: &visibleEditors,
+            hiddenEditors: &hiddenEditors,
+            cachedTabs: &cachedTabs
+        )
+
+        XCTAssertEqual(cachedTabs.count, 3, "expected general, provider, and assistant tabs to stay cached")
+        XCTAssertEqual(cachedTabs.filter { !$0.isHidden }.count, 1, "only the active tab container should be visible")
+        XCTAssertGreaterThanOrEqual(hiddenEditors.count, 2, "expected cached provider and assistant editors to remain mounted in hidden tabs")
+        XCTAssertTrue(visibleEditors.isEmpty, "hidden provider and assistant text inputs leaked into visible tree: \(visibleEditors)")
     }
 }

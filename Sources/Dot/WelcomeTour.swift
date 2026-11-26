@@ -447,7 +447,7 @@ private struct TourScene: View {
     var body: some View {
         Group {
             if animated && !reduceMotion {
-                TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { context in
+                TimelineView(.animation) { context in
                     let elapsed = max(0, context.date.timeIntervalSince(startTime))
                     scene(at: elapsed.truncatingRemainder(dividingBy: step.cycle))
                 }

@@ -11,27 +11,32 @@ public struct ReleaseFeed: Sendable {
     /// How long one request may take. Two requests are made when the latest
     /// endpoint cannot answer, so a check can take twice this long.
     public static let timeout: TimeInterval = 8
+    /// Maximum GitHub Releases payload size read per response.
+    public static let maximumResponseBytes = 512 * 1024
 
     /// `/releases/latest`.
     private let latestURL: URL
     /// `/releases?per_page=1`.
     private let listURL: URL
+    private let session: URLSession
 
     /// Creates a feed.
     ///
     /// - Parameters:
     ///   - latest: the latest-release endpoint.
     ///   - list: the list endpoint, read when the latest one cannot answer.
-    public init(latest: URL, list: URL) {
+    ///   - session: the URLSession used for bounded transport requests.
+    public init(latest: URL, list: URL, session: URLSession = .shared) {
         self.latestURL = latest
         self.listURL = list
+        self.session = session
     }
 
     /// The newest release.
     ///
     /// - Returns: the release the endpoints named.
     /// - Throws: ``ReleaseFeedError`` when neither endpoint can name one, and
-    ///   `URLError` when a request never reached the server.
+    ///   ``ProviderError`` when the request fails or exceeds transport limits.
     public func newest() async throws -> ReleaseLookup.Release {
         let latest = try await answer(from: latestURL)
         switch ReleaseLookup.decide(.latest, status: latest.status, body: latest.body) {
@@ -59,11 +64,15 @@ public struct ReleaseFeed: Sendable {
         request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
         request.setValue("Dot-App-Updater", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = Self.timeout
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
+        let answer = try await HTTPTransport.send(
+            request,
+            session: session,
+            limit: Self.maximumResponseBytes
+        )
+        guard let http = answer.response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        return (http.statusCode, data)
+        return (http.statusCode, answer.data)
     }
 }
 

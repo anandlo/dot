@@ -324,11 +324,7 @@ final class SettingsPresentationTests: XCTestCase {
         XCTAssertEqual(config.assistant.chat.providerID, "custom")
         XCTAssertEqual(config.assistant.chat.model, "my-model")
         XCTAssertEqual(config.assistant.chat.baseURL, "https://proxy.example.com/v1")
-        XCTAssertEqual(config.assistant.delivery, .pasteAndSpeak)
-        XCTAssertFalse(config.assistant.actionsEnabled)
         XCTAssertEqual(config.assistant.rewrite.styles, [.concise, .formal])
-        XCTAssertEqual(config.assistant.voice.providerID, "elevenlabs")
-        XCTAssertEqual(config.assistant.connectors.enabled, [.files])
 
         // The record presents its service on the renamed page, and the page's
         // cleanup gate does not pretend it is ready without a key.
@@ -342,7 +338,6 @@ final class SettingsPresentationTests: XCTestCase {
         let restored = try JSONDecoder().decode(DotConfig.self, from: encoded)
         XCTAssertEqual(restored, config, "a legacy file lost a value on the way through")
         XCTAssertEqual(restored.assistant.rewrite.styles, [.concise, .formal])
-        XCTAssertEqual(restored.assistant.delivery, .pasteAndSpeak)
     }
 
     // MARK: - The master switch
@@ -1046,7 +1041,7 @@ final class SettingsPresentationTests: XCTestCase {
         let planSelect = try XCTUnwrap(planSelects.first, "the Plan picker has no native target")
         XCTAssertEqual(planSelect.accessibilityValue() as? String, "Token Plan")
         XCTAssertEqual(planSelect.accessibilityHelp(), SettingsExplanation.planHelp)
-        XCTAssertEqual(planSelect.toolTip, SettingsExplanation.planHelp)
+        XCTAssertNil(planSelect.toolTip)
 
         var reasoningConfig = DotConfig.default
         reasoningConfig.assistant.isSetUp = true
@@ -1082,7 +1077,7 @@ final class SettingsPresentationTests: XCTestCase {
         )
         XCTAssertEqual(reasoningSelect.accessibilityValue() as? String, "Default (High)")
         XCTAssertEqual(reasoningSelect.accessibilityHelp(), SettingsExplanation.reasoningHelp)
-        XCTAssertEqual(reasoningSelect.toolTip, SettingsExplanation.reasoningHelp)
+        XCTAssertNil(reasoningSelect.toolTip)
 
         let general = settingsHost(tab: 0, config: .default)
         let historyPicker = try XCTUnwrap(
@@ -1090,7 +1085,7 @@ final class SettingsPresentationTests: XCTestCase {
             "the history picker lost its native accessibility element"
         )
         XCTAssertEqual(historyPicker.accessibilityHelp(), SettingsExplanation.historyHelp)
-        XCTAssertEqual(historyPicker.toolTip, SettingsExplanation.historyHelp)
+        XCTAssertNil(historyPicker.toolTip)
 
         var assistant = DotConfig.default
         assistant.assistant.isSetUp = true
@@ -1108,7 +1103,7 @@ final class SettingsPresentationTests: XCTestCase {
         )
         XCTAssertEqual(AssistantPage.standingRulesHelp, SettingsExplanation.standingRulesHelp)
         XCTAssertEqual(editor.accessibilityHelp(), SettingsExplanation.standingRulesHelp)
-        XCTAssertEqual(editor.toolTip, SettingsExplanation.standingRulesHelp)
+        XCTAssertNil(editor.toolTip)
         XCTAssertTrue(editor.isEditable, "the explained editor lost its editing")
         XCTAssertTrue(editor.isSelectable, "the explained editor lost its selection")
     }
@@ -1120,7 +1115,7 @@ final class SettingsPresentationTests: XCTestCase {
             ("Microphone", SettingsExplanation.microphoneSubtitle),
         ] {
             let picker = try XCTUnwrap(select(label, in: general))
-            XCTAssertEqual(picker.toolTip, help, label)
+            XCTAssertNil(picker.toolTip, label)
             XCTAssertEqual(picker.accessibilityHelp(), help, label)
         }
     }

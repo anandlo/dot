@@ -42,4 +42,19 @@ final class HUDFrameStatisticsTests: XCTestCase {
         XCTAssertEqual(summary.intervalMax, 3_604)
         XCTAssertEqual(summary.intervalP50, 1_804)
     }
+
+    func testCanvasDrawMetricsTrackDurationAndGaps() {
+        let stats = HUDFrameStatistics()
+        stats.start(backend: "displayLink")
+        stats.recordCanvasDraw(now: 1.000, durationMS: 1.2)
+        stats.recordCanvasDraw(now: 1.016, durationMS: 2.5)
+        stats.recordCanvasDraw(now: 1.046, durationMS: 4.8)
+
+        let summary = stats.current()
+        XCTAssertEqual(summary.canvasDraws, 3)
+        XCTAssertEqual(summary.canvasDrawP95, 4.8, accuracy: 0.001)
+        XCTAssertEqual(summary.canvasDrawMax, 4.8, accuracy: 0.001)
+        XCTAssertEqual(summary.canvasGapMax, 30.0, accuracy: 0.001)
+        XCTAssertEqual(summary.canvasGapsOver25ms, 1)
+    }
 }

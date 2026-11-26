@@ -397,4 +397,27 @@ extension ConfigTests {
             "the endpoint survived the bad enum beside it"
         )
     }
+
+    func testLegacySpokenAssistantKeysAreIgnoredOnLoad() throws {
+        let url = directory.appendingPathComponent("legacy-config.json")
+        try #"""
+        {
+          "provider": "openai",
+          "assistantHotkey": { "keyCode": 0, "modifiers": 1536, "label": "⌥⌘A" },
+          "assistant": {
+            "chat": { "provider": "openai", "model": "gpt-4o" },
+            "voice": { "providerID": "apple", "speed": 1.2 },
+            "connectors": { "enabled": ["notes", "files"], "policies": {} },
+            "delivery": "paste-and-speak",
+            "actionsEnabled": true,
+            "isSetUp": true
+          }
+        }
+        """#.write(to: url, atomically: true, encoding: .utf8)
+
+        let config = DotConfig.load(from: url)
+        XCTAssertEqual(config.provider, "openai")
+        XCTAssertEqual(config.assistant.chat.model, "gpt-4o")
+        XCTAssertTrue(config.assistant.isSetUp)
+    }
 }

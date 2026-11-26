@@ -26,59 +26,6 @@ public enum HUDMode: Equatable, Sendable {
     case message(text: String, symbol: String)
     /// Dot is up and waiting for the record shortcut.
     case ready(shortcut: String)
-    /// The microphone is running for a question to the assistant.
-    ///
-    /// It is the recording card with the live dot replaced by the assistant's
-    /// mark; nothing else moves.
-    case assistantRecording(elapsed: String)
-    /// A question has been sent and no answer has arrived yet.
-    case assistantThinking(question: String)
-    /// The answer is using one of the connected apps.
-    case assistantTool(connectorName: String)
-    /// The answer is arriving, or has been delivered.
-    case assistantAnswer(text: String, state: AssistantAnswerState)
-    /// A connected app is waiting for a yes or a no.
-    case assistantConfirm(ConfirmationRequest)
-}
-
-/// What became of an answer.
-public enum AssistantAnswerState: Equatable, Sendable {
-    /// The answer is still arriving.
-    case streaming
-    /// The answer was pasted into the named application.
-    ///
-    /// The name is absent when the application could not be named, and the card
-    /// then says only that the answer was pasted.
-    case pasted(String?)
-    /// The answer is on the clipboard.
-    case copied
-    /// The answer is being read out loud.
-    case speaking
-    /// The answer was read out loud and the reading has finished.
-    case spoken
-
-    /// The header of the card, in the small caps the card uses.
-    public var label: String {
-        switch self {
-        case .streaming, .spoken: return "ANSWER"
-        case .copied: return "COPIED"
-        case .speaking: return "SPEAKING"
-        case .pasted(let app):
-            guard let app, !app.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return "PASTED"
-            }
-            return "PASTED INTO \(app.trimmingCharacters(in: .whitespacesAndNewlines).uppercased())"
-        }
-    }
-
-    /// Whether the label names an application and therefore has to be cut to
-    /// the room the header has.
-    public var namesApplication: Bool {
-        if case .pasted(let app) = self {
-            return !(app?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
-        }
-        return false
-    }
 }
 
 /// How the transcript was delivered.
@@ -132,8 +79,6 @@ public enum HUDState {
     public static let liveWidth: CGFloat = 520
     /// The height of the recording card while it shows a live partial, in points.
     public static let liveHeight: CGFloat = 84
-    /// The number of lines of the live partial the card shows.
-    public static let liveTextMaxLines = 2
     /// The width of the card once it shows a transcript, in points.
     public static let transcriptWidth: CGFloat = 560
     /// The height of the header row of the transcript card, in points.
@@ -146,38 +91,17 @@ public enum HUDState {
     public static let cornerRadius: CGFloat = 17
     /// The height of the scrolling waveform, in points.
     public static let waveformHeight: CGFloat = 26
-    /// The gap between the live dot and the label, in points.
-    public static let dotGap: CGFloat = 10
     /// The gap between the label and the clock, in points.
     public static let labelGap: CGFloat = 10
-    /// The gap between the clock and the waveform, in points.
-    public static let clockGap: CGFloat = 14
-    /// The diameter of the live dot, in points.
-    public static let liveDotDiameter: CGFloat = 8
-    /// The radius of the live dot, in points.
-    public static let liveDotRadius: CGFloat = 4
-    /// The leading of the transcript text, in points.
-    public static let transcriptLeading: CGFloat = 20
 
-    /// How long the card takes to arrive, in seconds.
-    public static let entryDuration: Double = 0.32
-    /// How long the card takes to leave, in seconds.
-    public static let exitDuration: Double = 0.18
     /// How long the card takes to open into another shape, in seconds.
     public static let openDuration: Double = 0.34
     /// How much the card overshoots when it opens.
     public static let openBounce: Double = 0.14
-    /// How long a cross-fade takes when the motion is reduced, in seconds.
-    public static let reducedMotionDuration: Double = 0.15
 
     /// The card of the recording state.
     public static var recordingCard: HUDCardSpec {
         HUDCardSpec(width: recordingWidth, height: recordingHeight)
-    }
-
-    /// The card of the launch state.
-    public static var readyCard: HUDCardSpec {
-        HUDCardSpec(width: readyWidth, height: readyHeight)
     }
 
     /// The card of the recording state once a live partial has arrived.
@@ -190,73 +114,6 @@ public enum HUDState {
     /// - Parameter bodyHeight: the height of the transcript body.
     public static func transcriptCard(bodyHeight: CGFloat) -> HUDCardSpec {
         HUDCardSpec(width: transcriptWidth, height: headerHeight + bodyHeight)
-    }
-
-    /// The card of the message state.
-    ///
-    /// - Parameter width: the width the message needs.
-    public static func messageCard(width: CGFloat) -> HUDCardSpec {
-        HUDCardSpec(width: width, height: recordingHeight)
-    }
-
-    /// The width of an assistant card that carries one line, in points.
-    public static let assistantWidth: CGFloat = 520
-
-    /// The card of an assistant state that carries one line: a question
-    /// arriving, or a connected app being used.
-    public static var assistantCard: HUDCardSpec {
-        HUDCardSpec(width: assistantWidth, height: recordingHeight)
-    }
-
-    /// The card of the assistant's answer.
-    ///
-    /// - Parameter bodyHeight: the height of the answer body.
-    public static func assistantAnswerCard(bodyHeight: CGFloat) -> HUDCardSpec {
-        HUDCardSpec(width: transcriptWidth, height: headerHeight + 1 + bodyHeight)
-    }
-}
-
-/// The measurements of the confirmation card.
-///
-/// They are declared here rather than in the view because the card's size is
-/// chosen before it is laid out, and the height has to leave three lines of the
-/// request on screen: the sentence is the whole of what the person is deciding
-/// on, and a request cut to one line asks for a yes or a no without saying what
-/// for.
-public enum HUDConfirmLayout {
-    /// The width of the confirmation card, in points.
-    public static let width: CGFloat = 520
-    /// The most lines the request is drawn on.
-    public static let maximumSummaryLines = 3
-    /// The height of one line of the request, in points.
-    public static let summaryLineHeight: CGFloat = 18
-    /// The height of the connector row, in points.
-    public static let headerHeight: CGFloat = 16
-    /// The height of the two buttons, in points.
-    public static let buttonHeight: CGFloat = 30
-    /// The gap between the two buttons, in points.
-    public static let buttonGap: CGFloat = 8
-    /// The gap between the rows of the card, in points.
-    public static let rowGap: CGFloat = 8
-
-    /// The height of the card for a request.
-    ///
-    /// - Parameter summaryLines: how many lines the request needs.
-    /// - Returns: the height of the card, with the request held between one and
-    ///   ``maximumSummaryLines`` lines.
-    public static func height(summaryLines: Int) -> CGFloat {
-        let lines = min(max(summaryLines, 1), maximumSummaryLines)
-        return HUDState.verticalPadding * 2
-            + headerHeight
-            + rowGap
-            + CGFloat(lines) * summaryLineHeight
-            + rowGap + 4
-            + buttonHeight
-    }
-
-    /// The width the request text is drawn in.
-    public static var summaryWidth: CGFloat {
-        width - HUDState.padding * 2
     }
 }
 

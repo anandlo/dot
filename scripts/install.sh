@@ -27,6 +27,7 @@ die() {
   exit 1
 }
 
+"$PROJECT_DIR/scripts/fluidity-gate.sh"
 "$PROJECT_DIR/scripts/build.sh"
 
 # MimoTalk, Rune and Ion were this product's earlier names, and com.local.dot was

@@ -50,13 +50,16 @@ enum StopDeliverySource {
 /// The function below is the production path. AppDelegate supplies its real
 /// HUD and effects; the test supplies the same function with an offscreen HUD,
 /// synthetic audio and held dependencies. There is no second ordering model.
+///
+/// The take itself is not part of the handoff: a normal stop captures this on
+/// the turn Stop is pressed, and the audio queue answers with the take later,
+/// through the claim. ``perform(_:recording:)`` is the same orchestration for a
+/// take that is already in hand.
 @MainActor
 struct StopHandoff {
     let hud: HUD
-    let recording: Recorder.Recording
     let ledger: TranscriptLedger
     let liveTask: Task<Void, Never>?
-    let deviceUID: String?
     let capturedBook: [String: MicrophoneCalibration]
     let currentBook: () -> [String: MicrophoneCalibration]
     let isTerminating: () -> Bool
@@ -70,7 +73,13 @@ struct StopHandoff {
         [Int16], Double, String?, [String: MicrophoneCalibration], Date
     ) async -> StopCalibrationLearning?
     let transcribe: ([Int16], String) async throws -> String
-    let deliver: (String, StopDeliverySource) -> Void
+    /// Called with the take once the audio queue has drained it, before the card
+    /// decides what the stop still owes. The app writes the take's final numbers
+    /// here, where they are known.
+    let drained: (Recorder.Recording) -> Void
+    /// Called with the words, where they came from, and the number of samples the
+    /// take held when it ended, for the log line that names the take.
+    let deliver: (String, StopDeliverySource, Int) -> Void
     let abandon: () -> Void
     let fail: (Error) -> Void
 }
@@ -78,140 +87,226 @@ struct StopHandoff {
 /// The small, injectable part of a stop that decides when the card may move on.
 @MainActor
 enum StopResponse {
-    /// Runs one stop from the recorder cutoff to its final handoff.
+    /// Runs one stop whose take is already drained.
     ///
-    /// The ledger is a value captured by the caller. Nothing here reads the
-    /// host's mutable ledger again, and the live candidate is joined only in
-    /// the branch that can actually reuse it.
+    /// The card leaves recording here, on the caller's turn of the main actor,
+    /// exactly as it did before a stop could be claimed. A take with no samples
+    /// is empty in this call and is answered before it returns, so a card that
+    /// never has anything to transcribe never shows the transcribing state.
     @discardableResult
-    static func perform(_ handoff: StopHandoff) -> Task<Void, Never> {
+    static func perform(
+        _ handoff: StopHandoff,
+        recording: Recorder.Recording
+    ) -> Task<Void, Never> {
         handoff.liveTask?.cancel()
         handoff.enterWorking()
-        guard handoff.recording.sampleCount > 0 else {
+        guard recording.sampleCount > 0 else {
             handoff.hud.showMessage(text: "Nothing was recorded.", action: nil)
             handoff.finishEmpty()
             return Task {}
         }
+        announce(handoff)
+        return Task { @MainActor in
+            handoff.drained(recording)
+            await finish(handoff, recording: recording)
+        }
+    }
+
+    /// Runs one stop whose take is still on the audio queue.
+    ///
+    /// The card leaves recording here, on the caller's turn of the main actor,
+    /// before the queue is awaited: a route reconciliation that was already
+    /// running can hold the queue for as long as the device takes to restart,
+    /// and the person must not see a live meter over a take that has ended.
+    ///
+    /// The samples the take had already published decide what the card leaves
+    /// recording for. A take with audio is shown as transcribing now, once. A
+    /// take with none waits for the drain, because the converter's flushed tail
+    /// can still make it non-empty; a take that really is empty is answered with
+    /// its message and never flashes the transcribing state.
+    @discardableResult
+    static func perform(
+        _ handoff: StopHandoff,
+        claim: Recorder.StopClaim
+    ) -> Task<Void, Never> {
+        handoff.liveTask?.cancel()
+        handoff.enterWorking()
+        // The take has ended, whatever the card is about to show: the menu may
+        // not keep offering to stop a recording that no longer runs.
+        handoff.markMenuNotRecording()
+        let announced = claim.publishedSamples > 0
+        if announced {
+            handoff.hud.showTranscribing()
+        } else {
+            // The take is accepted and its audio is still on the queue, so the
+            // card stops showing a live recording it can no longer read. It
+            // claims nothing about the take: a take that turns out to be empty
+            // must never show the transcribing state, and its audio may still be
+            // in the converter. The card stays up until this stop replaces it,
+            // so a drain held behind a device restart cannot outlive the
+            // message's dwell and reopen the island afterwards.
+            handoff.hud.showMessage(
+                text: "Finishing recording…",
+                symbol: "info.circle",
+                dwell: 0
+            )
+        }
+        return Task { @MainActor in
+            guard case .drained(let recording) = await claim.result else { return }
+            // The take's final numbers are known here, and they are written
+            // whichever way the card decides below.
+            handoff.drained(recording)
+            guard mayContinue(handoff) else {
+                drop(handoff)
+                return
+            }
+            if !announced {
+                guard recording.sampleCount > 0 else {
+                    handoff.hud.showMessage(text: "Nothing was recorded.", action: nil)
+                    handoff.finishEmpty()
+                    return
+                }
+                handoff.hud.showTranscribing()
+            }
+            await finish(handoff, recording: recording)
+        }
+    }
+
+    /// Shows that the take is being turned into words.
+    ///
+    /// Called once per stop: at the claim when the take already had audio, or
+    /// when the drain answers for a take whose audio was still in the converter.
+    private static func announce(_ handoff: StopHandoff) {
         handoff.hud.showTranscribing()
         handoff.markMenuNotRecording()
+    }
 
-        return Task { @MainActor in
-            let ledger = handoff.ledger
-            let samples = handoff.recording.sampleCount
-            let terminate = { handoff.isTerminating() }
-            let cancelled = { Task.isCancelled }
-            let mayContinue = {
-                Self.canContinue(
-                    isTerminating: terminate(),
-                    isCancelled: cancelled(),
-                    ownsCard: handoff.ownsCard()
-                )
-            }
-            let drop = {
-                // A cancelled or terminating stop cleans up only while it still
-                // owns the card. A newer owner must keep its own state.
-                guard handoff.ownsCard(), terminate() || cancelled() else { return }
-                handoff.abandon()
-            }
+    /// Whether the owner of the card may still touch it.
+    private static func mayContinue(_ handoff: StopHandoff) -> Bool {
+        canContinue(
+            isTerminating: handoff.isTerminating(),
+            isCancelled: Task.isCancelled,
+            ownsCard: handoff.ownsCard()
+        )
+    }
 
-            guard mayContinue() else {
-                drop()
+    /// Lets go of a stop that may not touch the card any more.
+    ///
+    /// A cancelled or terminating stop cleans up only while it still owns the
+    /// card. A newer owner must keep its own state.
+    private static func drop(_ handoff: StopHandoff) {
+        guard handoff.ownsCard(), handoff.isTerminating() || Task.isCancelled else { return }
+        handoff.abandon()
+    }
+
+    /// The stop's work after the take is drained: what it still owes, and how
+    /// the words get to the card.
+    private static func finish(
+        _ handoff: StopHandoff,
+        recording: Recorder.Recording
+    ) async {
+        let samples = recording.sampleCount
+        // The device the take's calibration belongs to. A take that ran on two
+        // devices has no single microphone to teach.
+        let deviceUID = AppDelegate.calibrationTarget(for: recording)
+        guard mayContinue(handoff) else {
+            drop(handoff)
+            return
+        }
+
+        // A nil device has no entry in the book. The old learn path did
+        // nothing in that case, so the scan is skipped entirely.
+        if deviceUID != nil,
+           let learning = await handoff.observe(
+               recording.samples,
+               recording.peakDBFS,
+               deviceUID,
+               handoff.capturedBook,
+               Date()
+           ) {
+            guard mayContinue(handoff) else {
+                drop(handoff)
                 return
             }
-
-            // A nil device has no entry in the book. The old learn path did
-            // nothing in that case, so the scan is skipped entirely.
-            if handoff.deviceUID != nil,
-               let learning = await handoff.observe(
-                   handoff.recording.samples,
-                   handoff.recording.peakDBFS,
-                   handoff.deviceUID,
-                   handoff.capturedBook,
-                   Date()
+            let currentBook = handoff.currentBook()
+            if let finalBook = Self.calibrationBookAfterObservation(
+                capturedBook: handoff.capturedBook,
+                currentBook: currentBook,
+                deviceUID: deviceUID,
+                learning: learning
+            ),
+               finalBook != currentBook,
+               let entry = MicrophoneCalibrationBook.calibration(
+                   for: deviceUID,
+                   in: finalBook
                ) {
-                guard mayContinue() else {
-                    drop()
-                    return
-                }
-                let currentBook = handoff.currentBook()
-                if let finalBook = Self.calibrationBookAfterObservation(
-                    capturedBook: handoff.capturedBook,
-                    currentBook: currentBook,
-                    deviceUID: handoff.deviceUID,
-                    learning: learning
-                ),
-                   finalBook != currentBook,
-                   let entry = MicrophoneCalibrationBook.calibration(
-                       for: handoff.deviceUID,
-                       in: finalBook
-                   ) {
-                    handoff.applyCalibration(finalBook, entry)
-                }
+                handoff.applyCalibration(finalBook, entry)
             }
+        }
 
-            guard mayContinue() else {
-                drop()
-                return
-            }
+        guard mayContinue(handoff) else {
+            drop(handoff)
+            return
+        }
 
-            if let covered = Self.completeReuse(ledger: ledger, sampleCount: samples) {
-                handoff.clearLedger()
-                handoff.deliver(covered, .complete)
-                return
-            }
-
-            let lastTranscribed = ledger.provisional?.endSample ?? ledger.committedSamples
-            let uncoveredCount = max(0, samples - lastTranscribed)
-            let uncoveredHasSpeech = Self.uncoveredHasSpeech(
-                in: handoff.recording.samples,
-                uncoveredCount: uncoveredCount
-            )
-
-            // The display text join happens only in the branch that reuses it.
-            if handoff.liveTask != nil, !uncoveredHasSpeech {
-                let candidate = ledger.displayText
-                if Self.shouldReuseLiveCandidate(
-                    liveTaskExists: true,
-                    uncoveredHasSpeech: uncoveredHasSpeech,
-                    candidate: candidate
-                ) {
-                    handoff.clearLedger()
-                    handoff.deliver(candidate, .live)
-                    return
-                }
-            }
-
+        if let covered = Self.completeReuse(ledger: handoff.ledger, sampleCount: samples) {
             handoff.clearLedger()
-            switch Self.tailPlan(
-                ledger: ledger,
-                sampleCount: samples,
-                uncoveredHasSpeech: uncoveredHasSpeech
+            handoff.deliver(covered, .complete, samples)
+            return
+        }
+
+        let lastTranscribed = handoff.ledger.provisional?.endSample
+            ?? handoff.ledger.committedSamples
+        let uncoveredCount = max(0, samples - lastTranscribed)
+        let uncoveredHasSpeech = Self.uncoveredHasSpeech(
+            in: recording.samples,
+            uncoveredCount: uncoveredCount
+        )
+
+        // The display text join happens only in the branch that reuses it.
+        if handoff.liveTask != nil, !uncoveredHasSpeech {
+            let candidate = handoff.ledger.displayText
+            if Self.shouldReuseLiveCandidate(
+                liveTaskExists: true,
+                uncoveredHasSpeech: uncoveredHasSpeech,
+                candidate: candidate
             ) {
-            case .alreadyFinal(let text):
-                handoff.deliver(text, .complete)
-            case .send(let range, let prefix):
-                let piece = Array(handoff.recording.samples[range])
-                do {
-                    let transcript = try await handoff.transcribe(piece, prefix)
-                    guard mayContinue() else {
-                        drop()
-                        return
-                    }
-                    handoff.deliver(transcript, .tail)
-                } catch is CancellationError {
-                    guard handoff.ownsCard() else { return }
-                    handoff.abandon()
-                } catch {
-                    guard mayContinue() else {
-                        drop()
-                        return
-                    }
-                    let fallback = ledger.displayText
-                    if !fallback.isEmpty {
-                        handoff.deliver(fallback, .fallback)
-                    } else {
-                        handoff.fail(error)
-                    }
+                handoff.clearLedger()
+                handoff.deliver(candidate, .live, samples)
+                return
+            }
+        }
+
+        handoff.clearLedger()
+        switch Self.tailPlan(
+            ledger: handoff.ledger,
+            sampleCount: samples,
+            uncoveredHasSpeech: uncoveredHasSpeech
+        ) {
+        case .alreadyFinal(let text):
+            handoff.deliver(text, .complete, samples)
+        case .send(let range, let prefix):
+            let piece = Array(recording.samples[range])
+            do {
+                let transcript = try await handoff.transcribe(piece, prefix)
+                guard mayContinue(handoff) else {
+                    drop(handoff)
+                    return
+                }
+                handoff.deliver(transcript, .tail, samples)
+            } catch is CancellationError {
+                guard handoff.ownsCard() else { return }
+                handoff.abandon()
+            } catch {
+                guard mayContinue(handoff) else {
+                    drop(handoff)
+                    return
+                }
+                let fallback = handoff.ledger.displayText
+                if !fallback.isEmpty {
+                    handoff.deliver(fallback, .fallback, samples)
+                } else {
+                    handoff.fail(error)
                 }
             }
         }

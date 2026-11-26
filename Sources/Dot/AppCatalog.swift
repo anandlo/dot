@@ -25,24 +25,33 @@ struct AppCatalogEntry: Equatable {
 /// The installed applications the formatting list can name.
 @MainActor
 enum AppCatalog {
+    private static var cache: [String: AppCatalogEntry] = [:]
+
     /// The system's description of one bundle identifier.
     ///
     /// - Parameter bundleID: the identifier as the configuration stores it.
     /// - Returns: the entry, with the generic application icon when no
     ///   application on this Mac claims the identifier.
     static func entry(for bundleID: String) -> AppCatalogEntry {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
-            return AppCatalogEntry(
+        if let cached = cache[bundleID] {
+            return cached
+        }
+        let resolved: AppCatalogEntry
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            resolved = AppCatalogEntry(
+                bundleID: bundleID,
+                name: displayName(of: url),
+                icon: NSWorkspace.shared.icon(forFile: url.path)
+            )
+        } else {
+            resolved = AppCatalogEntry(
                 bundleID: bundleID,
                 name: nil,
                 icon: genericApplicationIcon
             )
         }
-        return AppCatalogEntry(
-            bundleID: bundleID,
-            name: displayName(of: url),
-            icon: NSWorkspace.shared.icon(forFile: url.path)
-        )
+        cache[bundleID] = resolved
+        return resolved
     }
 
     /// The icon of an application bundle that is not installed here.

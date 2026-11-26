@@ -731,8 +731,6 @@ extension MatrixFramePacingProbeTests {
         copy.isEditingTranscript = model.isEditingTranscript
         copy.rewrite = model.rewrite
         copy.rewriteEnding = model.rewriteEnding
-        copy.assistantAllow = model.assistantAllow
-        copy.assistantCancel = model.assistantCancel
         return copy
     }
 }

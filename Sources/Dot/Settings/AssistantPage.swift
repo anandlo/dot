@@ -10,17 +10,6 @@ struct AssistantKeyedProvidersKey: EnvironmentKey {
     static let defaultValue: Set<String>? = nil
 }
 
-/// The voices an offscreen render lists, so the picker can be looked at
-/// without asking a service.
-struct SettingsVoiceOptionsKey: EnvironmentKey {
-    static let defaultValue: [VoiceDescriptor]? = nil
-}
-
-/// The connector rows an offscreen render draws, with their permissions.
-struct SettingsConnectorSummariesKey: EnvironmentKey {
-    static let defaultValue: [ConnectorSummary]? = nil
-}
-
 /// The status an offscreen render draws on the Assistant page.
 ///
 /// A render must not ask a service whether it answers: the four states are four
@@ -58,18 +47,6 @@ extension EnvironmentValues {
         set { self[AssistantKeyedProvidersKey.self] = newValue }
     }
 
-    /// The voices to list instead of asking the provider, if any.
-    var settingsVoiceOptions: [VoiceDescriptor]? {
-        get { self[SettingsVoiceOptionsKey.self] }
-        set { self[SettingsVoiceOptionsKey.self] = newValue }
-    }
-
-    /// The connectors to draw instead of asking the system, if any.
-    var settingsConnectorSummaries: [ConnectorSummary]? {
-        get { self[SettingsConnectorSummariesKey.self] }
-        set { self[SettingsConnectorSummariesKey.self] = newValue }
-    }
-
     /// The models to list instead of reading the service's catalogue, if any.
     var assistantDiscoveredModelsPreview: [DiscoveredModel]? {
         get { self[AssistantDiscoveredModelsKey.self] }
@@ -101,6 +78,16 @@ extension EnvironmentValues {
 /// to the Keychain through the same callbacks the Speech to text page uses, so
 /// the item a speech key already lives in is the item a rewrite request reads.
 @MainActor
+enum AssistantStoredKeysCache {
+    static var keys: Set<String>?
+
+    static func invalidate() {
+        keys = nil
+    }
+}
+
+/// What the user needs in place before an option behind a switch can run.
+@MainActor
 struct AssistantPage: View {
     @Binding var config: DotConfig
     /// Called after a change that a rebuild or a save depends on.
@@ -109,6 +96,8 @@ struct AssistantPage: View {
     let onSetKey: (String, String) async -> String?
     /// Deletes a key. Returns an error message, or `nil` on success.
     let onDeleteKey: (String) async -> String?
+    /// Whether this tab is currently visible in Settings.
+    var isActive: Bool = true
 
     @Environment(\.assistantKeyedProviders) private var keyedProviders
     @Environment(\.assistantConnectionPreview) private var connectionPreview
@@ -117,6 +106,7 @@ struct AssistantPage: View {
     @Environment(\.settingsHeadless) private var headless
 
     @State private var storedKeys: Set<String>?
+    @State private var storedKeysTask: Task<Void, Never>?
     @State private var keyField = ""
     @State private var connecting = false
     @State private var note: KeyNote?
@@ -220,8 +210,18 @@ struct AssistantPage: View {
                 }
             }
         }
-        .onAppear(perform: appeared)
+        .onAppear {
+            if isActive { appeared() }
+        }
         .onDisappear(perform: cancelled)
+        .onChange(of: isActive) { _, active in
+            if active {
+                appeared()
+            } else {
+                focusedField = nil
+                cancelled()
+            }
+        }
     }
 
     /// The master switch, on its own above the cards it governs.
@@ -243,7 +243,6 @@ struct AssistantPage: View {
         SettingsSection("Service") {
             SettingsRow(
                 "Service",
-                subtitle: "Chooses which service rewrites your text.",
                 help: "Chooses which service rewrites your text."
             ) {
                 DotSelect(
@@ -274,7 +273,6 @@ struct AssistantPage: View {
                     SettingsDivider()
                     SettingsRow(
                         "Plan",
-                        subtitle: "Matches the service address to your plan.",
                         help: SettingsExplanation.planHelp
                     ) {
                         DotSelect(
@@ -289,7 +287,7 @@ struct AssistantPage: View {
             }
             if isServiceChosen, showsAddressRow {
                 SettingsDivider()
-                SettingsRow("Base URL", subtitle: "Sets the address Dot sends rewrites to.", help: "Dot saves the address in settings, not in the Keychain.") {
+                SettingsRow("Base URL", help: "Dot saves the address in settings, not in the Keychain.") {
                     TextField(baseURLPlaceholder, text: baseURLBinding)
                         .modifier(DotFieldStyle(focused: focusedField == .baseURL))
                         .focused($focusedField, equals: .baseURL)
@@ -597,7 +595,7 @@ struct AssistantPage: View {
             }
             if showsModelField {
                 SettingsDivider()
-                SettingsRow("Custom model", subtitle: "Uses the model ID you enter.", help: "Enter the exact model ID listed by the service.") {
+                SettingsRow("Custom model", help: "Enter the exact model ID listed by the service.") {
                     TextField("Model ID", text: typedModelBinding)
                         .modifier(DotFieldStyle(focused: focusedField == .model))
                         .focused($focusedField, equals: .model)
@@ -1182,7 +1180,6 @@ struct AssistantPage: View {
                     accessibilityLabel: Self.standingRulesTitle,
                     accessibilityHelp: Self.standingRulesHelp
                 )
-                .help(Self.standingRulesHelp)
                 .padding(.bottom, 10)
             }
         }
@@ -1209,7 +1206,6 @@ struct AssistantPage: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(DotPressStyle())
-        .help(help)
         .accessibilityLabel(help)
     }
 
@@ -1545,15 +1541,18 @@ struct AssistantPage: View {
     /// The page is on screen: read the stored keys, check the service and read
     /// the model list, once.
     private func appeared() {
-        readStoredKeys()
+        let keysReady = readStoredKeys()
         guard connectionPreview == nil else { return }
         apply(.availability(isUsable: isUsable))
-        check(forced: false)
-        loadModels()
+        if keysReady {
+            check(forced: false)
+            loadModels()
+        }
     }
 
     /// The page is going away: no check and no model list may outlive it.
     private func cancelled() {
+        storedKeysTask?.cancel()
         addressChecks.cancel()
         checkTask?.cancel()
         modelsTask?.cancel()
@@ -1606,15 +1605,35 @@ struct AssistantPage: View {
         }
     }
 
-    private func readStoredKeys() {
-        guard storedKeys == nil else { return }
+    @discardableResult
+    private func readStoredKeys() -> Bool {
         if let keyedProviders {
-            storedKeys = keyedProviders
-            return
+            if storedKeys != keyedProviders {
+                storedKeys = keyedProviders
+            }
+            return true
         }
-        storedKeys = Set(
-            AssistantProviderCatalogue.rows.map(\.id).filter { AssistantCredentials.hasKey(for: $0) }
-        )
+        if let cached = AssistantStoredKeysCache.keys {
+            if storedKeys != cached {
+                storedKeys = cached
+            }
+            return true
+        }
+        let ids = AssistantProviderCatalogue.rows.map(\.id)
+        storedKeysTask?.cancel()
+        storedKeysTask = Task { @MainActor in
+            let resolved = await Task.detached(priority: .userInitiated) {
+                AssistantCredentials.hasKeys(for: ids)
+            }.value
+            guard !Task.isCancelled else { return }
+            AssistantStoredKeysCache.keys = resolved
+            self.storedKeys = resolved
+            guard self.connectionPreview == nil else { return }
+            self.apply(.availability(isUsable: self.isUsable))
+            self.check(forced: false)
+            self.loadModels()
+        }
+        return false
     }
 
     private var trimmedKey: String {
@@ -1638,7 +1657,11 @@ struct AssistantPage: View {
             focusedField = .apiKey
             return
         }
-        storedKeys = (storedKeys ?? keyedProviders ?? []).union([service.id])
+        let updated = (storedKeys ?? keyedProviders ?? []).union([service.id])
+        storedKeys = updated
+        if keyedProviders == nil {
+            AssistantStoredKeysCache.keys = updated
+        }
         keyField = ""
         // A key that belongs to the vendor's other plan moves the address to
         // that plan, and says so: a request sent to the wrong host of a vendor
@@ -1698,7 +1721,11 @@ struct AssistantPage: View {
             note = KeyNote(detail: message, tone: .bad)
             return
         }
-        storedKeys = (storedKeys ?? keyedProviders ?? []).subtracting([service.id])
+        let updated = (storedKeys ?? keyedProviders ?? []).subtracting([service.id])
+        storedKeys = updated
+        if keyedProviders == nil {
+            AssistantStoredKeysCache.keys = updated
+        }
         keyField = ""
         note = KeyNote(detail: nil, tone: .neutral)
         onChange()
@@ -1935,7 +1962,6 @@ struct AssistantKeyRow: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(DotPressStyle())
-                    .help("Delete the stored key")
                     .accessibilityLabel("Delete the stored key from the Keychain")
                 }
             }

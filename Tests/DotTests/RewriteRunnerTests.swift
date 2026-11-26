@@ -1784,4 +1784,17 @@ extension RewriteRunnerTests {
         XCTAssertNil(runner.card)
         XCTAssertEqual(factory.makeCount, 0)
     }
+
+    func testPasteSelectedOutcomeDistinguishesPastedFallbackAndIgnored() async {
+        XCTAssertEqual(runner.pasteSelectedOutcome(original), .ignored)
+
+        XCTAssertTrue(begin())
+        XCTAssertEqual(runner.pasteSelectedOutcome("different text"), .ignored)
+        XCTAssertEqual(runner.pasteSelectedOutcome(original), .pasted)
+
+        let noFocusRunner = makeRunner(frontmost: { nil })
+        XCTAssertTrue(begin(runner: noFocusRunner, anchor: false))
+        XCTAssertEqual(noFocusRunner.pasteSelectedOutcome(original), .fallbackCopied)
+        XCTAssertEqual(copied.last, original)
+    }
 }

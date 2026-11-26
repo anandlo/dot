@@ -58,6 +58,10 @@ final class MouseButtonTrigger {
     /// Builds the tap around the context it calls into. Tests replace it: a
     /// test runner cannot build a tap.
     var createTap: (UnsafeMutableRawPointer) -> CFMachPort? = MouseButtonTrigger.makeTap
+    var isAccessibilityTrusted: () -> Bool = { AXIsProcessTrusted() }
+    var schedulePermissionRead: (TimeInterval, @escaping @MainActor @Sendable () -> Void) -> Void = {
+        delay, read in DispatchQueue.main.asyncAfter(deadline: .now() + delay) { read() }
+    }
 
     /// The announcement macOS posts when an app's Accessibility grant changes.
     static let accessibilityChanged = Notification.Name("com.apple.accessibility.api")
@@ -80,7 +84,12 @@ final class MouseButtonTrigger {
     func start(button: MouseTriggerButton) -> Bool {
         stop()
         guard button != .off else { return true }
+        if installTap(button: button) { return true }
+        waitForPermission(button: button)
+        return false
+    }
 
+    private func installTap(button: MouseTriggerButton) -> Bool {
         let generation = self.generation
         let context = TapContext(button: button) { [weak self] edge in
             DispatchQueue.main.async {
@@ -91,9 +100,9 @@ final class MouseButtonTrigger {
         }
         guard let port = createTap(Unmanaged.passUnretained(context).toOpaque()) else {
             Log.shared.error("mouse.tap.failed", ["button": .string(button.rawValue)])
-            waitForPermission(button: button)
             return false
         }
+        stopWaitingForPermission()
         // A new tap is already on, and an event it holds before its thread
         // runs would wait for an answer; the thread turns it on.
         CGEvent.tapEnable(tap: port, enable: false)
@@ -107,13 +116,17 @@ final class MouseButtonTrigger {
     /// does what it did before Dot took it.
     func stop() {
         generation += 1
+        stopWaitingForPermission()
+        context?.stop()
+        context = nil
+        isPressActive = false
+    }
+
+    private func stopWaitingForPermission() {
         if let permissionObserver {
             DistributedNotificationCenter.default().removeObserver(permissionObserver)
             self.permissionObserver = nil
         }
-        context?.stop()
-        context = nil
-        isPressActive = false
     }
 
     /// What the tap does with an event of `type` from button `eventButton`.
@@ -150,17 +163,25 @@ final class MouseButtonTrigger {
     }
 
     private func waitForPermission(button: MouseTriggerButton) {
+        let onChange = permissionChangeHandler(for: button)
         permissionObserver = DistributedNotificationCenter.default().addObserver(
             forName: Self.accessibilityChanged,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
+        ) { _ in
+            MainActor.assumeIsolated { onChange() }
+        }
+    }
+
+    func permissionChangeHandler(for button: MouseTriggerButton) -> @MainActor @Sendable () -> Void {
+        let generation = self.generation
+        return { [weak self] in
+            guard let self, self.generation == generation else { return }
             for delay in Self.permissionReads {
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    MainActor.assumeIsolated {
-                        guard let self, self.isWaitingForPermission, AXIsProcessTrusted() else { return }
-                        self.start(button: button)
-                    }
+                self.schedulePermissionRead(delay) { [weak self] in
+                    guard let self, self.generation == generation,
+                          self.isWaitingForPermission, self.isAccessibilityTrusted() else { return }
+                    _ = self.installTap(button: button)
                 }
             }
         }

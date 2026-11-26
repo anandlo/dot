@@ -190,6 +190,22 @@ final class HUDScrollTests: XCTestCase {
         XCTAssertGreaterThan(offset, -5)
     }
 
+    func testInlineTranscriptTextViewMatchesClipWidthWithoutHorizontalOverflow() throws {
+        let fixture = try makeTranscriptPanel(text: longText)
+        defer { fixture.panel.orderOut(nil) }
+
+        let clipWidth = fixture.scrollView.contentView.bounds.width
+        let document = try XCTUnwrap(fixture.scrollView.documentView as? NSTextView)
+        XCTAssertGreaterThan(clipWidth, 100)
+        XCTAssertLessThanOrEqual(
+            document.frame.width,
+            clipWidth + 1.0,
+            "document view expanded beyond clip view (\(document.frame.width) vs \(clipWidth))"
+        )
+        let containerWidth = document.textContainer?.containerSize.width ?? 0
+        XCTAssertLessThanOrEqual(containerWidth, clipWidth + 1.0)
+    }
+
     // MARK: - The dwell
 
     func testThePointerOverTheCardSuspendsTheDwell() throws {

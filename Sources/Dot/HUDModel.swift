@@ -2,6 +2,21 @@ import CoreGraphics
 import Foundation
 import DotCore
 
+/// Temporary confirmation state rendered directly on a HUD action button
+/// and its floating tooltip pill.
+enum HUDActionOutcome: Equatable, Sendable {
+    case copied
+    case pasted
+    case fallbackCopied
+    case triggered
+}
+
+struct HUDActionFeedback: Equatable, Sendable {
+    let id: UUID
+    let action: HUDAction
+    let outcome: HUDActionOutcome
+}
+
 /// Everything the card draws.
 ///
 /// The model is pushed by the HUD's display link: the microphone level, the
@@ -83,6 +98,9 @@ final class HUDModel: ObservableObject {
     /// Which control button the pointer is currently hovering over, if any.
     @Published var hoveredAction: HUDAction? = nil
 
+    /// Temporary confirmation state for the most recently clicked HUD action button.
+    @Published var actionFeedback: HUDActionFeedback? = nil
+
     /// The titled button the message card offers, when the message is asking
     /// for something rather than only reporting.
     ///
@@ -116,19 +134,8 @@ final class HUDModel: ObservableObject {
     /// instead of vanishing in the frame the phase changed, and it names the
     /// style so exactly one chip fades: the one the person clicked. It is written
     /// where the card's phase is mirrored into the model, so every way a run can
-    /// end — completion, cancel, failure, a new take — records it once.
+    /// end -- completion, cancel, failure, a new take -- records it once.
     @Published var rewriteEnding: RewriteEnding?
-
-    /// What the confirmation card's allow button does.
-    ///
-    /// The closures live on the model because the card that draws the buttons
-    /// and the turn that awaits them are different objects. They are cleared
-    /// with the state that showed them, so a button can never outlive its
-    /// request.
-    @Published var assistantAllow: (() -> Void)?
-
-    /// What the confirmation card's cancel button does.
-    @Published var assistantCancel: (() -> Void)?
 
     /// Updates the transcript text in place while editing inline on the HUD island.
     func updateTranscriptText(_ newText: String) {
@@ -166,10 +173,7 @@ final class HUDModel: ObservableObject {
         switch mode {
         case .recording(let shown):
             if shown != elapsed { mode = .recording(elapsed: elapsed) }
-        case .assistantRecording(let shown):
-            if shown != elapsed { mode = .assistantRecording(elapsed: elapsed) }
-        case .working, .transcript, .message, .ready,
-             .assistantThinking, .assistantTool, .assistantAnswer, .assistantConfirm:
+        case .working, .transcript, .message, .ready:
             break
         }
     }

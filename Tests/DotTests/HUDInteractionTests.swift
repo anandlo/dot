@@ -406,4 +406,77 @@ final class HUDInteractionTests: XCTestCase {
         try click(NSPoint(x: rerunX, y: 25))
         wait(for: [rerun], timeout: 2)
     }
+
+    func testDismissPreviewImmediatelyHidesVisualizerAndMaterialDemos() {
+        let hud = HUD(offscreen: true)
+        defer { hud.hide() }
+
+        hud.previewVisualizer(.stretch)
+        XCTAssertTrue(hud.isPreviewing)
+        XCTAssertTrue(hud.isVisible)
+        hud.dismissPreview()
+        XCTAssertFalse(hud.isPreviewing)
+        XCTAssertFalse(hud.isVisible)
+
+        hud.previewMaterial(.black)
+        XCTAssertTrue(hud.isPreviewing)
+        XCTAssertTrue(hud.isVisible)
+        hud.dismissPreview()
+        XCTAssertFalse(hud.isPreviewing)
+        XCTAssertFalse(hud.isVisible)
+    }
+
+    func testSettingsWindowControllerInvokesOnCloseWhenWindowCloses() {
+        let closed = expectation(description: "settings window onClose ran")
+        let controller = SettingsWindowController(offscreen: true)
+        let store = ConfigStore(config: .default)
+        controller.show(
+            store: store,
+            providers: [],
+            onChange: {},
+            onSetAPIKey: { _, _ in nil },
+            onChangeShortcut: {},
+            onClose: { closed.fulfill() }
+        )
+        XCTAssertTrue(controller.isVisible)
+        controller.close()
+        wait(for: [closed], timeout: 2)
+        XCTAssertFalse(controller.isVisible)
+    }
+
+    func testActionFeedbackSetsReplacesIDAndClearsOnHideAndTranscriptOrVersionSwitch() {
+        let hud = HUD(offscreen: true)
+        hud.showTranscript(text: "Hello world.", delivery: .copied, elapsed: "0:03")
+
+        hud.showActionFeedback(for: .copy, outcome: .copied)
+        let firstID = hud.debugModel.actionFeedback?.id
+        XCTAssertEqual(hud.debugModel.actionFeedback?.action, .copy)
+        XCTAssertEqual(hud.debugModel.actionFeedback?.outcome, .copied)
+        XCTAssertNotNil(firstID)
+
+        hud.showActionFeedback(for: .copy, outcome: .copied)
+        XCTAssertNotEqual(hud.debugModel.actionFeedback?.id, firstID)
+        XCTAssertEqual(hud.debugModel.actionFeedback?.outcome, .copied)
+
+        // Replacing the transcript with another transcript clears the prior confirmation badge.
+        hud.showTranscript(text: "Second transcript.", delivery: .copied, elapsed: "0:04")
+        XCTAssertNil(hud.debugModel.actionFeedback)
+
+        // Switching the selected rewrite version clears confirmation feedback for the old version.
+        var card = RewriteCard(original: "Second transcript.", choices: RewriteStyle.builtIns)
+        card.append(id: 1, style: .concise, text: "Second.", warning: nil)
+        card.select(versionID: 0)
+        hud.setRewrite(card)
+        hud.showActionFeedback(for: .paste, outcome: .pasted)
+        XCTAssertNotNil(hud.debugModel.actionFeedback)
+
+        card.select(versionID: 1)
+        hud.setRewrite(card)
+        XCTAssertNil(hud.debugModel.actionFeedback)
+
+        hud.showActionFeedback(for: .copy, outcome: .copied)
+        XCTAssertNotNil(hud.debugModel.actionFeedback)
+        hud.hide()
+        XCTAssertNil(hud.debugModel.actionFeedback)
+    }
 }

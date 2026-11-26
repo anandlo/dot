@@ -57,7 +57,7 @@ public final class UpdateController {
             }
             return .newer(
                 version: release.version,
-                page: release.page.flatMap { URL(string: $0) }
+                page: Self.validatedReleasePage(release.page)
             )
         } catch {
             Log.shared.warn("update.check.failed", [
@@ -91,24 +91,165 @@ public final class UpdateController {
         }
     }
 
-    /// Compares two semver strings (e.g. "1.1.0" > "1.0.0").
-    static func isVersion(_ v1: String, newerThan v2: String) -> Bool {
-        let parts1 = v1.split(separator: ".").compactMap { Int($0) }
-        let parts2 = v2.split(separator: ".").compactMap { Int($0) }
+    /// Validates that a release page URL points to an HTTPS GitHub release under Dot's repository.
+    static func validatedReleasePage(_ raw: String?) -> URL? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let url = URL(string: trimmed),
+              url.scheme?.lowercased() == "https",
+              url.host?.lowercased() == "github.com",
+              url.user == nil,
+              url.password == nil,
+              url.port == nil,
+              !url.pathComponents.contains(".."),
+              !url.path.split(separator: "/").contains("..")
+        else { return nil }
+        let expectedPrefix = (ProductLinks.github.path + "/releases/").lowercased()
+        guard url.path.lowercased().hasPrefix(expectedPrefix) else { return nil }
+        return url
+    }
 
-        for i in 0..<max(parts1.count, parts2.count) {
-            let p1 = i < parts1.count ? parts1[i] : 0
-            let p2 = i < parts2.count ? parts2[i] : 0
-            if p1 > p2 { return true }
-            if p1 < p2 { return false }
+    /// Compares two SemVer 2.0.0 strings, respecting prerelease precedence and ignoring build metadata.
+    static func isVersion(_ v1: String, newerThan v2: String) -> Bool {
+        guard let parsed1 = SemVer(v1), let parsed2 = SemVer(v2) else {
+            return false
         }
-        return false
+        return parsed1 > parsed2
+    }
+
+    private struct SemVer: Comparable {
+        enum PrereleaseIdentifier: Comparable {
+            case numeric(String)
+            case alphanumeric(String)
+
+            init?(_ raw: String) {
+                guard !raw.isEmpty else { return nil }
+                if raw.allSatisfy({ $0.isASCII && $0.isNumber }) {
+                    self = .numeric(raw)
+                } else {
+                    self = .alphanumeric(raw)
+                }
+            }
+
+            static func == (lhs: PrereleaseIdentifier, rhs: PrereleaseIdentifier) -> Bool {
+                switch (lhs, rhs) {
+                case (.numeric(let a), .numeric(let b)):
+                    return compareNumericStrings(a, b) == .orderedSame
+                case (.alphanumeric(let a), .alphanumeric(let b)):
+                    return a == b
+                case (.numeric, .alphanumeric), (.alphanumeric, .numeric):
+                    return false
+                }
+            }
+
+            static func < (lhs: PrereleaseIdentifier, rhs: PrereleaseIdentifier) -> Bool {
+                switch (lhs, rhs) {
+                case (.numeric(let a), .numeric(let b)):
+                    return compareNumericStrings(a, b) == .orderedAscending
+                case (.numeric, .alphanumeric):
+                    return true
+                case (.alphanumeric, .numeric):
+                    return false
+                case (.alphanumeric(let a), .alphanumeric(let b)):
+                    return a < b
+                }
+            }
+
+            private static func compareNumericStrings(_ a: String, _ b: String) -> ComparisonResult {
+                let trimA = String(a.drop(while: { $0 == "0" }))
+                let trimB = String(b.drop(while: { $0 == "0" }))
+                if trimA.count != trimB.count {
+                    return trimA.count < trimB.count ? .orderedAscending : .orderedDescending
+                }
+                if trimA == trimB { return .orderedSame }
+                return trimA < trimB ? .orderedAscending : .orderedDescending
+            }
+        }
+
+        let major: Int
+        let minor: Int
+        let patch: Int
+        let prerelease: [PrereleaseIdentifier]
+
+        init?(_ raw: String) {
+            var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("v") || trimmed.hasPrefix("V") {
+                trimmed.removeFirst()
+            }
+            if let buildIndex = trimmed.firstIndex(of: "+") {
+                trimmed = String(trimmed[..<buildIndex])
+            }
+            guard !trimmed.isEmpty else { return nil }
+
+            let corePart: String
+            let prePart: String?
+            if let dash = trimmed.firstIndex(of: "-") {
+                corePart = String(trimmed[..<dash])
+                prePart = String(trimmed[trimmed.index(after: dash)...])
+            } else {
+                corePart = trimmed
+                prePart = nil
+            }
+
+            let coreStrings = corePart.split(separator: ".", omittingEmptySubsequences: false)
+            guard (1...3).contains(coreStrings.count) else { return nil }
+            var nums: [Int] = []
+            for part in coreStrings {
+                guard !part.isEmpty, part.allSatisfy({ $0.isASCII && $0.isNumber }),
+                      let value = Int(part)
+                else { return nil }
+                nums.append(value)
+            }
+            self.major = nums[0]
+            self.minor = nums.count > 1 ? nums[1] : 0
+            self.patch = nums.count > 2 ? nums[2] : 0
+
+            if let prePart {
+                guard !prePart.isEmpty else { return nil }
+                let parts = prePart.split(separator: ".", omittingEmptySubsequences: false)
+                var identifiers: [PrereleaseIdentifier] = []
+                for part in parts {
+                    guard let id = PrereleaseIdentifier(String(part)) else { return nil }
+                    identifiers.append(id)
+                }
+                self.prerelease = identifiers
+            } else {
+                self.prerelease = []
+            }
+        }
+
+        static func < (lhs: SemVer, rhs: SemVer) -> Bool {
+            if lhs.major != rhs.major { return lhs.major < rhs.major }
+            if lhs.minor != rhs.minor { return lhs.minor < rhs.minor }
+            if lhs.patch != rhs.patch { return lhs.patch < rhs.patch }
+            if lhs.prerelease.isEmpty && rhs.prerelease.isEmpty { return false }
+            if lhs.prerelease.isEmpty { return false }
+            if rhs.prerelease.isEmpty { return true }
+            for (left, right) in zip(lhs.prerelease, rhs.prerelease) {
+                if left != right { return left < right }
+            }
+            return lhs.prerelease.count < rhs.prerelease.count
+        }
+    }
+
+    /// Names both versions as people read them, unless the readable forms
+    /// coincide (`1.0.0-rc.1` and `1.0.0-rc1` both read "1.0.0 RC 1"), where
+    /// only the exact versions tell the two builds apart.
+    static func updateAvailableText(latest: String, current: String) -> String {
+        var latestName = ProductVersion.displayName(latest)
+        var currentName = ProductVersion.displayName(current)
+        if latestName == currentName {
+            latestName = latest
+            currentName = current
+        }
+        return "Dot \(latestName) is available. This is \(currentName)."
     }
 
     private func showUpdateAvailableAlert(latestVersion: String, releaseURL: URL?) {
         let alert = NSAlert()
         alert.messageText = "Update available"
-        alert.informativeText = "Dot \(latestVersion) is available. This build is \(Self.currentVersion)."
+        alert.informativeText = Self.updateAvailableText(latest: latestVersion, current: Self.currentVersion)
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Download update")
         alert.addButton(withTitle: "Later")
@@ -126,7 +267,7 @@ public final class UpdateController {
     private func showUpToDateAlert(currentVersion: String) {
         let alert = NSAlert()
         alert.messageText = "You are up to date"
-        alert.informativeText = "Dot \(currentVersion) is currently the newest version."
+        alert.informativeText = "Dot \(ProductVersion.displayName(currentVersion)) is currently the newest version."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()

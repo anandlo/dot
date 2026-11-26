@@ -57,6 +57,36 @@ final class MouseButtonTriggerTests: XCTestCase {
     }
 
     @MainActor
+    func testQueuedPermissionReadsDoNotRestoreThePreviousButton() {
+        let trigger = MouseButtonTrigger()
+        defer { trigger.stop() }
+        var attempts = 0
+        var scheduled: [@MainActor @Sendable () -> Void] = []
+        trigger.createTap = { _ in
+            attempts += 1
+            return nil
+        }
+        trigger.isAccessibilityTrusted = { true }
+        trigger.schedulePermissionRead = { _, read in scheduled.append(read) }
+
+        XCTAssertFalse(trigger.start(button: .back))
+        trigger.permissionChangeHandler(for: .back)()
+        XCTAssertFalse(trigger.start(button: .forward))
+        trigger.permissionChangeHandler(for: .forward)()
+        XCTAssertEqual(scheduled.count, 4)
+        guard scheduled.count == 4 else { return }
+
+        scheduled[0]()
+        scheduled[1]()
+        XCTAssertEqual(attempts, 2, "The former button must not retry after reassignment.")
+        XCTAssertTrue(trigger.isWaitingForPermission)
+        scheduled[2]()
+        XCTAssertEqual(attempts, 3, "The current button must still retry.")
+        scheduled[3]()
+        XCTAssertEqual(attempts, 4, "A failed first retry must not cancel the second.")
+    }
+
+    @MainActor
     func testOffNeverWaits() {
         let trigger = MouseButtonTrigger()
         trigger.createTap = { _ in nil }

@@ -339,4 +339,16 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(saved?.selectedVersionID, 1)
         XCTAssertEqual(saved?.versions.first?.styleID, "concise")
     }
+
+    func testSaveEntriesAsyncFlushAndDrainPersistEntries() async {
+        let first = [HistoryStore.Entry(text: "async first")]
+        HistoryStore.saveEntriesAsync(first, to: url)
+        HistoryStore.flush()
+        XCTAssertEqual(HistoryStore.loadEntries(from: url).map(\.text), ["async first"])
+
+        let second = [HistoryStore.Entry(text: "async drained"), HistoryStore.Entry(text: "async first")]
+        HistoryStore.saveEntriesAsync(second, to: url)
+        await HistoryStore.drain()
+        XCTAssertEqual(HistoryStore.loadEntries(from: url).map(\.text), ["async drained", "async first"])
+    }
 }

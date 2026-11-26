@@ -37,7 +37,7 @@ final class HUDRenderLoopBackendTests: XCTestCase {
         offscreenLoop.stop()
     }
 
-    func testOnScreenLinkUsesTheViewAndRequestsSixtyFrames() {
+    func testOnScreenLinkUsesTheViewAndRequestsProMotionFrames() {
         let loop = HUDRenderLoop()
         let link = FakeRenderLink()
         let view = NSView()
@@ -49,8 +49,8 @@ final class HUDRenderLoopBackendTests: XCTestCase {
         XCTAssertEqual(loop.activeBackend, .displayLink)
         XCTAssertTrue(link.wasAdded)
         XCTAssertEqual(link.preferredFrameRateRange.minimum, 60)
-        XCTAssertEqual(link.preferredFrameRateRange.maximum, 60)
-        XCTAssertEqual(link.preferredFrameRateRange.preferred, 60)
+        XCTAssertEqual(link.preferredFrameRateRange.maximum, 120)
+        XCTAssertEqual(link.preferredFrameRateRange.preferred, 120)
         XCTAssertTrue(loop.isRunning)
     }
 

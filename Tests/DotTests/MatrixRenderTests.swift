@@ -1035,9 +1035,9 @@ final class MatrixRenderTests: XCTestCase {
         levels = Array(Set(levels.map { ($0 * 10_000).rounded() / 10_000 })).sorted()
         var samples: [(display: Double, ink: Double, gap: Double)] = []
         for display in levels {
-            // The drawing reads `display = pow(energy, 1.6)`, so a sweep of the
-            // display value is a sweep of energy along the inverse.
-            let energy = pow(display, 1.0 / 1.6)
+            // The drawing reads `display = pow(energy, MatrixLattice.displayExponent)`,
+            // so a sweep of the display value is a sweep of energy along the inverse.
+            let energy = pow(display, 1.0 / MatrixLattice.displayExponent)
             let frame = AudioSpectrumFrame(bands: (energy, energy, energy, energy, energy))
             let ring = [AudioSpectrumFrame](repeating: frame, count: VoiceMeter.historyLength)
             let view = HUDWaveform(
@@ -1221,7 +1221,7 @@ extension MatrixRenderTests {
         // The specification is written here, not read from the drawing: the
         // specular is a centred die, present only at or above 0.35, and its
         // support never leaves the dot's own circle.
-        let specularOnset = 0.35
+        let specularOnset = MatrixLattice.specularOnset
         let pitch = Double(MatrixLattice.pitch(forHeight: Self.height))
         let column = MatrixLattice.columnCount(for: Self.expandedSize) / 2
         let centre = MatrixLattice.centre(
@@ -1233,7 +1233,7 @@ extension MatrixRenderTests {
         let scale = Double(Self.zoomScale)
 
         func picture(_ display: Double, highlight: Bool, named name: String) throws -> NSBitmapImageRep {
-            let energy = pow(display, 1 / 1.6)
+            let energy = pow(display, 1 / MatrixLattice.displayExponent)
             let frame = AudioSpectrumFrame(bands: (energy, energy, energy, energy, energy))
             var view = HUDWaveform(
                 visualizer: .matrix,
@@ -1260,7 +1260,7 @@ extension MatrixRenderTests {
         func measure(_ display: Double, named name: String) throws -> Specular {
             let on = try picture(display, highlight: true, named: "c3-spec-\(name)-on.png")
             let off = try picture(display, highlight: false, named: "c3-spec-\(name)-off.png")
-            let energy = pow(display, 1 / 1.6)
+            let energy = pow(display, 1 / MatrixLattice.displayExponent)
             let radius = Double(MatrixLattice.radius(forPitch: CGFloat(pitch), energy: energy))
             var support = 0
             var strength = 0.0
@@ -1741,7 +1741,7 @@ extension MatrixRenderTests {
         guard !ring.isEmpty else { return values }
         for column in 0..<MatrixLattice.columnCount(for: size) {
             for row in 0..<MatrixLattice.rows {
-                values.append(pow(min(1, max(0, band(ring: ring, column: column, row: row))), 1.6))
+                values.append(pow(min(1, max(0, band(ring: ring, column: column, row: row))), MatrixLattice.displayExponent))
             }
         }
         return values
@@ -1973,7 +1973,7 @@ extension MatrixRenderTests {
         for column in cells.indices {
             for row in cells[column].indices {
                 let energy = min(1.0, max(0.0, band(ring: frames, column: column, row: row)))
-                let display = pow(energy, 1.6)
+                let display = pow(energy, HUDWaveform.MatrixLattice.displayExponent)
                 guard display > HUDWaveform.MatrixLattice.shineOnset else { continue }
                 let centre = cells[column][row]
                 // Only the dots the crop holds whole, at the radius the lattice
@@ -2015,7 +2015,7 @@ extension MatrixRenderTests {
                     let nextRow = row + Int(direction.1)
                     if cells.indices.contains(nextColumn), cells[nextColumn].indices.contains(nextRow) {
                         let nextEnergy = min(1, max(0, band(ring: frames, column: nextColumn, row: nextRow)))
-                        if HUDWaveform.MatrixLattice.reveal(forDisplay: pow(nextEnergy, 1.6)) == 0 {
+                        if HUDWaveform.MatrixLattice.reveal(forDisplay: pow(nextEnergy, HUDWaveform.MatrixLattice.displayExponent)) == 0 {
                             worstFar = max(
                                 worstFar,
                                 luminance(bitmap, at: far, scale: Self.zoomScale) - background
@@ -2073,7 +2073,7 @@ extension MatrixRenderTests {
         for column in 0..<count {
             for row in 0..<MatrixLattice.rows {
                 let value = band(ring: frames, column: column, row: row)
-                if pow(min(1, max(0, value)), 1.6) > MatrixLattice.shineOnset { shine += 1 }
+                if pow(min(1, max(0, value)), MatrixLattice.displayExponent) > MatrixLattice.shineOnset { shine += 1 }
                 total += 1
             }
         }
@@ -2660,12 +2660,13 @@ extension MatrixRenderTests {
         }
 
         let energies = run.smoothed.map { $0.bands.2 }
-        let displays = energies.map { pow(min(1, max(0, $0)), 1.6) }
+        let displays = energies.map { pow(min(1, max(0, $0)), HUDWaveform.MatrixLattice.displayExponent) }
         print(String(
-            format: "  e = smoothed band2 p10 %.3f p50 %.3f p90 %.3f; d = e^1.6 p10 %.3f p50 %.3f p90 %.3f",
+            format: "  e = smoothed band2 p10 %.3f p50 %.3f p90 %.3f; d = e^%.2f p10 %.3f p50 %.3f p90 %.3f",
             percentile(energies, 0.10),
             percentile(energies, 0.50),
             percentile(energies, 0.90),
+            HUDWaveform.MatrixLattice.displayExponent,
             percentile(displays, 0.10),
             percentile(displays, 0.50),
             percentile(displays, 0.90)
@@ -2676,18 +2677,13 @@ extension MatrixRenderTests {
             percentile(allBands, 0.10),
             percentile(allBands, 0.50),
             percentile(allBands, 0.90),
-            100 * Double(allBands.filter { pow(min(1, max(0, $0)), 1.6) > 0.15 }.count)
+            100 * Double(allBands.filter { pow(min(1, max(0, $0)), HUDWaveform.MatrixLattice.displayExponent) > 0.15 }.count)
                 / Double(max(1, allBands.count)),
-            100 * Double(allBands.filter { pow(min(1, max(0, $0)), 1.6) > HUDWaveform.MatrixLattice.shineOnset }.count)
+            100 * Double(allBands.filter { pow(min(1, max(0, $0)), HUDWaveform.MatrixLattice.displayExponent) > HUDWaveform.MatrixLattice.shineOnset }.count)
                 / Double(max(1, allBands.count))
         ))
     }
 
-    /// What the grid draws from one ring, by `drawMatrix`'s own rule.
-    ///
-    /// - Returns: the share of cells whose `d = pow(energy, 1.6)` is above the
-    ///   lit threshold (`0.15`) and above the shine band (`0.55`), and the
-    ///   median `d` of the grid.
     static func cellStats(
         ring: [AudioSpectrumFrame],
         cols: Int
@@ -2697,7 +2693,7 @@ extension MatrixRenderTests {
         for column in 0..<cols {
             for row in 0..<MatrixLattice.rows {
                 let energy = min(1.0, max(0.0, band(ring: ring, column: column, row: row)))
-                displays.append(pow(energy, 1.6))
+                displays.append(pow(energy, MatrixLattice.displayExponent))
             }
         }
         let total = Double(max(1, displays.count))

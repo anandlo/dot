@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-FLOORS = {"DotTests": 894, "DotCoreTests": 1300}
+FLOORS = {"DotTests": 894, "DotCoreTests": 1098}
 # A deliberate test deletion lowers the affected floor in the same PR.
 
 SUMMARY_RE = re.compile(

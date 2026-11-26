@@ -379,7 +379,16 @@ enum CoreAudioInput {
     /// - Returns: the device the input is running on, or `nil` when it cannot be
     ///   read.
     static func deviceUID(of unit: AudioUnit) -> String? {
-        var device = AudioDeviceID(0)
+        guard let device = currentDeviceID(of: unit) else { return nil }
+        return string(device, kAudioDevicePropertyDeviceUID)
+    }
+
+    /// The device an input audio unit is currently pointed at, or `nil`.
+    ///
+    /// This is the readback a selection needs: a write is only justified when
+    /// the unit does not already name the device the take asked for.
+    static func currentDeviceID(of unit: AudioUnit) -> AudioDeviceID? {
+        var device = AudioDeviceID(kAudioObjectUnknown)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         guard AudioUnitGetProperty(
             unit,
@@ -388,8 +397,60 @@ enum CoreAudioInput {
             0,
             &device,
             &size
-        ) == noErr, device != 0 else { return nil }
-        return string(device, kAudioDevicePropertyDeviceUID)
+        ) == noErr, device != AudioDeviceID(kAudioObjectUnknown) else { return nil }
+        return device
+    }
+
+    /// The HAL device whose UID is `uid`, when it can record.
+    ///
+    /// The translation is a HAL question, not a name match: a picker offers the
+    /// UID of an `AVCaptureDevice`, and CoreAudio answers with the device an
+    /// audio unit has to be pointed at. A device with no input streams cannot be
+    /// used as a microphone even when the HAL knows its UID.
+    ///
+    /// - Parameter uid: the device UID written by the microphone picker.
+    /// - Returns: the device ID, or `nil` when the UID is unknown, has no input
+    ///   streams, or the HAL cannot answer.
+    static func deviceID(forUID uid: String) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var device = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let cfUID = uid as CFString
+        let status = withUnsafePointer(to: cfUID) { pointer in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                UInt32(MemoryLayout<CFString>.size),
+                UnsafeRawPointer(pointer),
+                &size,
+                &device
+            )
+        }
+        guard status == noErr, device != AudioDeviceID(kAudioObjectUnknown),
+              hasInputStreams(device) else { return nil }
+        return device
+    }
+
+    /// Whether a HAL device exposes input streams.
+    private static func hasInputStreams(_ device: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreams,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            device,
+            &address,
+            0,
+            nil,
+            &size
+        ) == noErr else { return false }
+        return size > 0
     }
 
     /// The devices the HAL lists right now.

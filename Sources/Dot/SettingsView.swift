@@ -7,6 +7,16 @@ import SwiftUI
 /// It is the only surface where Dot's behaviour can be changed. The view owns
 /// no window, reads no Keychain and writes no file: every value arrives from
 /// the caller and every change goes back out through a binding or a callback.
+@Observable
+@MainActor
+private final class SettingsPageSelection {
+    var current: SettingsView.Page
+
+    init(_ current: SettingsView.Page) {
+        self.current = current
+    }
+}
+
 /// The window is deliberately light and quiet — the HUD is the only dark
 /// surface in the app.
 @MainActor
@@ -38,8 +48,6 @@ struct SettingsView: View {
     private let onChangePasteShortcut: () -> Void
     /// Opens the shortcut recorder for the palette shortcut.
     private let onChangePaletteShortcut: () -> Void
-    /// Opens the shortcut recorder for the assistant's shortcut.
-    private let onChangeAssistantShortcut: () -> Void
     /// Opens the welcome window.
     private let onOpenWelcome: () -> Void
     /// A state to draw in place of the update check, for a render.
@@ -56,6 +64,7 @@ struct SettingsView: View {
     /// triggers behind the controls are measured.
     private let allowsOffscreenChecks: Bool
 
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.settingsHeadless) private var headless
     @Environment(\.settingsVersionOverride) private var versionOverride
@@ -64,13 +73,14 @@ struct SettingsView: View {
     @Environment(\.settingsHeightOverride) private var heightOverride
     /// The credential state a render draws, in place of a live check.
     @Environment(\.settingsCredentialPreview) private var credentialPreview
+    @Environment(\.assistantKeyedProviders) private var assistantKeyedProviders
+    @Environment(\.assistantConnectionPreview) private var assistantConnectionPreview
+    @Environment(\.assistantDiscoveredModelsPreview) private var assistantDiscoveredModelsPreview
+    @Environment(\.assistantStyleSelectionPreview) private var assistantStyleSelectionPreview
 
     @State private var selected: Page
-    @State private var hoveredPage: Page?
-    /// The space the selection pill travels in, so a change of page reads as the
-    /// pill moving down the list instead of one pill vanishing and another
-    /// appearing.
-    @Namespace private var sidebarPillSpace
+    @State private var pageSelection: SettingsPageSelection
+    @State private var visitedPages: Set<Page>
     @State private var microphoneDevices: [MicrophoneDevice] = []
     /// The UID the system default microphone resolves to, read when the window
     /// appears. A calibration is keyed by device, and "system default" names
@@ -82,9 +92,9 @@ struct SettingsView: View {
     @State private var connectingPrimary = false
     /// The automatic check behind the status label beside the service picker.
     @StateObject private var credentials: SpeechCredentialChecks
-    @State private var launchAtLogin = LaunchAtLogin.isEnabled
+    @State private var launchAtLogin = false
     @State private var launchError: String?
-    @State private var liveDwellSeconds: Double = HUDDwell.defaultSeconds
+    @State private var accessibilityGranted = true
     @State private var availableModels: [AvailableModel] = []
     @State private var isLoadingModels = false
     @State private var isCustomModelSelected = false
@@ -125,7 +135,6 @@ struct SettingsView: View {
         onChangeShortcut: @escaping () -> Void,
         onChangePasteShortcut: @escaping () -> Void = {},
         onChangePaletteShortcut: @escaping () -> Void = {},
-        onChangeAssistantShortcut: @escaping () -> Void = {},
         onOpenWelcome: @escaping () -> Void = {},
         aboutUpdatePreview: AboutUpdateState? = nil,
         modelPreview: [AvailableModel]? = nil,
@@ -137,7 +146,10 @@ struct SettingsView: View {
         _config = store.configBinding
         self.providers = providers
         self.requestedTab = tab
-        _selected = State(initialValue: (Page(rawValue: tab) ?? .general).resolved)
+        let initialPage = (Page(rawValue: tab) ?? .general).resolved
+        _selected = State(initialValue: initialPage)
+        _pageSelection = State(initialValue: SettingsPageSelection(initialPage))
+        _visitedPages = State(initialValue: [initialPage])
         self.onChange = onChange
         self.onSetAPIKey = onSetAPIKey
         self.onDeleteAPIKey = onDeleteAPIKey
@@ -145,20 +157,22 @@ struct SettingsView: View {
         self.onChangeShortcut = onChangeShortcut
         self.onChangePasteShortcut = onChangePasteShortcut
         self.onChangePaletteShortcut = onChangePaletteShortcut
-        self.onChangeAssistantShortcut = onChangeAssistantShortcut
         self.onOpenWelcome = onOpenWelcome
         self.aboutUpdatePreview = aboutUpdatePreview
         self.modelPreview = modelPreview
         self.allowsOffscreenChecks = allowsOffscreenChecks
         _credentials = StateObject(wrappedValue: credentials)
         _availableModels = State(initialValue: modelPreview ?? [])
-        _liveDwellSeconds = State(initialValue: store.config.hudDwellSeconds)
         _keyField = StateObject(wrappedValue: keyField)
     }
 
     var body: some View {
         HStack(spacing: 0) {
-            sidebar
+            SettingsSidebar(
+                selected: selected,
+                reduceMotion: reduceMotion,
+                onSelect: select
+            )
             Rectangle()
                 .fill(DotTheme.hairline)
                 .frame(width: 1)
@@ -172,16 +186,16 @@ struct SettingsView: View {
         .onChange(of: config) { _, _ in
             onChange()
         }
-        .onChange(of: config.hudDwellSeconds) { _, newValue in
-            if liveDwellSeconds != newValue {
-                liveDwellSeconds = newValue
-            }
-        }
         .onChange(of: requestedTab) { _, value in
             guard let page = Page(rawValue: value)?.resolved, page != selected else { return }
             select(page)
         }
         .onAppear {
+            if headless {
+                accessibilityGranted = Paste.accessibilityGranted
+            } else {
+                refreshAccessibilityStatusAsync()
+            }
             // A render supplies the default input rather than enumerating the
             // machine's audio devices; the real window asks the system.
             if defaultInputUID == nil {
@@ -189,18 +203,22 @@ struct SettingsView: View {
                     ?? (headless ? nil : MicrophoneCatalog.recordingDeviceUID(configured: nil))
             }
             guard !headless else { return }
-            LaunchAtLogin.refresh()
-            launchAtLogin = LaunchAtLogin.isEnabled
             if microphoneDevices.isEmpty {
                 microphoneDevices = MicrophoneCatalog.devices()
             }
-            refreshModels()
+            Task.detached(priority: .utility) {
+                LaunchAtLogin.refresh()
+                let enabled = LaunchAtLogin.isEnabled
+                await MainActor.run {
+                    self.launchAtLogin = enabled
+                }
+            }
         }
         .onChange(of: config.provider) { _, _ in
             availableModels = []
             isCustomModelSelected = false
             keyField.text = ""
-            refreshModels()
+            refreshModels(userInitiated: false)
             updateLanguageForModel(currentConfiguredModel)
             startCredentialCheck(immediate: true)
         }
@@ -219,155 +237,100 @@ struct SettingsView: View {
                 defaultInputUID = MicrophoneCatalog.recordingDeviceUID(configured: nil)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             guard !headless else { return }
-            // The switch is the one control a person can also change outside
-            // Dot, in System Settings, while this window is open.
-            LaunchAtLogin.refresh()
-            let latest = LaunchAtLogin.isEnabled
-            if launchAtLogin != latest {
-                launchAtLogin = latest
+            refreshAccessibilityStatusAsync()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
+            guard !headless,
+                  let window = notification.object as? NSWindow,
+                  window.title == "Dot Settings"
+            else { return }
+            refreshAccessibilityStatusAsync()
+            if selected == .general {
+                Task.detached(priority: .utility) {
+                    LaunchAtLogin.refresh()
+                    let latest = LaunchAtLogin.isEnabled
+                    await MainActor.run {
+                        if self.launchAtLogin != latest {
+                            self.launchAtLogin = latest
+                        }
+                    }
+                }
             }
-            // A window that comes back to the front is when inputs Dot cannot
-            // observe are read again: a language model that finished
-            // installing, a key replaced outside this window. The check's name
-            // carries both, so an answer that did not move costs a cache
-            // lookup and an answer that did is asked once.
-            if selected == .provider {
+            if selected == .provider,
+               !CredentialCache.shared.isReadInFlight(config.provider),
+               !CredentialCache.shared.readFailed(config.provider) {
                 startCredentialCheck(immediate: true)
             }
         }
     }
 
-    // MARK: - Sidebar
-
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Settings")
-                .font(DotType.font(12, .semibold))
-                .foregroundStyle(DotTheme.ink3)
-                .padding(.leading, 22)
-                .padding(.top, 40)
-                .padding(.bottom, 8)
-
-            VStack(spacing: 3) {
-                ForEach(Page.sidebarPages) { page in
-                    sidebarItem(page)
-                }
-            }
-            .padding(.horizontal, 10)
-
-            Spacer(minLength: 12)
-        }
-        .padding(.bottom, 12)
-        .frame(width: 198)
-        .frame(maxHeight: .infinity)
-        .background(
-            DotTheme.sidebarFill
-                .overlay(alignment: .top) {
-                    LinearGradient(
-                        colors: [DotTheme.sidebarHighlight, .clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 150)
-                }
-        )
-    }
-
-    private func sidebarItem(_ page: Page) -> some View {
-        let isSelected = selected == page
-        let isHovered = hoveredPage == page
-        return Button {
-            select(page)
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: page.symbol)
-                    .font(DotType.font(11.5, .semibold))
-                    .foregroundStyle(isSelected ? DotTheme.sidebarSelectedIcon : DotTheme.ink3)
-                    .frame(width: 16)
-                Text(page.title)
-                    .font(DotType.font(12.5, .semibold))
-                    .foregroundStyle(isSelected ? DotTheme.sidebarSelectedText : DotTheme.ink2)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 11)
-            .frame(height: 33)
-            .background {
-                if isSelected {
-                    sidebarPill
-                        .matchedGeometryEffect(id: "sidebar-pill", in: sidebarPillSpace)
-                } else if isHovered {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(DotTheme.sidebarHoverFill)
-                }
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-        }
-        .buttonStyle(DotPressStyle())
-        .onHover { hovering in
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
-                if hovering {
-                    hoveredPage = page
-                } else if hoveredPage == page {
-                    hoveredPage = nil
-                }
-            }
-        }
-        .accessibilityLabel(page.title)
-        .accessibilityHint("Shows the \(page.title) settings.")
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-
-    /// The selection pill itself, matched across rows so it travels rather than
-    /// blinking from one item to the next.
-    private var sidebarPill: some View {
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .fill(DotTheme.sidebarSelectedFill)
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(DotTheme.sidebarSelectedBorder, lineWidth: 1)
-            )
-    }
-
     // MARK: - Page
+
+    private static let cachedPages: [Page] = [
+        .general,
+        .provider,
+        .shortcuts,
+        .appearance,
+        .assistant,
+    ]
+
+    private var effectiveColorScheme: ColorScheme {
+        switch config.appearance {
+        case .light: .light
+        case .dark: .dark
+        case .system: colorScheme
+        }
+    }
 
     private var page: some View {
         VStack(spacing: 0) {
             pageHeader
+                .transaction { $0.animation = nil }
                 .zIndex(2)
             Rectangle()
                 .fill(DotTheme.hairline)
                 .frame(height: 1)
                 .zIndex(2)
-            ScrollView(.vertical) {
-                pageContent
-                    .padding(.horizontal, 28)
-                    .padding(.top, 16)
-                    .padding(.bottom, 28)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .scrollIndicators(.never)
-            // A page taller than the window used to end in a card sliced flat
-            // by the window edge, which reads as a clipped label. The foot of
-            // the scroll view fades instead, so the cut is a fade and the card
-            // underneath looks like it continues rather than like it is broken.
-            .mask(alignment: .top) {
-                VStack(spacing: 0) {
-                    Rectangle()
-                    LinearGradient(
-                        colors: [.black, .black.opacity(0)],
-                        startPoint: .top,
-                        endPoint: .bottom
+            ZStack(alignment: .topLeading) {
+                ForEach(Self.cachedPages) { tabPage in
+                    if visitedPages.contains(tabPage) {
+                        SettingsCachedTab(
+                            isVisible: selected == tabPage,
+                            colorScheme: effectiveColorScheme,
+                            content: pagePaddedContent(for: tabPage)
+                                .environment(\.colorScheme, effectiveColorScheme)
+                                .environment(\.settingsHeadless, headless)
+                                .environment(\.settingsDefaultInputUID, defaultInputUIDOverride)
+                                .environment(\.settingsCredentialPreview, credentialPreview)
+                                .environment(\.assistantKeyedProviders, assistantKeyedProviders)
+                                .environment(\.assistantConnectionPreview, assistantConnectionPreview)
+                                .environment(\.assistantDiscoveredModelsPreview, assistantDiscoveredModelsPreview)
+                                .environment(\.assistantStyleSelectionPreview, assistantStyleSelectionPreview)
+                        )
+                    }
+                }
+                if selected == .about {
+                    DotPageScrollContainer(
+                        colorScheme: effectiveColorScheme,
+                        content: pagePaddedContent(for: .about)
+                            .environment(\.colorScheme, effectiveColorScheme)
                     )
-                    .frame(height: 22)
+                    .transition(.identity)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .zIndex(1)
         }
-        .id(selected)
-        .transition(pageTransition)
+    }
+
+    private func pagePaddedContent(for tabPage: Page) -> some View {
+        pageContent(for: tabPage)
+            .padding(.horizontal, 28)
+            .padding(.top, 16)
+            .padding(.bottom, 28)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var pageHeader: some View {
@@ -386,8 +349,8 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private var pageContent: some View {
-        switch selected {
+    private func pageContent(for page: Page) -> some View {
+        switch page {
         case .general:
             generalPage
         case .provider:
@@ -407,34 +370,43 @@ struct SettingsView: View {
     }
 
     private var assistantPage: some View {
-        AssistantPage(
+        AssistantPageTab(
             config: $config,
             onChange: {},
             onSetKey: onSetAPIKey,
-            onDeleteKey: onDeleteAPIKey
-        )
-    }
-
-    private var pageTransition: AnyTransition {
-        if reduceMotion {
-            return .opacity
-        }
-        return .asymmetric(
-            insertion: .opacity.combined(with: .offset(x: 8)),
-            removal: .opacity.combined(with: .offset(x: -8))
+            onDeleteKey: onDeleteAPIKey,
+            pageSelection: pageSelection
         )
     }
 
     private func select(_ page: Page) {
-        guard page != selected else { return }
-        let change = {
-            selected = page
-            hoveredPage = nil
+        let resolved = page.resolved
+        let wasVisited = visitedPages.contains(resolved)
+        visitedPages.insert(resolved)
+        guard resolved != selected else { return }
+        focusedField = nil
+        DotSelectListController.shared.close()
+        let previous = selected
+        selected = resolved
+        pageSelection.current = resolved
+        if previous == .provider {
+            credentials.cancel()
         }
-        if reduceMotion {
-            withAnimation(.easeOut(duration: 0.18), change)
-        } else {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.86), change)
+        if wasVisited && resolved == .provider {
+            credentials.pageAppeared()
+            refreshModels(userInitiated: false)
+            startCredentialCheck(immediate: true)
+        }
+    }
+
+    private func refreshAccessibilityStatusAsync() {
+        Task.detached(priority: .userInitiated) {
+            let trusted = Paste.accessibilityGranted
+            await MainActor.run {
+                if self.accessibilityGranted != trusted {
+                    self.accessibilityGranted = trusted
+                }
+            }
         }
     }
 
@@ -476,7 +448,6 @@ struct SettingsView: View {
         SettingsSection(GeneralSection.recording.title) {
             SettingsRow(
                 "Recording mode",
-                subtitle: SettingsExplanation.recordingModeSubtitle,
                 help: SettingsExplanation.recordingModeSubtitle
             ) {
                 DotSelect(
@@ -514,7 +485,7 @@ struct SettingsView: View {
                 help: SettingsExplanation.pasteSubtitle,
                 isOn: autoPasteBinding
             )
-            if !Paste.accessibilityGranted,
+            if !accessibilityGranted,
                let reason = Self.accessibilityReason(
                    autoPaste: config.autoPaste,
                    mouseButton: config.mouseTriggerButton
@@ -526,6 +497,7 @@ struct SettingsView: View {
                 ) {
                     Button("Grant Access") {
                         Paste.requestAccessibility()
+                        accessibilityGranted = Paste.accessibilityGranted
                         SystemAction.openAccessibilitySettings()
                     }
                     .buttonStyle(DotSecondaryButtonStyle())
@@ -541,16 +513,15 @@ struct SettingsView: View {
             SettingsDivider()
             toggleRow(
                 title: "Open at login",
-                subtitle: launchError ?? SettingsExplanation.launchSubtitle,
+                subtitle: launchError,
                 help: SettingsExplanation.launchSubtitle,
                 isOn: launchBinding
             )
             SettingsDivider()
-            dwellRow
+            DwellSliderRow(dwellSeconds: $config.hudDwellSeconds)
             SettingsDivider()
             toggleRow(
                 title: "Include transcripts in the log",
-                subtitle: SettingsExplanation.logTranscriptsSubtitle,
                 help: SettingsExplanation.logTranscriptsSubtitle,
                 isOn: logTranscriptsBinding
             )
@@ -563,7 +534,6 @@ struct SettingsView: View {
         SettingsSection(GeneralSection.microphone.title) {
             SettingsRow(
                 "Microphone",
-                subtitle: SettingsExplanation.microphoneSubtitle,
                 help: SettingsExplanation.microphoneSubtitle
             ) {
                 DotSelect(
@@ -606,7 +576,6 @@ struct SettingsView: View {
     private var historyLimitRow: some View {
         SettingsRow(
             "Transcripts to keep",
-            subtitle: SettingsExplanation.historySubtitle,
             help: SettingsExplanation.historyHelp
         ) {
             DotSelect(
@@ -744,7 +713,7 @@ struct SettingsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(DotPressStyle())
-        .help("Choose an app to style")
+        .accessibilityHint("Choose an app to style")
     }
 
     private var grammarOptions: [DotSelectOption<DictationTarget>] {
@@ -808,42 +777,6 @@ struct SettingsView: View {
         )
     }
 
-    private var dwellRow: some View {
-        SettingsRow(
-            "Keep result on screen",
-            subtitle: SettingsExplanation.dwellSubtitle,
-            help: SettingsExplanation.dwellHelp
-        ) {
-            HStack(spacing: 12) {
-                DotModernSlider(
-                    value: $liveDwellSeconds,
-                    range: HUDDwell.minimumSeconds...HUDDwell.maximumSeconds,
-                    step: HUDDwell.step,
-                    onCommit: {
-                        guard config.hudDwellSeconds != liveDwellSeconds else { return }
-                        config.hudDwellSeconds = liveDwellSeconds
-                    }
-                )
-                .frame(width: 155)
-
-                Text(dwellText)
-                    .font(DotType.tabularFont(12, .medium))
-                    .foregroundStyle(DotTheme.ink2)
-                    .frame(width: 44, alignment: .trailing)
-            }
-        }
-    }
-
-    /// The dwell as a person reads it: whole seconds without a decimal, half
-    /// seconds with one.
-    private var dwellText: String {
-        let whole = liveDwellSeconds.rounded()
-        if abs(liveDwellSeconds - whole) < 0.05 {
-            return String(format: "%.0f s", whole)
-        }
-        return String(format: "%.1f s", liveDwellSeconds)
-    }
-
     // MARK: - Provider
 
     private var providerPage: some View {
@@ -874,6 +807,7 @@ struct SettingsView: View {
         }
         .onAppear {
             credentials.pageAppeared()
+            refreshModels(userInitiated: false)
             startCredentialCheck(immediate: true)
         }
         .onDisappear {
@@ -903,7 +837,7 @@ struct SettingsView: View {
                         .onChange(of: keyField.text) { _, newKey in
                             let trimmed = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
                             if trimmed.count >= 8 {
-                                refreshModels()
+                                refreshModels(userInitiated: true)
                             }
                         }
                         .frame(width: 240)
@@ -928,7 +862,6 @@ struct SettingsView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(DotPressStyle())
-                        .help("Delete the stored key")
                         .accessibilityLabel("Delete the stored key from the Keychain")
                     }
                 }
@@ -1055,12 +988,13 @@ struct SettingsView: View {
                 return
             }
             savedProviders.insert(preset.providerID)
+            AssistantStoredKeysCache.invalidate()
         }
 
         credentials.clearNotSaved()
         apply(preset)
         keyField.text = ""
-        refreshModels()
+        refreshModels(userInitiated: true)
         updateLanguageForModel(currentConfiguredModel)
         startCredentialCheck(immediate: true)
     }
@@ -1068,6 +1002,7 @@ struct SettingsView: View {
     private func deleteKey(for preset: ProviderPreset) async {
         guard await onDeleteAPIKey(preset.providerID) == nil else { return }
         savedProviders.remove(preset.providerID)
+        AssistantStoredKeysCache.invalidate()
         keyField.text = ""
         startCredentialCheck(immediate: true)
     }
@@ -1097,7 +1032,7 @@ struct SettingsView: View {
                                     .frame(width: 20, height: 20)
                             } else {
                                 Button {
-                                    refreshModels()
+                                    refreshModels(userInitiated: true)
                                 } label: {
                                     Image(systemName: "arrow.clockwise")
                                         .font(DotType.font(10, .semibold))
@@ -1106,7 +1041,6 @@ struct SettingsView: View {
                                         .contentShape(Rectangle())
                                 }
                                 .buttonStyle(DotPressStyle())
-                                .help("Load the model list from the service")
                                 .accessibilityLabel("Load the model list from the service")
                             }
                         }
@@ -1271,14 +1205,18 @@ struct SettingsView: View {
         }
     }
 
-    private func refreshModels() {
+    private func refreshModels(userInitiated: Bool = false) {
         let providerID = config.provider
         // A render and a headless host have no key to read and no service to
         // ask; they draw the list they were handed.
         guard !headless else { return }
         guard providerID != ProviderIdentifier.apple else { return }
-        isLoadingModels = true
         let typedKey = trimmedKey
+        if typedKey.isEmpty, !userInitiated, CredentialCache.shared.readFailed(providerID) {
+            isLoadingModels = false
+            return
+        }
+        isLoadingModels = true
         let baseURLStr = config.settings(for: providerID).baseURL
         let baseURL = (baseURLStr != nil && !baseURLStr!.isEmpty) ? URL(string: baseURLStr!) : nil
         let authStyle = config.settings(for: providerID).authStyle
@@ -1286,7 +1224,9 @@ struct SettingsView: View {
         Task {
             let key: String?
             if typedKey.isEmpty {
-                CredentialCache.shared.retryDenied()
+                if userInitiated {
+                    CredentialCache.shared.retryDenied(for: providerID)
+                }
                 _ = await CredentialFirstUse.resolve(providerID)
                 key = CredentialCache.shared.resolvedKey(for: providerID)
             } else {
@@ -1357,7 +1297,7 @@ struct SettingsView: View {
                     )
                 }
                 SettingsDivider()
-                SettingsRow("Response format", subtitle: "Sets the format returned by the service.", help: "Dot uses the transcript text from the response.") {
+                SettingsRow("Response format", help: "Dot uses the transcript text from the response.") {
                     DotSelect(
                         label: "Response format",
                         options: responseFormatOptions,
@@ -1367,7 +1307,7 @@ struct SettingsView: View {
                 }
                 if responseFormatBinding.wrappedValue == "verbose_json" {
                     SettingsDivider()
-                    SettingsRow("Timestamp granularity", subtitle: "Sets the timing detail the service returns.", help: "Dot requests these timestamps but does not display them.") {
+                    SettingsRow("Timestamp granularity", help: "Dot requests these timestamps but does not display them.") {
                         DotSelect(
                             label: "Timestamp granularity",
                             options: granularityOptions,
@@ -1659,7 +1599,6 @@ struct SettingsView: View {
         SettingsSection("Long recordings") {
             SettingsRow(
                 "Send long recordings in parts of",
-                subtitle: SettingsExplanation.segmentSubtitle,
                 help: SettingsExplanation.segmentHelp
             ) {
                 DotSelect(
@@ -2044,6 +1983,7 @@ struct SettingsView: View {
             typedKey: keyField.text,
             serviceName: selectedPreset.name,
             requiresKey: selectedPreset.key == .required,
+            allowsKey: selectedPreset.key != .none,
             immediate: immediate
         )
     }
@@ -2092,7 +2032,7 @@ struct SettingsView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(credentialStatus.statusAccessibilityLabel)
         .accessibilityValue(credentialStatus.statusAccessibilityValue)
-        .help(credentialStatus.message)
+        .accessibilityHint(credentialStatus.message)
         .overlay(
             SpeechRowAnchor(
                 identifier: "speech.status.row",
@@ -2197,15 +2137,22 @@ struct SettingsView: View {
                 SettingsDivider()
                 toggleRow(
                     title: "Reduce motion",
-                    subtitle: SettingsExplanation.reduceMotionSubtitle,
                     help: SettingsExplanation.reduceMotionSubtitle,
                     isOn: reduceMotionBinding
                 )
             }
 
             SettingsSection("Voice visualizer") {
-                visualizerSection
-                    .padding(.vertical, 9)
+                SettingsVisualizerSection(
+                    selectedVisualizer: config.hudVisualizer,
+                    pageSelection: pageSelection,
+                    reduceMotion: reduceMotion || config.reduceMotion || DotMotion.reducesMotion,
+                    onSelect: { visualizer in
+                        guard config.hudVisualizer != visualizer else { return }
+                        config.hudVisualizer = visualizer
+                    }
+                )
+                .padding(.vertical, 9)
             }
         }
     }
@@ -2234,7 +2181,6 @@ struct SettingsView: View {
         .buttonStyle(DotPressStyle())
         .accessibilityLabel("\(appearanceName(mode)) window appearance")
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
-        .help(appearanceHint(mode))
         .accessibilityHint(appearanceHint(mode))
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
@@ -2268,16 +2214,11 @@ struct SettingsView: View {
             : "Uses a solid black surface for the island."
         return Button {
             guard config.hudMaterial != material else { return }
-            if reduceMotion {
-                config.hudMaterial = material
-            } else {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                    config.hudMaterial = material
-                }
-            }
+            config.hudMaterial = material
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 HUDSwatch(material: material)
+                    .equatable()
                     .frame(maxWidth: .infinity, alignment: .center)
                 HStack(alignment: .top, spacing: 8) {
                     Text(name)
@@ -2296,80 +2237,19 @@ struct SettingsView: View {
         .buttonStyle(DotPressStyle())
         .accessibilityLabel("\(name) recording card material")
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
-        .help(hint)
         .accessibilityHint(hint)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
-    private var visualizerSection: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                visualizerCard(.stretch)
-                visualizerCard(.filament)
-                visualizerCard(.silk)
-            }
-            HStack(spacing: 8) {
-                visualizerCard(.matrix)
-                visualizerCard(.haloEdge)
-            }
-        }
-    }
+    // Appearance cards moved into SettingsVisualizerSection, SettingsTileChrome, and
+    // SettingsSelectionIndicator so the display-link driver does not invalidate SettingsView.
 
-    private func visualizerCard(_ visualizer: HUDVisualizer) -> some View {
-        let isSelected = config.hudVisualizer == visualizer
-        return Button {
-            guard config.hudVisualizer != visualizer else { return }
-            if reduceMotion {
-                config.hudVisualizer = visualizer
-            } else {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                    config.hudVisualizer = visualizer
-                }
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                VisualizerSwatch(
-                    visualizer: visualizer,
-                    // The swatch is always drawn on the dark card, so only Wave,
-                    // whose ink is chosen per material, follows the setting.
-                    material: visualizer == .stretch ? config.hudMaterial : .black,
-                    isAnimating: isSelected && !reduceMotion
-                )
-                HStack(alignment: .top, spacing: 8) {
-                    Text(visualizer.title)
-                        .font(DotType.font(12.5, .semibold))
-                        .foregroundStyle(DotTheme.ink)
-                    Spacer(minLength: 2)
-                    selectionIndicator(isSelected)
-                }
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .background(tileFill(isSelected))
-            .overlay(tileBorder(isSelected))
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        }
-        .buttonStyle(DotPressStyle())
-        .accessibilityLabel("\(visualizer.title) visualizer")
-        .accessibilityValue(isSelected ? "Selected" : "Not selected")
-        .help(visualizer.detail)
-        .accessibilityHint(visualizer.detail)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-
-    /// The fill and border every choice tile shares, so the three groups on the
-    /// page read as one control family.
     private func tileFill(_ isSelected: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(isSelected ? DotTheme.cardSelectedFill : DotTheme.cardFill)
+        SettingsTileChrome.fill(isSelected)
     }
 
     private func tileBorder(_ isSelected: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .strokeBorder(
-                isSelected ? DotTheme.cardBorderSelected : DotTheme.cardBorder,
-                lineWidth: isSelected ? 1.5 : 1
-            )
+        SettingsTileChrome.border(isSelected)
     }
 
     // MARK: - About
@@ -2392,13 +2272,12 @@ struct SettingsView: View {
         action: @escaping () -> Void,
         explanation: String
     ) -> some View {
-        SettingsRow(title, subtitle: explanation, help: explanation) {
+        SettingsRow(title, help: explanation) {
             HStack(spacing: 8) {
                 DotKeycap(text: keycap)
                 Button("Change…", action: action)
                     .buttonStyle(DotSecondaryButtonStyle())
                     .accessibilityLabel("Change \(title.lowercased()) shortcut")
-                    .help(explanation)
                     .accessibilityHint(explanation)
             }
         }
@@ -2419,26 +2298,7 @@ struct SettingsView: View {
     }
 
     private func selectionIndicator(_ selected: Bool) -> some View {
-        ZStack {
-            Circle()
-                .fill(selected ? DotTheme.selectionFill : Color.clear)
-            Circle()
-                .strokeBorder(
-                    selected ? Color.clear : DotTheme.selectionRing,
-                    lineWidth: 1.2
-                )
-            if selected {
-                Image(systemName: "checkmark")
-                    .font(DotType.font(8, .bold))
-                    .foregroundStyle(DotTheme.onSelection)
-            }
-        }
-        .frame(width: 16, height: 16)
-        .animation(
-            reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.75),
-            value: selected
-        )
-        .accessibilityHidden(true)
+        SettingsSelectionIndicator(isSelected: selected, reduceMotion: reduceMotion)
     }
 
     /// The version the page shows, unless a render supplies one.
@@ -2471,6 +2331,7 @@ struct SettingsView: View {
                 if value, !headless, !Paste.accessibilityGranted {
                     Paste.requestAccessibility()
                 }
+                accessibilityGranted = Paste.accessibilityGranted
             }
         )
     }
@@ -2510,6 +2371,9 @@ struct SettingsView: View {
             get: { config.reduceMotion },
             set: { value in
                 guard config.reduceMotion != value else { return }
+                if !headless {
+                    DotMotion.reducesMotionOverride = value ? true : nil
+                }
                 config.reduceMotion = value
             }
         )
@@ -2745,6 +2609,10 @@ private struct DotModernSlider: View {
             .frame(height: proxy.size.height)
             .contentShape(Rectangle())
             .onHover { inside in
+                if DotScrollInteraction.isScrolling {
+                    if isHovering { isHovering = false }
+                    return
+                }
                 isHovering = inside
             }
             .gesture(
@@ -2795,8 +2663,12 @@ private struct DotModernSlider: View {
 /// switch to turn sampling off, and before that the surface's own tint and
 /// specular with the behind-window sampler turned off. The Black tile is the
 /// same card in its opaque material.
-struct HUDSwatch: View {
+struct HUDSwatch: View, Equatable {
     let material: HUDMaterial
+
+    nonisolated static func == (lhs: HUDSwatch, rhs: HUDSwatch) -> Bool {
+        lhs.material == rhs.material
+    }
 
     /// The size the card is laid out at, in points, before it is scaled.
     static let cardSize = CGSize(
@@ -2994,11 +2866,14 @@ enum VisualizerTile {
     /// The envelope line the tile's synthetic voice is drawn from.
     static var history: [Double] { history(at: stillTime) }
 
+    private static let cachedStillHistory: [Double] = DictationScript.history(endingAt: stillTime)
+    private static let cachedStillSpectrum: [AudioSpectrumFrame] = DictationScript.spectrumHistory(endingAt: stillTime)
+
     /// The envelope line of the demonstration at a moment.
     ///
     /// - Parameter time: where in the demonstration, in seconds.
     static func history(at time: Double) -> [Double] {
-        DictationScript.history(endingAt: time)
+        time == stillTime ? cachedStillHistory : DictationScript.history(endingAt: time)
     }
 
     /// The five bands of the tile's synthetic voice at a moment.
@@ -3012,7 +2887,7 @@ enum VisualizerTile {
     /// - Parameter time: where in the demonstration, in seconds.
     /// - Returns: one frame per tick, oldest first, on the card's own window.
     static func spectrum(at time: Double) -> [AudioSpectrumFrame] {
-        DictationScript.spectrumHistory(endingAt: time)
+        time == stillTime ? cachedStillSpectrum : DictationScript.spectrumHistory(endingAt: time)
     }
 
     /// The view a visualizer swatch draws, from the one feed every preview uses.
@@ -3059,16 +2934,6 @@ enum VisualizerTile {
 /// performance.
 @MainActor
 private enum VisualizerFeeds {
-    private static var feeds: [HUDVisualizer: VisualizerFeed] = [:]
-
-    /// The feed a running tile draws from.
-    static func feed(for visualizer: HUDVisualizer) -> VisualizerFeed {
-        if let feed = feeds[visualizer] { return feed }
-        let feed = VisualizerFeed()
-        feeds[visualizer] = feed
-        return feed
-    }
-
     /// The one moment every tile that is not running is frozen at.
     ///
     /// It is the demonstration advanced to ``VisualizerTile/stillTime`` once and
@@ -3079,6 +2944,169 @@ private enum VisualizerFeeds {
         feed.advance(to: VisualizerTile.stillTime)
         return feed
     }()
+}
+
+private enum SettingsTileChrome {
+    /// The fill and border every choice tile shares, so the three groups on the
+    /// page read as one control family.
+    static func fill(_ isSelected: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(isSelected ? DotTheme.cardSelectedFill : DotTheme.cardFill)
+    }
+
+    static func border(_ isSelected: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .strokeBorder(
+                isSelected ? DotTheme.cardBorderSelected : DotTheme.cardBorder,
+                lineWidth: isSelected ? 1.5 : 1
+            )
+    }
+}
+
+private struct SettingsSelectionIndicator: View {
+    let isSelected: Bool
+    let reduceMotion: Bool
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(isSelected ? DotTheme.selectionFill : Color.clear)
+            Circle()
+                .strokeBorder(
+                    isSelected ? Color.clear : DotTheme.selectionRing,
+                    lineWidth: 1.2
+                )
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(DotType.font(8, .bold))
+                    .foregroundStyle(DotTheme.onSelection)
+            }
+        }
+        .frame(width: 16, height: 16)
+        .animation(
+            reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.75),
+            value: isSelected
+        )
+        .accessibilityHidden(true)
+    }
+}
+
+private struct SettingsVisualizerSection: View {
+    let selectedVisualizer: HUDVisualizer
+    let pageSelection: SettingsPageSelection
+    let reduceMotion: Bool
+    let onSelect: (HUDVisualizer) -> Void
+
+    @Environment(\.settingsHeadless) private var headless
+    @StateObject private var driver = VisualizerSwatchDriver()
+
+    private var isPageActive: Bool {
+        pageSelection.current == .appearance
+    }
+
+    private var shouldRun: Bool {
+        isPageActive && !reduceMotion && !headless
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                visualizerCard(.stretch)
+                visualizerCard(.filament)
+                visualizerCard(.silk)
+            }
+            HStack(spacing: 8) {
+                visualizerCard(.matrix)
+                visualizerCard(.haloEdge)
+            }
+        }
+        .background(
+            VisualizerDisplayLinkAnchor(driver: driver)
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        )
+        .onAppear {
+            driver.configure(
+                activeVisualizer: selectedVisualizer,
+                isRunning: shouldRun,
+                headless: headless
+            )
+        }
+        .onDisappear {
+            driver.stop()
+        }
+        .onChange(of: selectedVisualizer) { _, visualizer in
+            driver.configure(
+                activeVisualizer: visualizer,
+                isRunning: shouldRun,
+                headless: headless
+            )
+        }
+        .onChange(of: shouldRun) { _, running in
+            driver.configure(
+                activeVisualizer: selectedVisualizer,
+                isRunning: running,
+                headless: headless
+            )
+        }
+    }
+
+    private func visualizerCard(_ visualizer: HUDVisualizer) -> some View {
+        let isSelected = selectedVisualizer == visualizer
+        return Button {
+            onSelect(visualizer)
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                VisualizerSwatch(
+                    visualizer: visualizer,
+                    // Every swatch is drawn on the dark card surface using the
+                    // shared Matrix gold ramp.
+                    material: .black,
+                    isAnimating: isSelected && shouldRun,
+                    driver: driver
+                )
+                HStack(alignment: .top, spacing: 8) {
+                    Text(visualizer.title)
+                        .font(DotType.font(12.5, .semibold))
+                        .foregroundStyle(DotTheme.ink)
+                    Spacer(minLength: 2)
+                    SettingsSelectionIndicator(isSelected: isSelected, reduceMotion: reduceMotion)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(SettingsTileChrome.fill(isSelected))
+            .overlay(SettingsTileChrome.border(isSelected))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(DotPressStyle())
+        .accessibilityLabel("\(visualizer.title) visualizer")
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        .accessibilityHint(visualizer.detail)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+}
+
+/// The only view leaf that hosts `VisualizerSwatchDriver`'s synchronous CALayer
+/// bridge, keeping 60/120 Hz redraws off SwiftUI without re-evaluating
+/// `SettingsView`, `HUDSwatch`, or the rest of the Appearance page.
+private struct AnimatedVisualizerWaveform: View {
+    let visualizer: HUDVisualizer
+    let material: HUDMaterial
+    let driver: VisualizerSwatchDriver
+
+    var body: some View {
+        LiveVisualizerView(
+            sink: driver.frameSink,
+            makeInitialFrame: {
+                driver.currentFrame(visualizer: visualizer, material: material)
+            }
+        )
+        .frame(height: 22)
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity)
+    }
 }
 
 /// A miniature preview swatch showing one visualizer style.
@@ -3100,21 +3128,7 @@ private struct VisualizerSwatch: View {
     /// asks for a still picture. The preference asks for no movement, not for
     /// fewer choices, so the chosen tile keeps its frame and stops its clock.
     let isAnimating: Bool
-
-    /// How fast the demonstration is drawn.
-    ///
-    /// It is the card's own sixty frames a second, because the feed advances in
-    /// sixtieths: a tile drawn at thirty would show every other frame of the same
-    /// performance, and a grid measured on it would be a grid the card never draws.
-    private static let frameInterval: TimeInterval = 1.0 / 60
-
-    /// Where inside the script the swatch's clock starts, in seconds.
-    ///
-    /// The same moment the island's preview opens at, so selecting a visualizer
-    /// and looking at it shows one performance rather than two.
-    private static let startOffset: Double = 0.4
-
-    @State private var startedAt = Date()
+    let driver: VisualizerSwatchDriver
 
     var body: some View {
         ZStack {
@@ -3131,11 +3145,13 @@ private struct VisualizerSwatch: View {
                 )
 
             if isAnimating {
-                TimelineView(.animation(minimumInterval: Self.frameInterval)) { timeline in
-                    content(from: VisualizerFeeds.feed(for: visualizer), at: moment(for: timeline.date))
-                }
+                AnimatedVisualizerWaveform(
+                    visualizer: visualizer,
+                    material: material,
+                    driver: driver
+                )
             } else {
-                content(from: VisualizerFeeds.still, at: VisualizerTile.stillTime)
+                stillContent
             }
         }
         .frame(height: 52)
@@ -3146,36 +3162,191 @@ private struct VisualizerSwatch: View {
         .accessibilityHidden(true)
     }
 
-    /// Where in the demonstration a clock reading sits.
-    private func moment(for date: Date) -> Double {
-        let elapsed = max(0, date.timeIntervalSince(startedAt)) + Self.startOffset
-        return elapsed.truncatingRemainder(dividingBy: VisualizerTile.loop)
+    private var stillContent: some View {
+        VisualizerStillSwatchView(visualizer: visualizer, material: material)
+            .transaction { $0.animation = nil }
+            .frame(height: 22)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity)
+    }
+}
+
+@MainActor
+private enum VisualizerStillImageCache {
+    struct Key: Hashable {
+        let visualizer: HUDVisualizer
+        let material: HUDMaterial
+        let widthPx: Int
+        let heightPx: Int
     }
 
-    /// The tile's picture of the demonstration at a moment.
-    ///
-    /// - Parameters:
-    ///   - feed: the demonstration's feed, advanced here to the moment.
-    ///   - time: where in the demonstration the tile is drawing.
-    private func content(from feed: VisualizerFeed, at time: Double) -> some View {
-        VisualizerTile.waveform(
-            visualizer,
-            from: feed,
-            at: time,
-            halfHeights: Self.sampleHeights,
-            material: material
+    private static var cache: [Key: CGImage] = [:]
+
+    static func image(
+        visualizer: HUDVisualizer,
+        material: HUDMaterial,
+        size: CGSize,
+        scale: CGFloat
+    ) -> CGImage? {
+        guard size.width > 1, size.height > 1 else { return nil }
+        let safeScale = max(1, scale)
+        let widthPx = max(1, Int((size.width * safeScale).rounded(.up)))
+        let heightPx = max(1, Int((size.height * safeScale).rounded(.up)))
+        let key = Key(
+            visualizer: visualizer,
+            material: material,
+            widthPx: widthPx,
+            heightPx: heightPx
         )
-        .frame(height: 22)
-        .padding(.horizontal, 10)
-        .frame(maxWidth: .infinity)
+        if let existing = cache[key] {
+            return existing
+        }
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        guard let ctx = CGContext(
+            data: nil,
+            width: widthPx,
+            height: heightPx,
+            bitsPerComponent: 8,
+            bytesPerRow: widthPx * 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else {
+            return nil
+        }
+        ctx.translateBy(x: 0, y: CGFloat(heightPx))
+        ctx.scaleBy(x: safeScale, y: -safeScale)
+        let feed = VisualizerFeeds.still
+        let frame = VisualizerFrame(
+            visualizer: visualizer,
+            material: material,
+            history: feed.history,
+            spectrumHistory: feed.ring,
+            time: feed.time,
+            level: 0.68,
+            phase: feed.phase,
+            pulse: 0.25,
+            ceiling: 1,
+            reveal: 1,
+            reduceMotion: false,
+            highlight: true
+        )
+        VisualizerCGRenderer.draw(frame, in: ctx, size: size)
+        guard let cgImage = ctx.makeImage() else { return nil }
+        cache[key] = cgImage
+        return cgImage
+    }
+}
+
+private struct VisualizerStillSwatchView: View {
+    let visualizer: HUDVisualizer
+    let material: HUDMaterial
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        VisualizerStillSwatchRepresentable(
+            visualizer: visualizer,
+            material: material,
+            displayScale: displayScale
+        )
+    }
+}
+
+private struct VisualizerStillSwatchRepresentable: NSViewRepresentable {
+    let visualizer: HUDVisualizer
+    let material: HUDMaterial
+    let displayScale: CGFloat
+
+    func makeNSView(context: Context) -> VisualizerStillSwatchNSView {
+        VisualizerStillSwatchNSView(
+            visualizer: visualizer,
+            material: material,
+            preferredScale: displayScale
+        )
     }
 
-    /// The row of half heights the synthetic voice is drawn against, in points.
-    ///
-    /// They are the tile's own, not the card's: the tile is narrower than the
-    /// card's canvas, so a card's row would be drawn inside a narrower box and
-    /// leave the picture short of both edges.
-    private static let sampleHeights: [CGFloat] = [2, 4, 7, 10, 11, 8, 4, 3, 5, 9, 11, 7, 3, 2, 4, 8, 10, 5, 2]
+    func updateNSView(_ nsView: VisualizerStillSwatchNSView, context: Context) {
+        nsView.update(
+            visualizer: visualizer,
+            material: material,
+            preferredScale: displayScale
+        )
+    }
+}
+
+@MainActor
+private final class VisualizerStillSwatchNSView: NSView {
+    private var visualizer: HUDVisualizer
+    private var material: HUDMaterial
+    private var preferredScale: CGFloat
+    private var lastKey: VisualizerStillImageCache.Key?
+
+    init(visualizer: HUDVisualizer, material: HUDMaterial, preferredScale: CGFloat) {
+        self.visualizer = visualizer
+        self.material = material
+        self.preferredScale = max(1, preferredScale)
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.contentsGravity = .resize
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var isOpaque: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func update(visualizer: HUDVisualizer, material: HUDMaterial, preferredScale: CGFloat) {
+        let clampedScale = max(1, preferredScale)
+        guard self.visualizer != visualizer
+            || self.material != material
+            || self.preferredScale != clampedScale
+        else { return }
+        self.visualizer = visualizer
+        self.material = material
+        self.preferredScale = clampedScale
+        updateContents()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            updateContents()
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        updateContents()
+    }
+
+    private func updateContents() {
+        let size = bounds.size
+        guard size.width > 1, size.height > 1 else { return }
+        let safeScale = max(1, window?.backingScaleFactor ?? preferredScale)
+        let widthPx = max(1, Int((size.width * safeScale).rounded(.up)))
+        let heightPx = max(1, Int((size.height * safeScale).rounded(.up)))
+        let key = VisualizerStillImageCache.Key(
+            visualizer: visualizer,
+            material: material,
+            widthPx: widthPx,
+            heightPx: heightPx
+        )
+        guard key != lastKey else { return }
+        guard let cgImage = VisualizerStillImageCache.image(
+            visualizer: visualizer,
+            material: material,
+            size: size,
+            scale: safeScale
+        ) else { return }
+        lastKey = key
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.contentsScale = safeScale
+        layer?.contents = cgImage
+        CATransaction.commit()
+    }
 }
 
 /// A miniature window that shows the paper and ink of one appearance choice.
@@ -3294,8 +3465,13 @@ private struct AppRemoveButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(DotPressStyle())
-        .onHover { hovering = $0 }
-        .help("Remove")
+        .onHover { hovering in
+            if DotScrollInteraction.isScrolling {
+                if self.hovering { self.hovering = false }
+                return
+            }
+            self.hovering = hovering
+        }
         .accessibilityLabel("Remove")
     }
 }
@@ -3440,5 +3616,216 @@ extension SettingsView {
         case (true, true):
             return SettingsExplanation.accessibilityForBoth
         }
+    }
+}
+
+/// Isolated sidebar view so hovering navigation rows only re-evaluates the sidebar.
+private struct SettingsSidebar: View {
+    let selected: SettingsView.Page
+    let reduceMotion: Bool
+    let onSelect: (SettingsView.Page) -> Void
+
+    @State private var hoveredPage: SettingsView.Page?
+    @Namespace private var sidebarPillSpace
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Settings")
+                .font(DotType.font(12, .semibold))
+                .foregroundStyle(DotTheme.ink3)
+                .padding(.leading, 22)
+                .padding(.top, 40)
+                .padding(.bottom, 8)
+
+            VStack(spacing: 3) {
+                ForEach(SettingsView.Page.sidebarPages) { page in
+                    sidebarItem(page)
+                }
+            }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: selected)
+            .padding(.horizontal, 10)
+
+            Spacer(minLength: 12)
+        }
+        .padding(.bottom, 12)
+        .frame(width: 198)
+        .frame(maxHeight: .infinity)
+        .background(
+            DotTheme.sidebarFill
+                .overlay(alignment: .top) {
+                    LinearGradient(
+                        colors: [DotTheme.sidebarHighlight, .clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 150)
+                }
+        )
+    }
+
+    private func sidebarItem(_ page: SettingsView.Page) -> some View {
+        let isSelected = selected == page
+        let isHovered = hoveredPage == page
+        return Button {
+            hoveredPage = nil
+            onSelect(page)
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: page.symbol)
+                    .font(DotType.font(11.5, .semibold))
+                    .foregroundStyle(isSelected ? DotTheme.sidebarSelectedIcon : DotTheme.ink3)
+                    .frame(width: 16)
+                Text(page.title)
+                    .font(DotType.font(12.5, .semibold))
+                    .foregroundStyle(isSelected ? DotTheme.sidebarSelectedText : DotTheme.ink2)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 11)
+            .frame(height: 33)
+            .background {
+                if isSelected {
+                    sidebarPill
+                        .matchedGeometryEffect(id: "sidebar-pill", in: sidebarPillSpace)
+                } else if isHovered {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(DotTheme.sidebarHoverFill)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .buttonStyle(DotPressStyle())
+        .onHover { hovering in
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
+                if hovering {
+                    hoveredPage = page
+                } else if hoveredPage == page {
+                    hoveredPage = nil
+                }
+            }
+        }
+        .accessibilityLabel(page.title)
+        .accessibilityHint("Shows the \(page.title) settings.")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    private var sidebarPill: some View {
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(DotTheme.sidebarSelectedFill)
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(DotTheme.sidebarSelectedBorder, lineWidth: 1)
+            )
+    }
+}
+
+/// Isolated dwell slider row so live scrubbing does not re-evaluate `SettingsView`.
+private struct DwellSliderRow: View {
+    @Binding var dwellSeconds: Double
+    @State private var liveDwellSeconds: Double
+
+    init(dwellSeconds: Binding<Double>) {
+        _dwellSeconds = dwellSeconds
+        _liveDwellSeconds = State(initialValue: dwellSeconds.wrappedValue)
+    }
+
+    var body: some View {
+        SettingsRow(
+            "Keep result on screen",
+            help: SettingsExplanation.dwellHelp
+        ) {
+            HStack(spacing: 12) {
+                DotModernSlider(
+                    value: $liveDwellSeconds,
+                    range: HUDDwell.minimumSeconds...HUDDwell.maximumSeconds,
+                    step: HUDDwell.step,
+                    onCommit: {
+                        guard dwellSeconds != liveDwellSeconds else { return }
+                        dwellSeconds = liveDwellSeconds
+                    }
+                )
+                .frame(width: 155)
+
+                Text(dwellText)
+                    .font(DotType.tabularFont(12, .medium))
+                    .foregroundStyle(DotTheme.ink2)
+                    .frame(width: 44, alignment: .trailing)
+            }
+        }
+        .onChange(of: dwellSeconds) { _, newValue in
+            if liveDwellSeconds != newValue {
+                liveDwellSeconds = newValue
+            }
+        }
+    }
+
+    private var dwellText: String {
+        let whole = liveDwellSeconds.rounded()
+        if abs(liveDwellSeconds - whole) < 0.05 {
+            return String(format: "%.0f s", whole)
+        }
+        return String(format: "%.1f s", liveDwellSeconds)
+    }
+}
+
+private struct SettingsCachedTab<Content: View>: NSViewRepresentable {
+    let isVisible: Bool
+    let colorScheme: ColorScheme
+    let content: Content
+
+    final class ContainerView: DotPageScrollHostView {
+        override init(rootView: AnyView) {
+            super.init(rootView: rootView)
+        }
+
+        required init?(coder: NSCoder) {
+            nil
+        }
+    }
+
+    func makeNSView(context: Context) -> ContainerView {
+        let view = ContainerView(rootView: AnyView(content))
+        view.setColorScheme(colorScheme)
+        view.isHidden = !isVisible
+        return view
+    }
+
+    func updateNSView(_ nsView: ContainerView, context: Context) {
+        nsView.setColorScheme(colorScheme)
+        let visibilityChanged = nsView.isHidden == isVisible
+        if visibilityChanged && !isVisible {
+            if let window = nsView.window,
+               let responder = window.firstResponder as? NSView,
+               responder.isDescendant(of: nsView) {
+                window.makeFirstResponder(nil)
+            }
+            nsView.cancelLiveScrollIfNeeded()
+            nsView.isHidden = true
+        } else {
+            if isVisible {
+                nsView.hostingView.rootView = AnyView(content)
+                nsView.scrollView.updateScrollMetrics()
+            }
+            if visibilityChanged {
+                nsView.isHidden = false
+            }
+        }
+    }
+}
+
+private struct AssistantPageTab: View {
+    @Binding var config: DotConfig
+    let onChange: () -> Void
+    let onSetKey: (String, String) async -> String?
+    let onDeleteKey: (String) async -> String?
+    let pageSelection: SettingsPageSelection
+
+    var body: some View {
+        AssistantPage(
+            config: $config,
+            onChange: onChange,
+            onSetKey: onSetKey,
+            onDeleteKey: onDeleteKey,
+            isActive: pageSelection.current == .assistant
+        )
     }
 }

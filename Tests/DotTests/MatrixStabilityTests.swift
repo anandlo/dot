@@ -1209,4 +1209,23 @@ final class MatrixStabilityTests: XCTestCase {
         }
         return worst
     }
+
+    func testVisualizerFeedAdvancingAt120HzProducesSmoothPhaseWithoutTickDrops() {
+        let feed = VisualizerFeed.seeded(at: 0.4)
+        let baselineWritten = feed.meter.writtenSamples
+        var phases: [Double] = []
+        for step in 1...600 {
+            let moment = 0.4 + Double(step) / 120.0
+            feed.advance(to: moment)
+            phases.append(feed.phase)
+        }
+        XCTAssertEqual(feed.meter.writtenSamples - baselineWritten, 300)
+        let midStepPhases = phases.enumerated().compactMap { index, value in
+            index % 2 == 0 ? value : nil
+        }
+        XCTAssertTrue(
+            midStepPhases.allSatisfy { $0 > 0.45 && $0 < 0.55 },
+            "120 Hz mid-steps should produce ~0.5 fractional phase without FP drift"
+        )
+    }
 }

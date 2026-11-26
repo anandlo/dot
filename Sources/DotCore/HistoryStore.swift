@@ -124,6 +124,11 @@ public enum HistoryStore {
         }
     }
 
+    private static let saveQueue = DispatchQueue(
+        label: "com.anandlo.dot.history-save",
+        qos: .utility
+    )
+
     /// Writes the history with its dates.
     ///
     /// The file holds what was dictated, so it is written `0600` in a folder
@@ -140,6 +145,32 @@ public enum HistoryStore {
             try SecureFile.write(data, to: url)
         } catch {
             Log.shared.error("history.save.failed", ["error": .string(error.localizedDescription)])
+        }
+    }
+
+    /// Writes the history on a serial utility queue so main-actor UI transitions
+    /// never wait for synchronous file replacement.
+    public static func saveEntriesAsync(
+        _ entries: [Entry],
+        to url: URL = defaultURL(),
+        limit: Int = HistoryStore.limit
+    ) {
+        saveQueue.async {
+            saveEntries(entries, to: url, limit: limit)
+        }
+    }
+
+    /// Blocks until every previously queued asynchronous save completes.
+    public static func flush() {
+        saveQueue.sync {}
+    }
+
+    /// Suspends until every previously queued asynchronous save completes.
+    public static func drain() async {
+        await withCheckedContinuation { continuation in
+            saveQueue.async {
+                continuation.resume()
+            }
         }
     }
 

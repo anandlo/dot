@@ -976,4 +976,86 @@ extension CredentialBundleStoreTests {
             XCTAssertNil(bundleData(keychain), "a refused write left a bundle")
         }
     }
+
+    func testMigrationMarkerUpdatePassesOnlyGenericAttributeWithoutRewritingData() async throws {
+        let keychain = InMemoryCredentialKeychain()
+        keychain.seed(
+            service: CredentialBundle.migrationService,
+            account: account,
+            data: Data(),
+            generic: Data("anthropic".utf8)
+        )
+        let capturedKeys = OSAllocatedUnfairLock<Set<String>?>(initialState: nil)
+        let ctx = CredentialKeychainContext(
+            recorder: keychain.recorder,
+            copyHandler: { keychain.copy($0) },
+            addHandler: { keychain.add($0) },
+            updateHandler: { query, attributes in
+                if (query[kSecAttrService as String] as? String) == CredentialBundle.migrationService {
+                    let keys = Set(attributes.keys)
+                    capturedKeys.withLock { $0 = keys }
+                }
+                return keychain.update(query, attributes: attributes)
+            },
+            deleteHandler: { keychain.delete($0) }
+        )
+        let store = CredentialBundleStore(context: ctx, account: account, legacyAccount: legacyAccount)
+        try await store.deleteAsync(providerID: "openai")
+        let keys = try XCTUnwrap(capturedKeys.withLock { $0 })
+        XCTAssertTrue(keys.contains(kSecAttrGeneric as String))
+        XCTAssertFalse(keys.contains(kSecValueData as String), "update must not pass kSecValueData")
+        XCTAssertFalse(keys.contains(kSecAttrAccessible as String), "update must not pass kSecAttrAccessible")
+    }
+
+    func testReadingProviderWithNoLegacyItemDoesNotWriteMigrationMarker() async throws {
+        let keychain = InMemoryCredentialKeychain()
+        let reader = store(keychain)
+        let resolved = try await reader.resolvedKey(for: "apple")
+        XCTAssertNil(resolved)
+        XCTAssertNil(
+            keychain.item(service: CredentialBundle.migrationService, account: account),
+            "reading an absent provider with no legacy item wrote DOT_CREDENTIAL_MIGRATION"
+        )
+    }
+
+    func testBatchHasKeysReadsBundleAndMigrationMarkerOnce() throws {
+        let keychain = InMemoryCredentialKeychain()
+        keychain.seed(
+            service: CredentialBundle.service,
+            account: account,
+            data: Data("{\"openai\":\"k1\"}".utf8),
+            generic: Data("openai".utf8)
+        )
+        keychain.seed(
+            service: CredentialBundle.migrationService,
+            account: account,
+            data: Data(),
+            generic: Data("groq".utf8)
+        )
+        let reader = store(keychain)
+        let found = reader.hasKeys(for: ["openai", "groq", "anthropic"])
+        XCTAssertEqual(found, ["openai"])
+        let bundleReads = keychain.recorder.calls.filter { $0.service == CredentialBundle.service }
+        let markerReads = keychain.recorder.calls.filter { $0.service == CredentialBundle.migrationService }
+        XCTAssertEqual(bundleReads.count, 1)
+        XCTAssertEqual(markerReads.count, 1)
+    }
+
+    func testBatchHasKeysSuppressesRetainedLegacyItemsWhenMarkerProbeFails() throws {
+        let keychain = InMemoryCredentialKeychain()
+        keychain.seed(
+            service: CredentialStore.serviceName(for: "openai"),
+            account: CredentialStore.account(for: "openai"),
+            data: Data("sk-legacy".utf8)
+        )
+        keychain.attributeCopyStatus = { service, _ in
+            service == CredentialBundle.migrationService ? errSecInteractionNotAllowed : nil
+        }
+        let reader = store(keychain)
+        let found = reader.hasKeys(for: ["openai"])
+        XCTAssertFalse(
+            found.contains("openai"),
+            "failed migration marker probe must suppress retained legacy item probing"
+        )
+    }
 }

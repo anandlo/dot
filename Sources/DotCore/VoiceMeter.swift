@@ -17,7 +17,7 @@ import Foundation
 public final class VoiceMeter {
     /// How many samples of history the waveform keeps, at the sample rate.
     ///
-    /// 180 samples at 60 Hz is three seconds of audio.
+    /// 300 samples at 60 Hz is five seconds of audio.
     public static let historyLength = Waveform.historyLength
     /// How many samples a second the history is written at.
     public static let sampleRate = Waveform.sampleRate
@@ -256,17 +256,20 @@ public final class VoiceMeter {
         floorDBFS = min(max(next, LevelScale.silenceDBFS), Self.floorCeilingDBFS)
     }
 
+    private static let sampleBoundaryEpsilon = 1e-9
+
     /// Writes the history at a fixed rate, whatever the display does.
     private func advanceHistory(by dt: Double) {
         clock += dt * Self.sampleRate
-        while clock >= 1 {
-            clock -= 1
+        while clock + Self.sampleBoundaryEpsilon >= 1 {
+            clock = max(0, clock - 1)
             history[historyIndex] = shape
             historyIndex = (historyIndex + 1) % Self.historyLength
             writtenSamples += 1
         }
         scrollPhase = clock
-        phase = min(max(clock - clock.rounded(.down), 0), 1)
+        let wrapped = clock - clock.rounded(.down)
+        phase = min(max(wrapped, 0), 1 - Self.sampleBoundaryEpsilon)
     }
 
     /// The history, oldest first.
@@ -290,7 +293,9 @@ public final class VoiceMeter {
             buffer = [Double](repeating: 0, count: Self.historyLength)
         }
         guard historyIndex != 0 else {
-            buffer = history
+            for index in 0..<Self.historyLength {
+                buffer[index] = history[index]
+            }
             return
         }
         let tail = Self.historyLength - historyIndex

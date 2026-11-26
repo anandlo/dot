@@ -506,7 +506,6 @@ final class DotTypeTests: XCTestCase {
         let numeric: [String] = [
             "Dot/HUDView.swift|Text(elapsed)",
             "Dot/HUDView.swift|Text(elapsed)",
-            "Dot/HUDView.swift|Text(elapsed)",
             "Dot/SettingsView.swift|Text(\"0:07\")",
             "Dot/WelcomeTour.swift|Text(\"00:03\")",
             "Dot/WelcomeTour.swift|Text(\"00:03\")",
@@ -575,7 +574,7 @@ final class DotTypeTests: XCTestCase {
             numeric.sorted(),
             "the tracked sites are not exactly the numeric ones"
         )
-        XCTAssertEqual(tracked.count, 7, "the clock and duration sites are not the seven declared here")
+        XCTAssertEqual(tracked.count, 6, "the clock and duration sites are not the six declared here")
         for site in untracked {
             XCTAssertFalse(
                 numeric.contains(site),

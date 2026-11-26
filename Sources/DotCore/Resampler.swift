@@ -202,12 +202,27 @@ public final class Resampler: @unchecked Sendable {
     /// channels are averaged, so a stereo microphone is not louder than a mono
     /// one.
     public static func monoSamples(from buffer: AVAudioPCMBuffer) -> [Float] {
+        var mono: [Float] = []
+        copyMonoSamples(from: buffer, into: &mono)
+        return mono
+    }
+
+    /// Writes the mono mix of `buffer` into `mono`, reusing its existing capacity.
+    public static func copyMonoSamples(from buffer: AVAudioPCMBuffer, into mono: inout [Float]) {
         let frameCount = Int(buffer.frameLength)
-        guard frameCount > 0 else { return [] }
+        guard frameCount > 0 else {
+            mono.removeAll(keepingCapacity: true)
+            return
+        }
         let format = buffer.format
         let channelCount = Int(format.channelCount)
-        guard channelCount > 0 else { return [] }
-        var mono = [Float](repeating: 0, count: frameCount)
+        guard channelCount > 0 else {
+            mono.removeAll(keepingCapacity: true)
+            return
+        }
+        mono.reserveCapacity(frameCount)
+        mono.removeAll(keepingCapacity: true)
+        mono.append(contentsOf: repeatElement(0, count: frameCount))
 
         if format.commonFormat == .pcmFormatFloat32, let channels = buffer.floatChannelData {
             if format.isInterleaved {
@@ -252,9 +267,8 @@ public final class Resampler: @unchecked Sendable {
         } else {
             // The engine always hands us float32; anything else is a bug we
             // cannot recover from inside a real-time callback.
-            return []
+            mono.removeAll(keepingCapacity: true)
         }
-        return mono
     }
 
     /// Reads the mono float samples of a buffer and turns them into PCM16.

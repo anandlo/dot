@@ -91,7 +91,6 @@ extension HUDView {
     func draftBody(_ card: RewriteCard) -> some View {
         let text = card.visibleBodyText
         FrameRewriteDraftBody(
-            model: model,
             source: frameSource,
             text: text,
             chunks: card.draftChunks,
@@ -206,7 +205,6 @@ extension HUDView {
     /// row, left-aligned with the body text.
     func chipRow(_ card: RewriteCard) -> some View {
         FrameRewriteChipRow(
-            model: model,
             source: frameSource,
             card: card,
             reduceMotion: reduceMotion,
@@ -226,7 +224,6 @@ extension HUDView {
 /// The arriving body of a rewrite, driven by the frame clock.
 @MainActor
 private struct FrameRewriteDraftBody: View {
-    @ObservedObject var model: HUDModel
     let source: HUDFrameSource
     let text: String
     let chunks: [RewriteDraftChunk]
@@ -234,10 +231,11 @@ private struct FrameRewriteDraftBody: View {
     let content: (String, [RewriteDraftRamp.Run]) -> AnyView
 
     var body: some View {
+        let time = chunks.isEmpty ? 0 : source.rewriteTime
         let runs = RewriteDraftRamp.runs(
             chunks: chunks,
             length: text.count,
-            time: source.time,
+            time: time,
             reduceMotion: reduceMotion
         )
         content(text, runs)
@@ -247,7 +245,6 @@ private struct FrameRewriteDraftBody: View {
 /// The style row, driven by the frame clock for its arc and fade.
 @MainActor
 private struct FrameRewriteChipRow: View {
-    @ObservedObject var model: HUDModel
     let source: HUDFrameSource
     let card: RewriteCard
     let reduceMotion: Bool
@@ -255,12 +252,13 @@ private struct FrameRewriteChipRow: View {
     let actions: HUDActions
 
     var body: some View {
+        let time = (card.isStreaming || ending != nil) ? source.rewriteTime : 0
         RewriteChipRow(
             choices: card.choices,
             activeStyleID: card.activeStyleID,
             isStreaming: card.isStreaming,
             reduceMotion: reduceMotion,
-            time: source.time,
+            time: time,
             endedStyleID: ending?.styleID,
             endedAt: ending?.at,
             versions: card.versions,

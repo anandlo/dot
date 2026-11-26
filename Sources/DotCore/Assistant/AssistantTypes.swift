@@ -33,11 +33,6 @@ public enum JSONValue: Sendable, Hashable {
         return nil
     }
 
-    /// Whether this is an object with no members.
-    public var isEmptyObject: Bool {
-        objectValue?.isEmpty == true
-    }
-
     /// The compact JSON text of the value, with its keys in a fixed order so a
     /// test can compare two encodings.
     public var compactJSON: String {
@@ -256,11 +251,6 @@ public enum ToolRisk: String, Codable, Sendable, CaseIterable, Comparable {
     public static func < (lhs: ToolRisk, rhs: ToolRisk) -> Bool {
         lhs.order < rhs.order
     }
-
-    /// Whether a call at this risk can change something outside Dot.
-    public var changesState: Bool {
-        self == .write || self == .destructive
-    }
 }
 
 /// One tool the model may call.
@@ -278,16 +268,6 @@ public struct ChatToolSpec: Sendable, Equatable {
         self.description = description
         self.parameters = parameters
         self.risk = risk
-    }
-
-    /// Whether the name is one both providers accept: `[A-Za-z0-9_-]`, 1 to
-    /// 128 characters. Anthropic documents the rule and OpenAI rejects a
-    /// malformed name, so the toolbox is checked before a turn starts.
-    public var hasValidName: Bool {
-        guard (1...Self.maximumNameLength).contains(name.count) else { return false }
-        return name.allSatisfy { character in
-            character.isASCII && (character.isLetter || character.isNumber || character == "_" || character == "-")
-        }
     }
 }
 
@@ -416,23 +396,4 @@ public protocol ChatProvider: Sendable {
         tools: [ChatToolSpec],
         model: String
     ) -> AsyncThrowingStream<ChatEvent, Error>
-}
-
-/// The tools one session may call.
-///
-/// The session executes calls in parallel and knows nothing about what they do.
-/// A toolbox owns the confirmation a risky call needs, so the session has no
-/// branch for it: a call either returns a result or reports an error.
-public protocol AssistantToolbox: Sendable {
-    /// The tools to offer the model this turn.
-    func specs() async -> [ChatToolSpec]
-
-    /// Runs one call.
-    ///
-    /// A tool that fails answers with ``ToolResult/isError`` rather than
-    /// throwing: the model can read the failure and try another way, and a
-    /// thrown error would end the turn.
-    ///
-    /// - Parameter call: the call the model asked for.
-    func invoke(_ call: ToolCall) async -> ToolResult
 }

@@ -1477,7 +1477,7 @@ extension HUDEmergenceTests {
 extension HUDEmergenceTests {
     /// The SHA-256 of the rested recording card, measured on the tree before the
     /// emergence existed and re-measured when the typeface and the secondary text tone changed.
-    static let baseRecordingHash = "1166cc3b5e93ef9c980f7ac797c75576623a533f7e19094d279fd69239dcbd98"
+    static let baseRecordingHash = "edb8cacd50272ebcefa24c28a87e5cf5b08af5527e0a27905279a083d999b877"
     /// The SHA-256 of the rested transcript card, measured on the tree before the
     /// emergence existed and re-measured when the typeface and the secondary text tone changed.
     static let baseTranscriptHash = "ec7429b8f2d9e2e627936397df0d5ecf09008c3fc7011045a587955df4b9fe54"

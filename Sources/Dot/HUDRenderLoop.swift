@@ -232,7 +232,7 @@ final class HUDRenderLoop {
             userInfo: nil,
             repeats: true
         )
-        timer.tolerance = interval / 4
+        timer.tolerance = 0
         RunLoop.main.add(timer, forMode: .common)
         RunLoop.main.add(timer, forMode: .default)
         self.timer = timer
@@ -241,7 +241,8 @@ final class HUDRenderLoop {
     private func installLink(on view: NSView, screenID: Int?) -> Bool {
         guard let link = linkFactory?(view, target, #selector(HUDRenderLoopTarget.linkFired(_:)))
         else { return false }
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 60, preferred: 60)
+        let maxFPS = Float(max(60, view.window?.screen?.maximumFramesPerSecond ?? 120))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: maxFPS, preferred: maxFPS)
         link.add(to: .main, forMode: .common)
         deactivateTimer()
         self.link?.invalidate()

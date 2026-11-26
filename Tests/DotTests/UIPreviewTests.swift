@@ -267,9 +267,9 @@ final class UIPreviewTests: XCTestCase {
             "the update control's outline has less than 3 to one against the plate"
         )
 
-        // The mark samples are settled states from one mounted host. They are
-        // not interpolated spring frames: the renderer has no real pointer and
-        // no way to pulse the live spring, so labels say state-settled.
+        // The matrix samples are settled states from one mounted host each.
+        // The disc never moves; the patch is read at the pointer and away from
+        // it, and the tracking region is the whole plate.
         let frameText = try String(
             contentsOf: directory.appendingPathComponent("about-mark-frames.txt"),
             encoding: .utf8
@@ -299,6 +299,25 @@ final class UIPreviewTests: XCTestCase {
             let v = try values(name, after: label, count: 3)
             return (Int(v[0]), Int(v[1]), Int(v[2]))
         }
+        func bitmapPixel(_ point: CGPoint, in bitmap: NSBitmapImageRep) -> (Int, Int, Int) {
+            bitmap.rawPixel(
+                x: Int((point.x * 2).rounded()),
+                y: Int((point.y * 2).rounded())
+            )
+        }
+        func pointer(_ name: String) -> CGPoint? {
+            guard let parts = frameRows[name],
+                  let at = parts.firstIndex(of: "pointer"),
+                  parts.count > at + 1
+            else { return nil }
+            let token = parts[at + 1]
+            if token == "none" { return nil }
+            guard parts.count > at + 2,
+                  let x = Double(token),
+                  let y = Double(parts[at + 2])
+            else { return nil }
+            return CGPoint(x: x, y: y)
+        }
         let markNames = [
             "about-mark-rest",
             "about-mark-engaged",
@@ -306,43 +325,71 @@ final class UIPreviewTests: XCTestCase {
             "about-mark-exit-settled",
             "about-mark-return-settled",
         ]
-        var markFrames: [String: [Double]] = [:]
+        var discFrames: [String: [Double]] = [:]
         var actualFrames: [String: [Double]] = [:]
         for name in markNames {
             XCTAssertEqual(frameRows[name]?[1], "kind=state-settled", "\(name) is not a settled state")
+            let plate = try values(name, after: "plate", count: 4)
             let disc = try values(name, after: "disc", count: 4)
             let actual = try values(name, after: "actual", count: 4)
             let region = try values(name, after: "region", count: 4)
-            markFrames[name] = disc
+            discFrames[name] = disc
             actualFrames[name] = actual
-            XCTAssertEqual(region[2], 72, accuracy: 0.1, "\(name) tracking width")
-            XCTAssertEqual(region[3], 72, accuracy: 0.1, "\(name) tracking height")
-            let centre = try pixels(name, after: "centre")
-            let inner = try pixels(name, after: "inner")
-            let outside = try pixels(name, after: "outside")
+            XCTAssertEqual(region[0], plate[0], accuracy: 0.1, "\(name) tracking origin x")
+            XCTAssertEqual(region[1], plate[1], accuracy: 0.1, "\(name) tracking origin y")
+            XCTAssertEqual(region[2], plate[2], accuracy: 0.1, "\(name) tracking width")
+            XCTAssertEqual(region[3], plate[3], accuracy: 0.1, "\(name) tracking height")
+
+            let patch = try pixels(name, after: "patch")
+            let far = try pixels(name, after: "far")
+            if pointer(name) == nil {
+                XCTAssertLessThan(patch.0, 60, "\(name) drew a patch with no pointer")
+            } else {
+                XCTAssertGreaterThan(patch.0, 90, "\(name) patch centre is not lit")
+                XCTAssertGreaterThan(patch.1, 80, "\(name) patch centre is not lit")
+                XCTAssertLessThan(far.0, 60, "\(name) patch reaches the far point")
+            }
+
+            let bitmap = try bitmap(in: directory.appendingPathComponent("\(name).png"))
+            let centre = bitmapPixel(
+                CGPoint(x: actual[0] + actual[2] / 2, y: actual[1] + actual[3] / 2),
+                in: bitmap
+            )
             XCTAssertEqual(centre.0, discInk.0, accuracy: 5, "\(name) disc centre pixel")
             XCTAssertEqual(centre.1, discInk.1, accuracy: 5, "\(name) disc centre pixel")
             XCTAssertEqual(centre.2, discInk.2, accuracy: 5, "\(name) disc centre pixel")
+            let inner = bitmapPixel(
+                CGPoint(
+                    x: actual[0] + actual[2] / 2 - 8,
+                    y: actual[1] + actual[3] / 2
+                ),
+                in: bitmap
+            )
             XCTAssertEqual(inner.0, discInk.0, accuracy: 5, "\(name) inner disc pixel")
-            XCTAssertEqual(outside.0, plateInk.0, accuracy: 3, "\(name) pixel outside the actual disc")
-            XCTAssertEqual(outside.1, plateInk.1, accuracy: 3, "\(name) pixel outside the actual disc")
-            XCTAssertEqual(outside.2, plateInk.2, accuracy: 3, "\(name) pixel outside the actual disc")
-        }
-        if let rest = markFrames["about-mark-rest"] {
-            for (name, dx, dy) in [
-                ("about-mark-engaged", 6.0, 4.0),
-                ("about-mark-retarget", -6.0, 4.0),
-                ("about-mark-exit-settled", 0.0, 0.0),
-                ("about-mark-return-settled", 0.0, 0.0),
-            ] {
-                guard let frame = markFrames[name] else { continue }
-                XCTAssertEqual(frame[0], rest[0] + dx, accuracy: 0.6, "\(name) layout target x")
-                XCTAssertEqual(frame[1], rest[1] + dy, accuracy: 0.6, "\(name) layout target y")
+            XCTAssertEqual(inner.1, discInk.1, accuracy: 5, "\(name) inner disc pixel")
+            XCTAssertEqual(inner.2, discInk.2, accuracy: 5, "\(name) inner disc pixel")
+            let outside = bitmapPixel(
+                CGPoint(x: actual[0] - 4, y: actual[1] + actual[3] / 2),
+                in: bitmap
+            )
+            XCTAssertLessThan(
+                outside.0,
+                200,
+                "\(name) the disc did not clip the matrix just outside it"
+            )
+            if pointer(name) == nil {
+                XCTAssertEqual(outside.0, plateInk.0, accuracy: 3, "\(name) pixel outside the disc")
+                XCTAssertEqual(outside.1, plateInk.1, accuracy: 3, "\(name) pixel outside the disc")
+                XCTAssertEqual(outside.2, plateInk.2, accuracy: 3, "\(name) pixel outside the disc")
             }
         }
-        // Offscreen hosting changes the layout target but does not drive the
-        // live spring presentation. These are state captures, not proof of a
-        // return animation: the scanned disc stays at its printed pixels.
+        if let rest = discFrames["about-mark-rest"] {
+            for name in markNames.dropFirst() {
+                guard let frame = discFrames[name] else { continue }
+                XCTAssertEqual(frame[0], rest[0], accuracy: 0.6, "\(name) layout disc x")
+                XCTAssertEqual(frame[1], rest[1], accuracy: 0.6, "\(name) layout disc y")
+            }
+        }
         if let rest = actualFrames["about-mark-rest"] {
             for name in markNames.dropFirst() {
                 guard let frame = actualFrames[name] else { continue }
@@ -510,36 +557,21 @@ final class UIPreviewTests: XCTestCase {
                 && abs(sample.1 - plateInk.1) <= 2
                 && abs(sample.2 - plateInk.2) <= 2
         }
-        func longestRun(_ values: [Int]) -> (Int, Int) {
-            guard var start = values.first else { return (0, 0) }
-            var bestStart = start
-            var bestEnd = start
-            var previous = start
-            for value in values.dropFirst() {
-                if value == previous + 1 {
-                    previous = value
-                } else {
-                    if previous - start > bestEnd - bestStart {
-                        bestStart = start
-                        bestEnd = previous
-                    }
-                    start = value
-                    previous = value
-                }
+        var minX = 0
+        var maxX = 0
+        for y in stride(from: 200, through: 400, by: 4) {
+            let row = (400..<1_640).filter { isPlate(bitmap.rawPixel(x: $0, y: y)) }
+            guard row.count > 900, let first = row.first, let last = row.last else { continue }
+            if last - first > maxX - minX {
+                minX = first
+                maxX = last
             }
-            if previous - start > bestEnd - bestStart {
-                bestStart = start
-                bestEnd = previous
-            }
-            return (bestStart, bestEnd)
         }
-        let row = (400..<1_640).filter { isPlate(bitmap.rawPixel(x: $0, y: 300)) }
-        let (minX, maxX) = longestRun(row)
         XCTAssertGreaterThan(maxX - minX, 1_000, "the dark plate row was not found in the render")
         var minY = 0
         var maxY = 0
         for columnX in stride(from: minX + 40, through: maxX - 40, by: 20) {
-            let column = (120..<430).filter { isPlate(bitmap.rawPixel(x: columnX, y: $0)) }
+            let column = (120..<480).filter { isPlate(bitmap.rawPixel(x: columnX, y: $0)) }
             guard let first = column.first, let last = column.last else { continue }
             if last - first > maxY - minY {
                 minY = first

@@ -437,11 +437,6 @@ public struct DotConfig: Codable, Sendable, Equatable {
     public var pasteHotkey: Hotkey
     /// The shortcut that opens the dictation palette.
     public var paletteHotkey: Hotkey
-    /// The shortcut that asks the assistant.
-    ///
-    /// It is the same key in both directions: a press starts the question, the
-    /// next one sends it, and a press while the answer is arriving stops it.
-    public var assistantHotkey: Hotkey
     /// Whether the transcript is pasted into the frontmost application.
     public var autoPaste: Bool
     /// Whether single-clicking the menu bar icon starts or stops recording.
@@ -541,7 +536,6 @@ public struct DotConfig: Codable, Sendable, Equatable {
         outputGrammarEnabled: false,
         outputGrammarTargets: [:],
         microphoneCalibration: [:],
-        assistantHotkey: .defaultAssistant,
         assistant: .default,
         transcriptArchive: .default
     )
@@ -607,7 +601,6 @@ public struct DotConfig: Codable, Sendable, Equatable {
         outputGrammarEnabled: Bool = false,
         outputGrammarTargets: [String: DictationTarget] = [:],
         microphoneCalibration: [String: MicrophoneCalibration] = [:],
-        assistantHotkey: Hotkey = .defaultAssistant,
         assistant: AssistantConfiguration = .default,
         transcriptArchive: TranscriptArchiveSettings = .default
     ) {
@@ -633,7 +626,6 @@ public struct DotConfig: Codable, Sendable, Equatable {
         self.outputGrammarEnabled = outputGrammarEnabled
         self.outputGrammarTargets = outputGrammarTargets
         self.microphoneCalibration = microphoneCalibration
-        self.assistantHotkey = assistantHotkey
         self.assistant = assistant
         self.transcriptArchive = transcriptArchive
     }
@@ -811,12 +803,10 @@ extension DotConfig {
             forKey: .microphoneCalibration
         )
         self.microphoneCalibration = MicrophoneCalibrationBook.sanitized(storedBook ?? nil ?? [:])
-        // The assistant's block and its shortcut are read the tolerant way too:
-        // a file written before the assistant existed has neither, and one
-        // edited by hand may carry a block no build can decode. Either way the
-        // rest of the file, the dictation provider above all, stays as it was.
-        self.assistantHotkey = ((try? container.decodeIfPresent(Hotkey.self, forKey: .assistantHotkey)) ?? nil)
-            ?? fallback.assistantHotkey
+        // The assistant's block is read the tolerant way too: a file written
+        // before it existed has none, and one edited by hand may carry a block
+        // no build can decode. Either way the rest of the file, the dictation
+        // provider above all, stays as it was.
         self.assistant = ((try? container.decodeIfPresent(
             AssistantConfiguration.self,
             forKey: .assistant

@@ -74,8 +74,10 @@ final class HUD {
     /// which the card must become visible, so a stalled first frame can never
     /// leave an invisible island on screen.
     private static let renderFallbackDelay: TimeInterval = 0.1
+    private static let linkFallbackDelay: TimeInterval = 0.35
 
     private let panel: HUDPanel
+    var panelScreen: NSScreen? { panel.screen }
     private let model = HUDModel()
     private let frameModel = HUDFrameModel()
     private let meter = VoiceMeter()
@@ -106,11 +108,17 @@ final class HUD {
     var onTranscriptEnded: (() -> Void)?
     /// Called when the card is hidden for any reason, including the countdown.
     var onHide: (() -> Void)?
+    /// Called when active HUD rendering starts or stops.
+    var onRenderActivityChange: ((Bool) -> Void)?
 
     private let renderLoop = HUDRenderLoop()
     private let frameStats = HUDFrameStatistics()
     private var renderFallbackTimer: Timer?
-    private var lastTick: CFTimeInterval = 0
+    private var linkFallbackTimer: Timer?
+    nonisolated(unsafe) private var idleDwellTimer: Timer?
+    private var isRenderLoopSleepingForStaticIdle = false
+    private var lastTick: CFTimeInterval?
+    private var lastWakeTimestamp: CFTimeInterval?
     /// When the current presentation was ordered front, in media time.
     private var presentedAt: CFTimeInterval = 0
     /// Whether a frame has run since the current presentation.
@@ -136,33 +144,33 @@ final class HUD {
     /// The monitors that see the pointer while another app is frontmost.
     private var pointerMonitor: Any?
     private var scrollMonitor: Any?
+    nonisolated(unsafe) private var defaultNotificationTokens: [NSObjectProtocol] = []
+    nonisolated(unsafe) private var workspaceNotificationTokens: [NSObjectProtocol] = []
+    nonisolated(unsafe) private var renderActivity: NSObjectProtocol?
+    private var hasSyncedRestAppearance = false
     /// How many times the pointer monitors have been installed. The headless
     /// test reads it to prove a countdown reset never tears down a live pair;
     /// the app never asks for it.
     private(set) var debugPointerTrackingInstallCount = 0
     private var hasLoggedScroll = false
     private var hideTask: Task<Void, Never>?
+    private var actionFeedbackTask: Task<Void, Never>?
     private var levelProvider: (() -> Double)?
     private var spectrumProvider: (() -> AudioSpectrumFrame)?
     /// The spectrum the card draws: the per-voice window, the per-band filter and
     /// the ring whose entries carry the tick they were measured on.
     private var spectrum = VisualizerSpectrum()
-    /// The ring the styles read, oldest first.
-    ///
-    /// The recorder's bands are a fixed measurement of the microphone, and every
-    /// speaker reads on it the same way; the window ``VisualizerSpectrum`` holds is
-    /// what turns them into a picture of this voice, from its own quietest band to
-    /// its own loudest, so the grid moves across its whole range instead of
-    /// lighting a row of dots at the level a fixed scale happens to put ordinary
-    /// speech.
-    private var spectrumRing: [AudioSpectrumFrame] { spectrum.ring }
+    private var spectrumBuffer: [AudioSpectrumFrame] = []
     private var isPreviewingVisualizer = false
-    /// The envelope history of the meter, kept between frames.
-    ///
-    /// The card reads this sixty times a second. Reading it through a property
-    /// that built a new array every time put two allocations and a concatenation
-    /// on every frame of the render loop; this buffer is filled in place.
+    private var isPreviewingMaterial = false
+
+    /// Whether the card is currently showing an interactive style or material demo.
+    var isPreviewing: Bool {
+        isPreviewingVisualizer || isPreviewingMaterial
+    }
+    /// Reusable envelope history buffer to avoid CoW allocations across ticks.
     private var historyBuffer: [Double] = []
+    private var lastPublishedWrittenSamples = -1
     /// How much of the shape has arrived, from `0` to `1`.
     ///
     /// It rises when a recording starts and falls when it ends, so the shape
@@ -275,7 +283,7 @@ final class HUD {
     }
 
     private var reduceMotion: Bool {
-        debugReduceMotionOverride ?? (reducesMotionPreference || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        debugReduceMotionOverride ?? (reducesMotionPreference || DotMotion.systemReducesMotion)
     }
 
     /// Creates the HUD.
@@ -342,14 +350,25 @@ final class HUD {
     /// It is rebuilt when the actions change, so the buttons always call the
     /// closures the app last handed over.
     private func makeRootView() -> AnyView {
-        Self.rootView(
+        let onCanvasDraw: (@Sendable (CFTimeInterval, Double) -> Void)?
+        if offscreen {
+            onCanvasDraw = nil
+        } else {
+            let stats = frameStats
+            onCanvasDraw = { [weak stats] now, durationMS in
+                stats?.recordCanvasDraw(now: now, durationMS: durationMS)
+            }
+        }
+        frameModel.visualizerSink.onLayerDraw = onCanvasDraw
+        return Self.rootView(
             model: model,
             frame: frameModel,
             actions: actions,
             animated: !reduceMotion,
             reduceMotionOverride: reduceMotion ? true : nil,
             placement: placement,
-            size: placement?.panelFrame.size ?? Self.panelSize
+            size: placement?.panelFrame.size ?? Self.panelSize,
+            onCanvasDraw: onCanvasDraw
         )
     }
 
@@ -376,7 +395,8 @@ final class HUD {
         animated: Bool,
         reduceMotionOverride: Bool? = nil,
         placement: HUDEmergence.Placement?,
-        size: CGSize
+        size: CGSize,
+        onCanvasDraw: (@Sendable (CFTimeInterval, Double) -> Void)? = nil
     ) -> AnyView {
         AnyView(
             ZStack(alignment: .top) {
@@ -387,6 +407,7 @@ final class HUD {
                     animated: animated,
                     actions: actions,
                     reduceMotionOverride: reduceMotionOverride,
+                    onCanvasDraw: onCanvasDraw,
                     emergence: placement?.scene
                 )
                 .padding(.top, placement?.cardTopInset ?? shadowPadding)
@@ -410,7 +431,10 @@ final class HUD {
     /// What visualizer the HUD island uses to draw incoming audio.
     var visualizer: HUDVisualizer {
         get { model.visualizer }
-        set { model.visualizer = newValue }
+        set {
+            model.visualizer = newValue
+            pushVisualizerSettingsUpdateIfLive()
+        }
     }
 
     /// Tells the card which microphone is about to record, so the meter starts
@@ -430,6 +454,24 @@ final class HUD {
         set {
             model.material = newValue
             applyPanelAppearance()
+            pushVisualizerSettingsUpdateIfLive()
+        }
+    }
+
+    private func pushVisualizerSettingsUpdateIfLive() {
+        let isRecording = if case .recording = model.mode { true } else { false }
+        guard model.isVisible, isRecording || frameModel.reveal > 0 else { return }
+        frameModel.visualizerSink.push(
+            frameModel.currentVisualizerFrame(
+                visualizer: model.visualizer,
+                material: model.material,
+                reduceMotion: reduceMotion
+            )
+        )
+        if isRecording {
+            frameModel.liveDotSink.push(
+                frameModel.currentLiveDotFrame(material: model.material, reduceMotion: reduceMotion)
+            )
         }
     }
 
@@ -457,21 +499,12 @@ final class HUD {
         openRecordingCard(.recording(elapsed: elapsed))
     }
 
-    /// Shows the recording state for a question to the assistant.
-    ///
-    /// - Parameter elapsed: the clock of the recording.
-    func showAssistantRecording(elapsed: String) {
-        openRecordingCard(.assistantRecording(elapsed: elapsed))
-    }
-
-    /// Opens the recording card in one of its two purposes.
-    ///
-    /// The microphone, the meter and the card are the same in both: the only
-    /// difference is the mark in the leading slot, which is the live dot for a
-    /// dictation and the assistant's own symbol for a question.
+    /// Opens the recording card.
     private func openRecordingCard(_ mode: HUDMode) {
         isPreviewingVisualizer = false
-        model.clearLiveText()
+        isPreviewingMaterial = false
+        clearActionFeedback()
+        clearLiveText()
         model.grammar = nil
         model.grammarWasLong = false
         recordingStartedAt = CACurrentMediaTime()
@@ -482,15 +515,31 @@ final class HUD {
         meter.setCalibration(calibration)
         meter.seed(floor: calibration?.noiseFloorDBFS)
         spectrum.reset()
+        spectrumBuffer.removeAll(keepingCapacity: true)
+        historyBuffer.removeAll(keepingCapacity: true)
+        lastPublishedWrittenSamples = -1
         reveal = 0
         frameModel.reveal = 0
+        if case .recording(let elapsed) = mode, frameModel.elapsedLabel != elapsed {
+            frameModel.elapsedLabel = elapsed
+        }
         setMode(mode, size: HUDState.recordingCard.size)
         present()
     }
 
     /// Updates the clock of the recording state.
     func updateRecording(elapsed: String) {
+        if frameModel.elapsedLabel != elapsed {
+            frameModel.elapsedLabel = elapsed
+        }
         model.updateRecording(elapsed: elapsed)
+    }
+
+    private func clearLiveText() {
+        model.clearLiveText()
+        if !frameModel.liveText.isEmpty {
+            frameModel.liveText = ""
+        }
     }
 
     /// Shows a live partial while the recording is running.
@@ -502,7 +551,13 @@ final class HUD {
     /// transcript.
     func showLiveText(_ text: String) {
         guard case .recording = model.mode else { return }
-        model.showLiveText(text)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if frameModel.liveText != trimmed {
+            frameModel.liveText = trimmed
+        }
+        if model.liveText.isEmpty != trimmed.isEmpty {
+            model.showLiveText(trimmed)
+        }
         // The recording card is normally already up; presenting again would
         // only re-place and re-log the panel on every partial.
         if !model.isVisible {
@@ -512,7 +567,7 @@ final class HUD {
 
     /// Drops the live partial when the user cancels the recording.
     func cancel() {
-        model.clearLiveText()
+        clearLiveText()
     }
 
     /// Shows the transcribing state.
@@ -522,7 +577,9 @@ final class HUD {
     ///   - total: how many the recording needs in all.
     func showTranscribing(done: Int = 0, total: Int = 0) {
         isPreviewingVisualizer = false
-        model.clearLiveText()
+        isPreviewingMaterial = false
+        clearActionFeedback()
+        clearLiveText()
         model.grammar = nil
         model.grammarWasLong = false
         model.workingDetail = HUDProgress.detail(done: done, total: total)
@@ -557,11 +614,13 @@ final class HUD {
         grammarWasLong: Bool = false
     ) {
         isPreviewingVisualizer = false
+        isPreviewingMaterial = false
+        clearActionFeedback()
         // A new transcript is a new card, even when the previous card was also a
         // transcript. The runner is told before the layer is dropped so a
         // stream from the old take cannot attach its result to these words.
         onTranscriptEnded?()
-        model.clearLiveText()
+        clearLiveText()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             showMessage(text: "Nothing was heard.", symbol: "waveform.slash")
@@ -574,6 +633,11 @@ final class HUD {
         // A rewrite belongs to the take that carried it, so a new transcript
         // starts with no layer. The runner sets it once the card is up.
         model.rewrite = nil
+        let measuredContentHeight = Self.transcriptContentHeight(text: trimmed)
+        let cardSize = CGSize(
+            width: HUDState.transcriptWidth,
+            height: HUDTheme.headerHeight + 1 + HUDTranscript.bodyHeight(contentHeight: measuredContentHeight)
+        )
         setMode(
             .transcript(
                 text: trimmed,
@@ -581,7 +645,7 @@ final class HUD {
                 elapsed: elapsed,
                 destination: destination
             ),
-            size: Self.transcriptSize(text: trimmed)
+            size: cardSize
         )
         present()
         let effectiveDwell = delivery == .pasted ? min(dwellSeconds, 3.5) : dwellSeconds
@@ -591,7 +655,7 @@ final class HUD {
             "card_height": .double(model.cardSize.height),
             "scrolls": .bool(
                 HUDTranscript.scrolls(
-                    contentHeight: Self.transcriptContentHeight(text: trimmed)
+                    contentHeight: measuredContentHeight
                 )
             ),
             "dwell_s": .double(effectiveDwell),
@@ -636,7 +700,9 @@ final class HUD {
         dwell: TimeInterval? = nil
     ) {
         isPreviewingVisualizer = false
-        model.clearLiveText()
+        isPreviewingMaterial = false
+        clearActionFeedback()
+        clearLiveText()
         model.grammar = nil
         model.grammarWasLong = false
         setMode(
@@ -663,38 +729,104 @@ final class HUD {
         let name = material == .glass ? "Glass" : "Black"
         let symbol = material == .glass ? "sparkles" : "circle.fill"
         showMessage(text: name, symbol: symbol, dwell: 1.8)
+        isPreviewingMaterial = true
+    }
+
+    /// Immediately dismisses an active visualizer or material demo without affecting live recordings.
+    func dismissPreview() {
+        guard isPreviewing else { return }
+        isPreviewingVisualizer = false
+        isPreviewingMaterial = false
+        clearActionFeedback()
+        hide()
+    }
+
+    private func clearActionFeedback() {
+        actionFeedbackTask?.cancel()
+        actionFeedbackTask = nil
+        if model.actionFeedback != nil {
+            model.actionFeedback = nil
+        }
+    }
+
+    /// Shows temporary confirmation feedback directly on a HUD action button and its tooltip.
+    func showActionFeedback(for action: HUDAction, outcome: HUDActionOutcome) {
+        actionFeedbackTask?.cancel()
+        let token = HUDActionFeedback(id: UUID(), action: action, outcome: outcome)
+        model.actionFeedback = token
+        if let announcement = Self.accessibilityAnnouncement(for: outcome) {
+            NSAccessibility.post(
+                element: NSApp as Any,
+                notification: .announcementRequested,
+                userInfo: [
+                    .announcement: announcement,
+                    .priority: NSAccessibilityPriorityLevel.high.rawValue,
+                ]
+            )
+        }
+        let durationMS = outcome == .triggered ? 350 : 1350
+        actionFeedbackTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(durationMS))
+            guard let self, self.model.actionFeedback?.id == token.id else { return }
+            self.model.actionFeedback = nil
+        }
+    }
+
+    private static func accessibilityAnnouncement(for outcome: HUDActionOutcome) -> String? {
+        switch outcome {
+        case .copied:
+            return "Copied to clipboard"
+        case .pasted:
+            return "Pasted at cursor"
+        case .fallbackCopied:
+            return "Could not paste at cursor. Copied to clipboard instead."
+        case .triggered:
+            return nil
+        }
     }
 
     /// Shows the island with a live simulated voice wave so a visualizer can be chosen by eye.
     func previewVisualizer(_ visualizer: HUDVisualizer) {
         model.visualizer = visualizer
-        model.clearLiveText()
+        clearLiveText()
+        isPreviewingMaterial = false
         isPreviewingVisualizer = true
         // The preview draws a simulated voice, not a microphone: a calibration
         // left over from the last take would put it on the wrong scale.
+        meter.reset()
         meter.setCalibration(nil)
         let now = CACurrentMediaTime()
         recordingStartedAt = now
         spectrum.reset()
-        // The opening two seconds are walked by the same feed the Settings tile
+        lastPublishedWrittenSamples = -1
+        // The opening five seconds are walked by the same feed the Settings tile
         // draws with, on this card's own meter and this card's own spectrum, so a
         // scrolling visualizer immediately shows a full, moving voice trace instead
         // of filling up from an empty history, and the trace it opens on is the
         // take the live frames below go on to draw rather than a second, different
         // voice measured by a second, different path.
+        let seedSeconds = Double(Waveform.historyLength) / Waveform.sampleRate
         let feed = VisualizerFeed(
             meter: meter,
-            from: now - 2,
-            level: { time in DictationScript.level(at: Self.previewPhase(now: time, startedAt: now)) },
-            bands: { time in DictationScript.bands(at: Self.previewPhase(now: time, startedAt: now)) }
+            from: now - seedSeconds,
+            level: { time in
+                DictationScript.level(at: Self.wrapped(time - now + Self.previewOffset, loop: DictationScript.loop))
+            },
+            bands: { time in
+                DictationScript.bands(at: Self.wrapped(time - now + Self.previewOffset, loop: DictationScript.loop))
+            }
         )
-        feed.advance(to: now)
+        feed.seed(to: now)
         spectrum = feed.spectrum
+        if frameModel.elapsedLabel != "0:02" {
+            frameModel.elapsedLabel = "0:02"
+        }
         setMode(
             .recording(elapsed: "0:02"),
             size: CGSize(width: HUDState.recordingWidth, height: HUDState.recordingHeight)
         )
         present()
+        lastTick = now
         // A still preview is a picture rather than a performance: there is no
         // movement to finish, so it stays until the person moves on from it.
         scheduleDismiss(in: reduceMotion ? nil : Self.previewDismissDelay)
@@ -736,19 +868,11 @@ final class HUD {
     ///   - time: the moment, in seconds, possibly negative or past the loop.
     ///   - loop: the length of the loop, in seconds.
     /// - Returns: the same moment, from `0` up to `loop`.
+    /// The wrapped preview phase, for looping back before `0`.
     static func wrapped(_ time: Double, loop: Double) -> Double {
         guard loop > 0 else { return 0 }
         let wrapped = time.truncatingRemainder(dividingBy: loop)
         return wrapped < 0 ? wrapped + loop : wrapped
-    }
-
-    /// The decibels a simulated level is pushed into the meter at.
-    ///
-    /// A voice that peaks at `1` is pushed at `-8 dBFS` and a silent moment at
-    /// `-58`, which is the same scale a microphone is drawn on: the meter's
-    /// window is what turns it into the shape the card shows.
-    private static func previewDecibels(_ level: Double) -> Double {
-        VisualizerFeed.decibels(for: level)
     }
 
     /// Tells the launch card which service dictation goes to, and a masked hint
@@ -774,7 +898,9 @@ final class HUD {
     func showReady(shortcut: String) {
         guard Self.canShowReady(over: model.mode, visible: model.isVisible) else { return }
         isPreviewingVisualizer = false
-        model.clearLiveText()
+        isPreviewingMaterial = false
+        clearActionFeedback()
+        clearLiveText()
         model.grammar = nil
         model.grammarWasLong = false
         setMode(
@@ -826,34 +952,39 @@ final class HUD {
 
     /// Hides the card.
     func hide() {
-        isPreviewingVisualizer = false
-        model.clearLiveText()
+        clearLiveText()
         model.grammar = nil
         model.grammarWasLong = false
         model.rewrite = nil
         model.isEditingTranscript = false
         model.hoveredAction = nil
+        clearActionFeedback()
         model.messageAction = nil
-        model.assistantAllow = nil
-        model.assistantCancel = nil
         panel.allowsKey = false
         dismissTimer?.invalidate()
         dismissTimer = nil
         dwellClock = nil
+        lastPublishedWrittenSamples = -1
         _ = frameStats.finish()
         stopPointerTracking()
         panel.ignoresMouseEvents = true
         // The layer cannot outlive the surface that showed it. This also stops
         // a stream that would otherwise finish into a card nobody can see.
         onHide?()
-        guard model.isVisible else { return }
+        guard model.isVisible else {
+            isPreviewingVisualizer = false
+            isPreviewingMaterial = false
+            return
+        }
         if case .ready = model.mode {
             Log.shared.info("hud.ready.hidden")
         }
         model.isVisible = false
+        ensureRenderingActive()
 
         if reduceMotion {
             contentSpring.snap(to: 0)
+            frameModel.content = 0
             model.content = 0
             reduceFade.to(0)
             dismissal = poursFromTheNotch ? Dismissal(elapsed: 0, shapeStarted: true) : nil
@@ -890,6 +1021,9 @@ final class HUD {
     /// Orders the panel out once the card has left it.
     private func finishHiding() {
         guard !model.isVisible else { return }
+        isPreviewingVisualizer = false
+        isPreviewingMaterial = false
+        clearActionFeedback()
         panel.orderOut(nil)
         stopRendering()
     }
@@ -920,15 +1054,15 @@ final class HUD {
 
     /// How present the card is. The headless test reads it through the real
     /// render loop.
-    var debugPresence: Double { model.presence }
+    var debugPresence: Double { frameModel.presence }
 
     /// How far the shape has come out of the notch, overshoot included. The
     /// headless test reads it to time the emergence; the app never does.
-    var debugEmergence: Double { model.emergence }
+    var debugEmergence: Double { frameModel.emergence }
 
     /// How settled the content is. The headless test reads it through the real
     /// render loop.
-    var debugContent: Double { model.content }
+    var debugContent: Double { frameModel.content }
 
     /// Whether the springs that move the card's appearance are at rest.
     ///
@@ -1042,8 +1176,11 @@ final class HUD {
     ///
     /// - Parameter value: how far the shape has come out of the notch.
     func debugSetEmergence(_ value: Double) {
+        let clamped = min(max(value, 0), 1)
+        frameModel.emergence = value
+        frameModel.presence = clamped
         model.emergence = value
-        model.presence = min(max(value, 0), 1)
+        model.presence = clamped
     }
 
     /// Sets the motion setting. The headless test uses it because the system's
@@ -1243,7 +1380,8 @@ final class HUD {
         panel.orderFrontRegardless()
         verifyPanelVisibility()
         model.isVisible = true
-        lastTick = now
+        lastTick = nil
+        lastWakeTimestamp = nil
         presentedAt = now
         hasRenderedSincePresent = false
         hasReportedFirstTick = false
@@ -1262,6 +1400,7 @@ final class HUD {
 
         if reduceMotion {
             contentSpring.snap(to: 1)
+            frameModel.content = 1
             model.content = 1
             reduceFade.to(1)
         } else {
@@ -1952,7 +2091,10 @@ final class HUD {
         // The panel takes the mouse only over the card, and only once the card
         // is there. A click anywhere else in the panel's rectangle belongs to
         // whatever is under it, and this is what hands it back.
-        panel.ignoresMouseEvents = !(inside && model.presence >= 0.98)
+        let shouldIgnore = !(inside && frameModel.presence >= 0.98)
+        if panel.ignoresMouseEvents != shouldIgnore {
+            panel.ignoresMouseEvents = shouldIgnore
+        }
         let detectedHover = inside ? hoveredAction(at: screenPoint, in: card) : nil
         if model.hoveredAction != detectedHover {
             model.hoveredAction = detectedHover
@@ -1975,25 +2117,24 @@ final class HUD {
         let items: [HUDAction]
         let headerH: CGFloat
         switch model.mode {
-        case .recording, .assistantRecording:
+        case .recording:
             items = HUDAction.available([.stop, .cancel], in: actions)
             headerH = model.liveText.isEmpty ? card.height : HUDState.headerHeight
         case .working:
             items = HUDAction.available([.cancel], in: actions)
             headerH = card.height
         case .transcript:
-            items = HUDAction.available([.copy, .paste, .history, .settings, .close], in: actions)
+            items = HUDAction.available(
+                [.copy, .paste, .history, .settings, .close],
+                in: actions,
+                versioned: model.rewrite != nil
+            )
             headerH = HUDTheme.headerHeight
         case .message:
             items = HUDAction.available([.close], in: actions)
             headerH = card.height
         case .ready:
             items = HUDAction.available([.settings, .close], in: actions)
-            headerH = card.height
-        case .assistantThinking, .assistantTool, .assistantAnswer, .assistantConfirm:
-            // The assistant's cards have no icon buttons, so there is nothing
-            // under the pointer to report.
-            items = []
             headerH = card.height
         }
         guard !items.isEmpty else { return nil }
@@ -2042,6 +2183,16 @@ final class HUD {
     }
 
     private func startRendering() {
+        isRenderLoopSleepingForStaticIdle = false
+        idleDwellTimer?.invalidate()
+        idleDwellTimer = nil
+        if !offscreen, renderActivity == nil {
+            renderActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+                reason: "Animate the HUD island"
+            )
+        }
+        onRenderActivityChange?(true)
         renderLoop.wakeProvider = { [weak self] in
             guard let self, let view = self.panel.contentView else { return nil }
             return (view, self.offscreen ? nil : Self.screenID(of: self.panel.screen))
@@ -2056,6 +2207,40 @@ final class HUD {
         }
     }
 
+    private func ensureRenderingActive() {
+        guard isRenderLoopSleepingForStaticIdle else {
+            idleDwellTimer?.invalidate()
+            idleDwellTimer = nil
+            return
+        }
+        lastTick = nil
+        lastWakeTimestamp = nil
+        startRendering()
+    }
+
+    private func sleepRenderLoopIfStaticIdle() {
+        guard !offscreen, model.isVisible else { return }
+        isRenderLoopSleepingForStaticIdle = true
+        renderLoop.stop()
+        lastTick = nil
+        lastWakeTimestamp = nil
+        if let renderActivity {
+            ProcessInfo.processInfo.endActivity(renderActivity)
+            self.renderActivity = nil
+        }
+        onRenderActivityChange?(false)
+        if dwellClock != nil, idleDwellTimer == nil {
+            let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.updateDwell(now: CACurrentMediaTime())
+                }
+            }
+            timer.tolerance = 0.02
+            RunLoop.main.add(timer, forMode: .common)
+            idleDwellTimer = timer
+        }
+    }
+
     private static func screenID(of screen: NSScreen?) -> Int? {
         guard let screen else { return nil }
         return (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
@@ -2063,9 +2248,21 @@ final class HUD {
     }
 
     private func stopRendering() {
+        isRenderLoopSleepingForStaticIdle = false
         renderLoop.stop()
+        idleDwellTimer?.invalidate()
+        idleDwellTimer = nil
+        lastTick = nil
+        lastWakeTimestamp = nil
+        if let renderActivity {
+            ProcessInfo.processInfo.endActivity(renderActivity)
+            self.renderActivity = nil
+        }
+        onRenderActivityChange?(false)
         renderFallbackTimer?.invalidate()
         renderFallbackTimer = nil
+        linkFallbackTimer?.invalidate()
+        linkFallbackTimer = nil
     }
 
     /// Shows the card outright when the render loop has not produced a frame
@@ -2083,6 +2280,15 @@ final class HUD {
         }
         RunLoop.main.add(timer, forMode: .common)
         renderFallbackTimer = timer
+
+        linkFallbackTimer?.invalidate()
+        let linkTimer = Timer(timeInterval: Self.linkFallbackDelay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.applyLinkFallback()
+            }
+        }
+        RunLoop.main.add(linkTimer, forMode: .common)
+        linkFallbackTimer = linkTimer
     }
 
     private func applyRenderFallback() {
@@ -2092,7 +2298,7 @@ final class HUD {
         // way out of the screen is drawn where the person is looking, so it is
         // not this watchdog's business: what it may not leave behind is a card
         // that was never drawn at all.
-        guard model.isVisible, (!hasRenderedSincePresent || model.presence < 0.05) else { return }
+        guard model.isVisible, (!hasRenderedSincePresent || frameModel.presence < 0.05) else { return }
         let elapsed = (CACurrentMediaTime() - presentedAt) * 1000
         emergeSpring.to(target: 1)
         emergeSpring.snap(to: 1)
@@ -2100,22 +2306,27 @@ final class HUD {
         reduceFade.snap(to: 1)
         contentSpring.to(target: 1)
         contentSpring.snap(to: 1)
+        frameModel.emergence = 1
+        frameModel.presence = 1
+        frameModel.content = 1
         model.emergence = 1
         model.presence = 1
         model.content = 1
-        hasRenderedSincePresent = true
         debugFallbackCount += 1
-        if renderLoop.activeBackend == .displayLink {
-            renderLoop.fallbackToTimer()
-            frameStats.note(backend: HUDRenderLoop.Backend.timer.rawValue)
-            Log.shared.info("hud.renderLoop.fallback", [
-                "reason": .string("displayLink did not render"),
-            ])
-        }
         Log.shared.warn("hud.render.fallback", [
             "elapsed_ms": .double(elapsed),
             "panel_visible": .bool(panel.isVisible),
             "loop_running": .bool(renderLoop.isRunning),
+        ])
+    }
+
+    private func applyLinkFallback() {
+        linkFallbackTimer = nil
+        guard model.isVisible, !hasRenderedSincePresent, renderLoop.activeBackend == .displayLink else { return }
+        renderLoop.fallbackToTimer()
+        frameStats.note(backend: HUDRenderLoop.Backend.timer.rawValue)
+        Log.shared.info("hud.renderLoop.fallback", [
+            "reason": .string("displayLink did not render"),
         ])
     }
 
@@ -2136,6 +2347,8 @@ final class HUD {
     private func tick(now: CFTimeInterval) {
         guard panel.isVisible || offscreen else { return }
         let tickStarted = CFAbsoluteTimeGetCurrent()
+        let wakeDeltaMS = lastWakeTimestamp.map { max(0, (tickStarted - $0) * 1000) }
+        lastWakeTimestamp = tickStarted
         if !hasReportedFirstTick {
             hasReportedFirstTick = true
             Log.shared.info("hud.render.tick", [
@@ -2144,72 +2357,159 @@ final class HUD {
             ])
         }
 
-        let dt = min(max(now - lastTick, 0), 0.1)
+        let dt = lastTick.map { min(max(now - $0, 0), 0.1) } ?? 0
         lastTick = now
-        if case .recording = model.mode, !frameStats.isRecording {
+        if case .recording = model.mode, model.isVisible, !frameStats.isRecording {
             frameStats.start(backend: renderLoop.activeBackend.rawValue)
         }
 
         advanceAppearance(by: dt)
-        restoreTheRailsOpeningPosition(now: now)
+        if case .transcript = model.mode, model.rewrite?.showsChips == true {
+            restoreTheRailsOpeningPosition(now: now)
+        }
 
-        if case .recording = model.mode {
+        let nextLevel: Double
+        if case .recording = model.mode, model.isVisible {
             if isPreviewingVisualizer {
                 let previewTime = Self.previewPhase(now: now, startedAt: recordingStartedAt)
                 let voice = DictationScript.level(at: previewTime)
-                meter.push(decibels: Self.previewDecibels(voice), now: now)
-                frameModel.level = meter.envelope
-                // The bands are the script's own, blended by which syllable is
-                // sounding: the top row lifts as a word with an `s` in it passes.
-                // They used to be the level multiplied by four sine waves, which
-                // moved four times faster than the voice and read as a machine.
+                meter.push(decibels: VisualizerFeed.decibels(for: voice), now: now)
+                nextLevel = meter.envelope
                 advanceSpectrum(target: DictationScript.bands(at: previewTime), dt: dt, now: now)
-                updateRecording(elapsed: HUDClock.string(for: now - recordingStartedAt + 2))
+                let nextElapsed = HUDClock.string(for: now - recordingStartedAt + 2)
+                if frameModel.elapsedLabel != nextElapsed {
+                    frameModel.elapsedLabel = nextElapsed
+                }
             } else {
-                // The recorder reports the RMS of the last block of audio; the
-                // meter works in dBFS, which is the only domain in which a voice
-                // has a range instead of a spiky 0-1 value. One measurement, one
-                // window, one envelope: the card used to take the larger of the
-                // smoothed envelope and a second unsmoothed level from the
-                // calibration window, which put a single loud frame at the top of
-                // the shape before the attack had moved at all.
                 let rms = levelProvider?() ?? 0
                 meter.push(decibels: AudioLevel.decibels(rms), now: now)
-                frameModel.level = meter.envelope
+                nextLevel = meter.envelope
                 let rawSpec = spectrumProvider?() ?? .zero
                 advanceSpectrum(target: rawSpec, dt: dt, now: now)
-                updateRecording(elapsed: HUDClock.string(for: now - recordingStartedAt))
+                let nextElapsed = HUDClock.string(for: now - recordingStartedAt)
+                if frameModel.elapsedLabel != nextElapsed {
+                    frameModel.elapsedLabel = nextElapsed
+                }
             }
         } else {
-            // The card still breathes while it waits.
-            frameModel.level = max(0, frameModel.level - dt * 3)
+            // The card still breathes while it waits or dismisses.
+            nextLevel = max(0, frameModel.level - dt * 3)
+        }
+        if frameModel.level != nextLevel {
+            frameModel.level = nextLevel
         }
 
         // The shape arrives when a recording starts and settles when it ends.
         // Reduce Motion keeps the fade and drops the growth, which is the part
         // that moves.
         var revealTarget: Double = 0
-        if case .recording = model.mode { revealTarget = 1 }
+        if case .recording = model.mode, model.isVisible { revealTarget = 1 }
         let revealTau = revealTarget > reveal ? 0.10 : 0.22
         reveal += (revealTarget - reveal) * (1 - exp(-dt / revealTau))
         if abs(revealTarget - reveal) < 0.002 { reveal = revealTarget }
-        frameModel.reveal = reduceMotion ? revealTarget : reveal
+        let nextReveal = reduceMotion ? revealTarget : reveal
+        if frameModel.reveal != nextReveal {
+            frameModel.reveal = nextReveal
+        }
 
-        meter.copyOrderedHistory(into: &historyBuffer)
-        frameModel.history = historyBuffer
-        frameModel.spectrumHistory = spectrumRing
-        frameModel.phase = meter.phase
-        frameModel.ceiling = meter.ceiling
-        frameModel.time = reduceMotion ? 1.8 : now
-        frameModel.pulse = reduceMotion ? 0 : now.truncatingRemainder(dividingBy: 1.1) / 1.1
-        frameModel.shimmer = reduceMotion ? 0 : now.truncatingRemainder(dividingBy: 1.4) / 1.4
+        let isRecording = if case .recording = model.mode { true } else { false }
+        let written = meter.writtenSamples
+        if written != lastPublishedWrittenSamples || frameModel.history.isEmpty || frameModel.spectrumHistory.isEmpty {
+            lastPublishedWrittenSamples = written
+            if isRecording || reveal > 0 || !historyBuffer.isEmpty {
+                meter.copyOrderedHistory(into: &historyBuffer)
+                frameModel.history = historyBuffer
+            }
+            if isRecording || reveal > 0 || !spectrumBuffer.isEmpty {
+                spectrum.copyOrderedRing(into: &spectrumBuffer)
+                frameModel.spectrumHistory = spectrumBuffer
+            }
+        }
+        if let ending = model.rewriteEnding,
+           HUDRewriteActivity.arcFade(
+               isRunning: false,
+               endedAt: ending.at,
+               time: now,
+               reduceMotion: reduceMotion
+           ) <= 0 {
+            model.rewriteEnding = nil
+        }
+
+        let isWorking = if case .working = model.mode { true } else { false }
+        let isTranscriptAnimating: Bool = {
+            guard case .transcript = model.mode else { return false }
+            return model.rewrite?.activeStyleTitle != nil
+                || model.rewriteEnding != nil
+                || model.rewrite?.isStreaming == true
+                || !(model.rewrite?.draftChunks.isEmpty ?? true)
+        }()
+
+        let nextPhase = meter.phase
+        if frameModel.phase != nextPhase { frameModel.phase = nextPhase }
+        let nextCeiling = meter.ceiling
+        if frameModel.ceiling != nextCeiling { frameModel.ceiling = nextCeiling }
+        if isRecording || isTranscriptAnimating || frameModel.reveal > 0 {
+            let nextTime = reduceMotion ? 1.8 : now
+            if frameModel.time != nextTime { frameModel.time = nextTime }
+            if isTranscriptAnimating, frameModel.rewriteTime != nextTime {
+                frameModel.rewriteTime = nextTime
+            }
+        }
+        if isRecording {
+            let nextPulse = reduceMotion ? 0 : now.truncatingRemainder(dividingBy: 1.1) / 1.1
+            if frameModel.pulse != nextPulse { frameModel.pulse = nextPulse }
+        } else if frameModel.pulse != 0 {
+            frameModel.pulse = 0
+        }
+        if isRecording || frameModel.reveal > 0 {
+            let frame = frameModel.currentVisualizerFrame(
+                visualizer: model.visualizer,
+                material: model.material,
+                reduceMotion: reduceMotion
+            )
+            frameModel.visualizerSink.push(frame)
+            if isRecording {
+                frameModel.liveDotSink.push(
+                    frameModel.currentLiveDotFrame(material: model.material, reduceMotion: reduceMotion)
+                )
+            }
+#if DEBUG
+            if FrameLeafProbe.captures {
+                FrameLeafProbe.waveformBodies += 1
+            }
+#endif
+        }
+        if isWorking {
+            let nextShimmer = reduceMotion ? 0 : now.truncatingRemainder(dividingBy: 1.4) / 1.4
+            if frameModel.shimmer != nextShimmer { frameModel.shimmer = nextShimmer }
+        } else if frameModel.shimmer != 0 {
+            frameModel.shimmer = 0
+        }
         updateDwell(now: now)
         frameStats.record(
             intervalMS: dt * 1000,
-            durationMS: (CFAbsoluteTimeGetCurrent() - tickStarted) * 1000
+            durationMS: (CFAbsoluteTimeGetCurrent() - tickStarted) * 1000,
+            wakeDeltaMS: wakeDeltaMS
         )
         hasRenderedSincePresent = true
+        renderFallbackTimer?.invalidate()
+        renderFallbackTimer = nil
+        linkFallbackTimer?.invalidate()
+        linkFallbackTimer = nil
         debugTickCount += 1
+        let showsRewriteChips: Bool = {
+            guard case .transcript = model.mode else { return false }
+            return model.rewrite?.showsChips == true
+        }()
+        if dismissal == nil,
+           debugAppearanceAtRest,
+           !isRecording,
+           !isWorking,
+           !isTranscriptAnimating,
+           frameModel.reveal <= 0,
+           !showsRewriteChips || railPositionRestored {
+            sleepRenderLoopIfStaticIdle()
+        }
 #if DEBUG
         HUDTickProbe.recordDuration((CFAbsoluteTimeGetCurrent() - tickStarted) * 1000)
         HUDTickProbe.record(
@@ -2246,25 +2546,37 @@ final class HUD {
     ///
     /// - Parameter dt: the time that passed, in seconds.
     private func advanceAppearance(by dt: Double) {
-        func write(_ value: Double, to keyPath: ReferenceWritableKeyPath<HUDModel, Double>) {
-            guard model[keyPath: keyPath] != value else { return }
-            model[keyPath: keyPath] = value
+        func writeFrame(_ value: Double, to keyPath: ReferenceWritableKeyPath<HUDFrameModel, Double>) {
+            guard frameModel[keyPath: keyPath] != value else { return }
+            frameModel[keyPath: keyPath] = value
+            hasSyncedRestAppearance = false
+        }
+        func syncModelIfRested() {
+            guard debugAppearanceAtRest else {
+                hasSyncedRestAppearance = false
+                return
+            }
+            guard !hasSyncedRestAppearance else { return }
+            if model.emergence != frameModel.emergence { model.emergence = frameModel.emergence }
+            if model.presence != frameModel.presence { model.presence = frameModel.presence }
+            if model.content != frameModel.content { model.content = frameModel.content }
+            hasSyncedRestAppearance = true
         }
         if reduceMotion {
             reduceFade.advance(dt)
             if reduceFade.isResting { reduceFade.snap(to: reduceFade.target) }
             emergeSpring.snap(to: reduceFade.value)
-            write(reduceFade.value, to: \.emergence)
-            write(reduceFade.value, to: \.presence)
+            writeFrame(reduceFade.value, to: \.emergence)
+            writeFrame(reduceFade.value, to: \.presence)
         } else {
             emergeSpring.advance(dt)
             if emergeSpring.isResting { emergeSpring.snap(to: emergeSpring.target) }
-            write(emergeSpring.value, to: \.emergence)
-            write(min(max(emergeSpring.value, 0), 1), to: \.presence)
+            writeFrame(emergeSpring.value, to: \.emergence)
+            writeFrame(min(max(emergeSpring.value, 0), 1), to: \.presence)
         }
         contentSpring.advance(dt)
         if contentSpring.isResting { contentSpring.snap(to: contentSpring.target) }
-        write(min(max(contentSpring.value, 0), 1), to: \.content)
+        writeFrame(min(max(contentSpring.value, 0), 1), to: \.content)
 
         if debugHoldTheEntrance {
             // Keep the card visibly arrived but one step short of rest, so the
@@ -2274,18 +2586,20 @@ final class HUD {
                 reduceFade.snap(to: held)
                 reduceFade.to(1)
                 emergeSpring.snap(to: held)
-                write(held, to: \.emergence)
-                write(held, to: \.presence)
+                writeFrame(held, to: \.emergence)
+                writeFrame(held, to: \.presence)
             } else {
                 emergeSpring.snap(to: held)
-                write(held, to: \.emergence)
-                write(held, to: \.presence)
+                writeFrame(held, to: \.emergence)
+                writeFrame(held, to: \.presence)
             }
             contentSpring.snap(to: held)
-            write(held, to: \.content)
+            writeFrame(held, to: \.content)
+        } else {
+            syncModelIfRested()
         }
 
-        if model.presence >= 0.98, !hasReadPointerSinceArrival {
+        if frameModel.presence >= 0.98, !hasReadPointerSinceArrival {
             hasReadPointerSinceArrival = true
             refreshThePointerAfterArrival()
         }
@@ -2293,13 +2607,13 @@ final class HUD {
         guard var dismissal else { return }
         dismissal.elapsed += dt
         if !dismissal.shapeStarted,
-           reduceMotion || model.content < 0.05 || dismissal.elapsed >= 0.12 {
+           reduceMotion || frameModel.content < 0.05 || dismissal.elapsed >= 0.12 {
             dismissal.shapeStarted = true
             if !reduceMotion {
                 emergeSpring.to(target: 0, duration: 0.45, bounce: 0)
             }
         }
-        let left = reduceMotion ? model.presence <= 0.001 : emergeSpring.value <= 0.001
+        let left = reduceMotion ? frameModel.presence <= 0.001 : emergeSpring.value <= 0.001
         if dismissal.shapeStarted, left || dismissal.elapsed >= 1 {
             self.dismissal = nil
             finishHiding()
@@ -2598,6 +2912,7 @@ final class HUD {
         debugModeHistory.append(mode)
         #endif
         model.cardSize = size
+        ensureRenderingActive()
         if changed {
             // A chip belongs to the transcript card that carried it.
             if case .transcript = mode {} else {
@@ -2607,11 +2922,10 @@ final class HUD {
             }
             model.isEditingTranscript = false
             model.hoveredAction = nil
+            clearActionFeedback()
             // A button belongs to the message that offered it. Leaving the
             // closure behind would let a card that cannot show it run it.
             model.messageAction = nil
-            model.assistantAllow = nil
-            model.assistantCancel = nil
             panel.allowsKey = false
             if wasTranscript {
                 if case .transcript = mode {} else {
@@ -2624,6 +2938,7 @@ final class HUD {
         contentSpring.to(target: 1, duration: 0.34, bounce: 0.10)
         if reduceMotion {
             contentSpring.snap(to: 1)
+            frameModel.content = 1
             model.content = 1
         }
     }
@@ -2635,12 +2950,7 @@ final class HUD {
              (.working, .working),
              (.transcript, .transcript),
              (.message, .message),
-             (.ready, .ready),
-             (.assistantRecording, .assistantRecording),
-             (.assistantThinking, .assistantThinking),
-             (.assistantTool, .assistantTool),
-             (.assistantAnswer, .assistantAnswer),
-             (.assistantConfirm, .assistantConfirm):
+             (.ready, .ready):
             true
         default:
             false
@@ -2742,7 +3052,9 @@ final class HUD {
     ///   - index: the display's index, for the log.
     ///   - screens: how many displays there are, for the log.
     private func apply(_ placement: HUDEmergence.Placement, index: Int, screens: Int) {
-        panel.setFrame(placement.panelFrame, display: false)
+        if panel.frame != placement.panelFrame {
+            panel.setFrame(placement.panelFrame, display: false)
+        }
         renderLoop.refresh(on: panel.contentView, screenID: offscreen ? nil : Self.screenID(of: panel.screen))
         let accepted = panel.frame
         let constrained = abs(accepted.origin.y - placement.panelFrame.origin.y) > 0.5
@@ -2800,8 +3112,21 @@ final class HUD {
         )
     }
 
+    deinit {
+        idleDwellTimer?.invalidate()
+        if let renderActivity {
+            ProcessInfo.processInfo.endActivity(renderActivity)
+        }
+        for token in defaultNotificationTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
+        for token in workspaceNotificationTokens {
+            NSWorkspace.shared.notificationCenter.removeObserver(token)
+        }
+    }
+
     private func observeScreens() {
-        NotificationCenter.default.addObserver(
+        defaultNotificationTokens.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeScreenNotification,
             object: panel,
             queue: .main
@@ -2809,8 +3134,8 @@ final class HUD {
             Task { @MainActor in
                 self?.placePanel()
             }
-        }
-        NotificationCenter.default.addObserver(
+        })
+        defaultNotificationTokens.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
@@ -2818,8 +3143,8 @@ final class HUD {
             Task { @MainActor in
                 self?.placePanel()
             }
-        }
-        NotificationCenter.default.addObserver(
+        })
+        defaultNotificationTokens.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification,
             object: panel,
             queue: .main
@@ -2827,8 +3152,8 @@ final class HUD {
             Task { @MainActor in
                 self?.endInlineEditing()
             }
-        }
-        NSWorkspace.shared.notificationCenter.addObserver(
+        })
+        workspaceNotificationTokens.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
@@ -2836,55 +3161,7 @@ final class HUD {
             Task { @MainActor in
                 self?.endInlineEditing()
             }
-        }
-    }
-
-    // MARK: - Assistant
-
-    /// Shows the question on its way to the service.
-    func showAssistantThinking(question: String) {
-        isPreviewingVisualizer = false
-        cancelDwellForAssistant()
-        setMode(.assistantThinking(question: question), size: HUDState.assistantCard.size)
-        present()
-    }
-
-    /// Shows the connected app the answer is using.
-    func showAssistantTool(connectorName: String) {
-        isPreviewingVisualizer = false
-        cancelDwellForAssistant()
-        setMode(.assistantTool(connectorName: connectorName), size: HUDState.assistantCard.size)
-        present()
-    }
-
-    /// Shows the answer as it arrives, or as it was delivered.
-    ///
-    /// The countdown is the transcript's: it starts when the answer has reached
-    /// a state a person can act on, and it runs while the card is not being
-    /// read. A streaming answer never counts down, because it is still changing.
-    func showAssistantAnswer(text: String, state: AssistantAnswerState) {
-        isPreviewingVisualizer = false
-        model.clearLiveText()
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        setMode(
-            .assistantAnswer(text: trimmed, state: state),
-            size: Self.assistantAnswerSize(text: trimmed)
-        )
-        present()
-        switch state {
-        case .pasted:
-            startDwelling(duration: min(dwellSeconds, 3.5))
-        case .copied, .spoken:
-            startDwelling(duration: dwellSeconds)
-        case .streaming, .speaking:
-            cancelDwellForAssistant()
-        }
-    }
-
-    private func cancelDwellForAssistant() {
-        dismissTimer?.invalidate()
-        dismissTimer = nil
-        dwellClock = nil
+        })
     }
 
     /// Shows the rewrite layer on the transcript card.
@@ -2905,6 +3182,10 @@ final class HUD {
             model.rewriteEnding = RewriteEnding(styleID: styleID, at: CACurrentMediaTime())
         }
         model.rewrite = card
+        if previous?.selectedVersionID != card?.selectedVersionID {
+            clearActionFeedback()
+        }
+        ensureRenderingActive()
         guard case .transcript(let text, _, _, _) = model.mode else { return }
         model.cardSize = Self.transcriptSize(text: text, rewrite: card)
         guard let card else {
@@ -2927,17 +3208,6 @@ final class HUD {
         if dwellClock == nil || (dwellClock?.duration ?? 0) < target || changed {
             startDwelling(duration: target)
         }
-    }
-
-    /// The size of the assistant's answer card.
-    ///
-    /// It is the transcript's body under the transcript's header: the same font,
-    /// the same bounds, the same point at which it starts to scroll.
-    ///
-    /// - Parameter text: the answer.
-    static func assistantAnswerSize(text: String) -> CGSize {
-        let body = HUDTranscript.bodyHeight(contentHeight: transcriptContentHeight(text: text))
-        return HUDState.assistantAnswerCard(bodyHeight: body).size
     }
 
     // MARK: - Sizes
@@ -3057,81 +3327,5 @@ final class HUD {
             + HUDTheme.actionSize
             + 6
         return min(max(width, 280), 560)
-    }
-
-    // MARK: - Confirmation
-
-    /// Shows a connected app's request and the two ways to answer it.
-    ///
-    /// The card never takes the keyboard: the panel cannot become key, so a
-    /// Return typed into the application behind it reaches that application and
-    /// approves nothing. Escape reaches the coordinator, which declines.
-    ///
-    /// - Parameters:
-    ///   - request: what the app wants to do.
-    ///   - onAllow: what the allow button does.
-    ///   - onCancel: what the cancel button does.
-    func showAssistantConfirm(
-        _ request: ConfirmationRequest,
-        onAllow: @escaping () -> Void,
-        onCancel: @escaping () -> Void
-    ) {
-        isPreviewingVisualizer = false
-        model.clearLiveText()
-        cancelDwellForAssistant()
-        let lines = Self.assistantSummaryLines(request.summary)
-        setMode(
-            .assistantConfirm(request),
-            size: CGSize(
-                width: HUDConfirmLayout.width,
-                height: HUDConfirmLayout.height(summaryLines: lines)
-            )
-        )
-        // Set after the mode, so the state change cannot clear the buttons that
-        // belong to the request it just moved to.
-        model.assistantAllow = onAllow
-        model.assistantCancel = onCancel
-        present()
-        Log.shared.info("hud.confirm.shown", [
-            "connector": .string(request.connectorID.rawValue),
-            "risk": .string(request.risk.rawValue),
-            "lines": .int(lines),
-        ])
-    }
-
-    /// The number of lines the request needs on the card.
-    ///
-    /// It is measured, not estimated: the sentence is the whole of what the
-    /// person is deciding on, and the card is sized to hold it.
-    ///
-    /// - Parameter summary: the sentence the tool built.
-    static func assistantSummaryLines(_ summary: String) -> Int {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 2
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: DotType.nsFont(14, .regular),
-            .paragraphStyle: paragraph,
-        ]
-        let rect = (summary as NSString).boundingRect(
-            with: CGSize(width: HUDConfirmLayout.summaryWidth, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: attributes
-        )
-        let lines = Int(ceil(rect.height / HUDConfirmLayout.summaryLineHeight))
-        return min(max(lines, 1), HUDConfirmLayout.maximumSummaryLines)
-    }
-}
-
-extension HUD: AssistantHUD {
-    func showAssistantMessage(_ text: String, symbol: String) {
-        showMessage(text: text, symbol: symbol)
-    }
-
-    func hideAssistantConfirm() {
-        hide()
-    }
-
-    func hideAssistant() {
-        hide()
     }
 }

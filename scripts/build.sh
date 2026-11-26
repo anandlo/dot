@@ -96,6 +96,8 @@ else
   warn "run ./scripts/fetch-fonts.sh to fetch the typeface the app is designed in."
 fi
 
+# The bundle identifier and version also populate Info.plist.
+BUILD_NUMBER="${BUILD_NUMBER:-$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo 1)}"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -122,7 +124,7 @@ $FONT_ENTRY
 	<key>CFBundleShortVersionString</key>
 	<string>$MARKETING_VERSION</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$BUILD_NUMBER</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -131,20 +133,6 @@ $FONT_ENTRY
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dot records your microphone so it can turn your speech into text.</string>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>Dot controls Notes, Mail, Messages, Music, Spotify, System Events and your browser only when you ask it to, for example to add a note, send a message or change the track that is playing.</string>
-	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>Dot adds reminders you ask for by voice.</string>
-	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Dot reads your calendars when you ask what is next and adds events you ask for.</string>
-	<key>NSContactsUsageDescription</key>
-	<string>Dot looks up a person's details when you ask it to write to them.</string>
-	<key>NSDesktopFolderUsageDescription</key>
-	<string>Dot opens or moves a file in your Desktop folder when you ask it to.</string>
-	<key>NSDocumentsFolderUsageDescription</key>
-	<string>Dot opens or moves a file in your Documents folder when you ask it to.</string>
-	<key>NSDownloadsFolderUsageDescription</key>
-	<string>Dot opens or moves a file in your Downloads folder when you ask it to.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

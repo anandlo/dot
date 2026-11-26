@@ -1336,4 +1336,71 @@ extension VisualizerRedesignTests {
             phase: meter.phase
         )
     }
+
+    func testStretchAndSilkExpandDynamicRangeBetweenMediumAndLoudSpeech() {
+        let stretch = HUDWaveform.Stretch.self
+        let silentBar = stretch.bars(
+            history: [Double](repeating: 0, count: Waveform.historyLength),
+            phase: 0,
+            time: 2.0,
+            reveal: 1,
+            canvas: Self.wideCanvas.width,
+            reduceMotion: true
+        ).first
+        let mediumBar = stretch.bars(
+            history: [Double](repeating: 0.58, count: Waveform.historyLength),
+            phase: 0,
+            time: 2.0,
+            reveal: 1,
+            canvas: Self.wideCanvas.width,
+            reduceMotion: true
+        ).first
+        let loudBar = stretch.bars(
+            history: [Double](repeating: 0.85, count: Waveform.historyLength),
+            phase: 0,
+            time: 2.0,
+            reveal: 1,
+            canvas: Self.wideCanvas.width,
+            reduceMotion: true
+        ).first
+        let fullBar = stretch.bars(
+            history: [Double](repeating: 1.0, count: Waveform.historyLength),
+            phase: 0,
+            time: 2.0,
+            reveal: 1,
+            canvas: Self.wideCanvas.width,
+            reduceMotion: true
+        ).first
+
+        XCTAssertEqual(Double(silentBar?.height ?? 0), Double(stretch.minHeight), accuracy: 1e-6)
+        XCTAssertEqual(Double(fullBar?.height ?? 0), Double(stretch.maxHeight), accuracy: 1e-6)
+        let medHeight = Double(mediumBar?.height ?? 0)
+        let loudHeight = Double(loudBar?.height ?? 0)
+        XCTAssertGreaterThan(medHeight, Double(stretch.minHeight))
+        XCTAssertGreaterThan(loudHeight / medHeight, 1.8)
+
+        let silk = HUDWaveform.Silk.self
+        for ribbon in 0..<silk.ribbonCount {
+            XCTAssertLessThanOrEqual(
+                silk.thicknessShare[ribbon] + silk.centreShare[ribbon],
+                1.0 + 1e-9,
+                "ribbon \(ribbon) shares overflow canvas reach"
+            )
+        }
+        let reach = silk.reach(forHeight: Self.wideCanvas.height)
+        func peakExcursion(energy: Double) -> Double {
+            var peak = 0.0
+            for index in 0..<silk.sampleCount {
+                let u = Double(index) / Double(silk.sampleCount - 1)
+                let taper = silk.cachedEdges[index]
+                let centre = abs(silk.centreOffset(ribbon: 0, u: u, energy: energy, reach: reach, time: 1.75, taper: taper))
+                let half = silk.halfThickness(ribbon: 0, u: u, energy: energy, reach: reach, time: 1.75, taper: taper)
+                peak = max(peak, Double(centre + half))
+            }
+            return peak
+        }
+        let silkMedium = peakExcursion(energy: 0.58)
+        let silkLoud = peakExcursion(energy: 0.85)
+        XCTAssertGreaterThan(silkLoud / silkMedium, 1.8)
+    }
 }

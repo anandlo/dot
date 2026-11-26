@@ -18,6 +18,11 @@ public enum AssistantCredentials {
         CredentialStore.hasKey(for: providerID)
     }
 
+    /// Which chat providers have a key, answered in one batch without decrypting.
+    public static func hasKeys(for providerIDs: [String]) -> Set<String> {
+        CredentialStore.hasKeys(for: providerIDs)
+    }
+
     /// The key of a chat provider, resolved once per session.
     ///
     /// This decrypts on the first call. The main actor must not be the caller;

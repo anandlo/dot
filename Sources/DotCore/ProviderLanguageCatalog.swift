@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Speech
 
 /// A spoken language offered by a speech provider.
@@ -143,18 +144,28 @@ public enum ProviderLanguageCatalog {
         AvailableLanguage(id: "en", name: "English"),
     ]
 
+    private static let appleLanguagesCache = OSAllocatedUnfairLock<(localeID: String, languages: [AvailableLanguage])?>(
+        initialState: nil
+    )
+
     /// The locales the on-device transcriber supports on this Mac.
     ///
-    /// The list is read from the system at call time: it differs between
-    /// machines and changes when macOS installs another language asset.
+    /// The list is cached per locale identifier because formatting and sorting
+    /// all supported locales synchronously on every SwiftUI render or menu build
+    /// causes noticeable main-thread stalls.
     ///
     /// - Returns: detection first, then the supported locales by name.
     public static func appleLanguages() -> [AvailableLanguage] {
+        let localeID = Locale.current.identifier
+        if let cached = appleLanguagesCache.withLock({ $0 }), cached.localeID == localeID {
+            return cached.languages
+        }
         var list: [AvailableLanguage] = [
             AvailableLanguage(id: "auto", name: "Auto-detect", detail: "System default speech language")
         ]
         let locales = SFSpeechRecognizer.supportedLocales()
         var items: [AvailableLanguage] = []
+        items.reserveCapacity(locales.count)
         for locale in locales {
             let id = locale.identifier
             guard !id.contains("translit") else { continue }
@@ -163,7 +174,9 @@ public enum ProviderLanguageCatalog {
         }
         items.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         list.append(contentsOf: items)
-        return list
+        let snapshot = list
+        appleLanguagesCache.withLock { $0 = (localeID: localeID, languages: snapshot) }
+        return snapshot
     }
 
     /// The languages a provider and model accept.

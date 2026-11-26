@@ -5,8 +5,6 @@ import Foundation
 public enum MenuAction: Hashable, Sendable {
     /// Start or stop the recording.
     case toggleRecording
-    /// Ask the assistant: start a question, or stop the one in flight.
-    case askAssistant
     /// Paste the last transcript again.
     case pasteLast
     /// Copy the last transcript again.
@@ -197,12 +195,6 @@ public struct MenuState: Equatable, Sendable {
     public var isRecording: Bool
     /// The shortcut that starts and stops a recording.
     public var recordShortcut: MenuShortcut?
-    /// The assistant's recorded shortcut.
-    ///
-    /// The item that showed it is no longer drawn, but the key stays in the
-    /// state and in the configuration: the runtime still owns it, and nothing
-    /// has to be re-recorded while the item is absent.
-    public var assistantShortcut: MenuShortcut?
     /// The shortcut that pastes the last transcript again.
     public var pasteShortcut: MenuShortcut?
     /// The last transcripts, newest first.
@@ -225,18 +217,11 @@ public struct MenuState: Equatable, Sendable {
     public var fastRecordEnabled: Bool
     /// Whether Dot starts when the machine does.
     public var launchAtLogin: Bool
-    /// Whether the assistant has a service it can ask.
-    ///
-    /// No menu item is drawn from it: the product has no spoken assistant. The
-    /// state stays because the runtime and a menu dump still report it, and
-    /// removing it would change the public shape for no gain.
-    public var assistantUsable: Bool
 
     /// Creates the state of the menu.
     public init(
         isRecording: Bool = false,
         recordShortcut: MenuShortcut? = nil,
-        assistantShortcut: MenuShortcut? = nil,
         pasteShortcut: MenuShortcut? = nil,
         history: [String] = [],
         microphones: [MenuMicrophone] = [],
@@ -247,12 +232,10 @@ public struct MenuState: Equatable, Sendable {
         selectedPresetID: String = "",
         autoPasteEnabled: Bool = true,
         fastRecordEnabled: Bool = false,
-        launchAtLogin: Bool = false,
-        assistantUsable: Bool = true
+        launchAtLogin: Bool = false
     ) {
         self.isRecording = isRecording
         self.recordShortcut = recordShortcut
-        self.assistantShortcut = assistantShortcut
         self.pasteShortcut = pasteShortcut
         self.history = history
         self.microphones = microphones
@@ -264,7 +247,6 @@ public struct MenuState: Equatable, Sendable {
         self.autoPasteEnabled = autoPasteEnabled
         self.fastRecordEnabled = fastRecordEnabled
         self.launchAtLogin = launchAtLogin
-        self.assistantUsable = assistantUsable
     }
 }
 
