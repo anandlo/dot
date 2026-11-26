@@ -71,3 +71,11 @@ DotTests.UIPreviewTests/testWelcomeAndAboutRenderToPNGs
 DotTests.VisualizerLiftTests/testBlackCardFrames
 DotTests.VisualizerLiftTests/testTheCardOverTheWave
 DotTests.VisualizerRedesignTests/testEvidenceRenders
+
+# Measured at 2 px per point (WindowCapture.requireRetinaBacking / the window
+# server's capture ratio). Hosted runners have a 1x display, so these always skip
+# there; they run and pass on a Retina Mac (local full suite, install gate).
+DotTests.MatrixInkBoundsTests/testLitDotsStayInsideTheirCircles
+DotTests.MatrixRenderTests/testTheHighlightStartsAboveHalfHeatAndStaysInsideTheDot
+DotTests.WaveInkTests/testContrastThresholds
+DotTests.WaveInkTests/testRenderedBlackSpeechIsTheStop
