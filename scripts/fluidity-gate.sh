@@ -14,6 +14,9 @@ trap 'rm -f -- "$LOG"' EXIT
 
 printf 'fluidity gate: %s\n' "$SUITES"
 cd -- "$PROJECT_DIR"
+# The budgets are enforced here whatever the caller's environment says;
+# only the hosted CI runners report them (Tests/DotTests/FrameTiming.swift).
+export DOT_FRAME_TIMING=enforce
 # The suites draw into off-screen windows and read the display link, which the
 # test sandbox does not allow.
 if ! swift test --disable-sandbox --filter "$SUITES" >"$LOG" 2>&1; then

@@ -67,6 +67,10 @@ runs:
         DOT_CI_EVIDENCE_DIR: ${{ inputs.evidence-dir }}/render-evidence
         EVIDENCE_DIR: ${{ inputs.evidence-dir }}
         EVIDENCE_LABEL: ${{ inputs.evidence-label }}
+        # Hosted runners miss wall-clock frame budgets for reasons unrelated
+        # to the code; the budgets are enforced by scripts/install.sh and
+        # scripts/fluidity-gate.sh on a real Mac (Tests/DotTests/FrameTiming.swift).
+        DOT_FRAME_TIMING: report
       run: |
         set -uo pipefail
         mkdir -p "$EVIDENCE_DIR/render-evidence"
