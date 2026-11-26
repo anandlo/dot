@@ -16,7 +16,7 @@ it ships, and so this repository can never drift from what the tap publishes.
 
 ## What has to be true before the tap works
 
-1. A GitHub release exists, tagged `v<VERSION>` (`v0.1.0-beta`, say), with
+1. A GitHub release exists, tagged `v<VERSION>` (`v0.1.0-beta.1`, say), with
    `Dot-<VERSION>-arm64.dmg`, `Dot-<VERSION>-arm64.zip`, `SHA256SUMS`, and
    `dot.rb` attached.
 2. `anandlo/homebrew-tap` exists and is public.
@@ -106,7 +106,7 @@ load cask … from untrusted tap`, or when the cask has to be installed by short
 name. Trusting the single cask rather than the whole tap keeps the permission as
 narrow as it can be. `brew audit` downloads the release asset to compute its
 checksum, so it only passes once the asset is public. A first install ends with an
-ad-hoc signed app in `/Applications`. Homebrew does not bypass Gatekeeper and the
+self-signed app in `/Applications`. Homebrew does not bypass Gatekeeper and the
 cask cannot make it: the first launch goes through **System Settings → Privacy &
 Security → Open Anyway**, exactly as `README.md` describes.
 
