@@ -89,7 +89,7 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match VERSION ($version); expected v$version"
             exit 1
           fi
-          # A hyphen marks a prerelease: 0.1.0-beta.1, 1.0.0-rc.1. Marking it on the
+          # A hyphen marks a prerelease: 0.1.0-beta, 0.2.0-beta, 1.0.0-rc.1. Marking it on the
           # release page hides it from /releases/latest, which is correct for a
           # beta and is why scripts/install-remote.sh falls back to the full list.
           case "$version" in

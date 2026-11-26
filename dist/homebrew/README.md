@@ -16,7 +16,7 @@ it ships, and so this repository can never drift from what the tap publishes.
 
 ## What has to be true before the tap works
 
-1. A GitHub release exists, tagged `v<VERSION>` (`v0.1.0-beta.1`, say), with
+1. A GitHub release exists, tagged `v<VERSION>` (`v0.1.0-beta`, say), with
    `Dot-<VERSION>-arm64.dmg`, `Dot-<VERSION>-arm64.zip`, `SHA256SUMS`, and
    `dot.rb` attached.
 2. `anandlo/homebrew-tap` exists and is public.

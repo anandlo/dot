@@ -14,7 +14,7 @@
 # System Settings → Privacy & Security → Open Anyway. That is documented in
 # README.md, which is the only supported route.
 cask "dot" do
-  version "0.1.0-beta.1"
+  version "0.1.0-beta"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
   url "https://github.com/anandlo/dot/releases/download/v#{version}/Dot-#{version}-arm64.dmg"
