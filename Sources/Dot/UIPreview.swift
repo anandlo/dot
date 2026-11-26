@@ -1778,6 +1778,11 @@ enum UIPreview {
         var releasedAt: Double?
         private var started = false
 
+        init(reduceMotion: Bool, interrupt: Bool) {
+            self.reduceMotion = reduceMotion
+            self.interrupt = interrupt
+        }
+
         static let plateCentre = CGPoint(x: 282.5, y: 59)
         static let pointerEntry = CGPoint(x: 12, y: 58)
         static let pointerNearDisc = CGPoint(x: 500, y: 30)
