@@ -11,13 +11,20 @@ import DotCore
 final class StatusItemController: NSObject, NSMenuDelegate {
     /// Called when the user picks an item.
     var onAction: ((MenuAction) -> Void)?
+    /// Called just before the menu is built, so the app can re-read the facts the
+    /// menu shows.
+    ///
+    /// The menu is the one surface that has to be current when it opens rather
+    /// than when something changed: an input plugged in an hour ago and a login
+    /// item switched in System Settings are both news the app has not been told.
+    var onMenuOpen: (() -> Void)?
 
     /// What the menu shows. Setting it refreshes the menu the next time it
     /// opens.
     var menuState = MenuState() {
         didSet {
             if menuState.isRecording != oldValue.isRecording {
-                startGlyph()
+                updateGlyph()
             }
             if menuState.fastRecordEnabled != oldValue.fastRecordEnabled {
                 configureClickMode()
@@ -29,10 +36,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let button: NSStatusBarButton
     private let target = MenuActionTarget()
     private var dropdownMenu: NSMenu!
-    /// Drives the breathing glyph.
-    private var glyphTimer: Timer?
-    /// The frame of the breath that is showing.
-    private var glyphFrame = 0
+    private var appliedRecording: Bool?
+    private var appliedDark: Bool?
+    nonisolated(unsafe) private var themeObserver: NSObjectProtocol?
 
     /// Creates the menu bar item.
     override init() {
@@ -44,15 +50,20 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             self?.onAction?(action)
         }
 
-        button.image = MenuGlyph.image(
-            phase: 0,
-            amplitude: Self.idleAmplitude,
-            dark: Self.menuBarIsDark
-        )
         button.contentTintColor = nil
         button.imagePosition = .imageOnly
         button.toolTip = nil
-        startGlyph()
+        updateGlyph(force: true)
+
+        themeObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateGlyph()
+            }
+        }
 
         let menu = MenuBuilder.build(state: menuState, target: target)
         menu.delegate = self
@@ -104,6 +115,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     /// Rebuilds the menu in place, so an open menu reflects the truth.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        updateGlyph()
+        onMenuOpen?()
         let fresh = MenuBuilder.build(state: menuState, target: target)
         menu.removeAllItems()
         while let item = fresh.items.first {
@@ -112,51 +125,39 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
     }
 
+    deinit {
+        if let themeObserver {
+            DistributedNotificationCenter.default().removeObserver(themeObserver)
+        }
+    }
+
     /// Removes the item.
     func tearDown() {
-        glyphTimer?.invalidate()
-        glyphTimer = nil
+        if let themeObserver {
+            DistributedNotificationCenter.default().removeObserver(themeObserver)
+            self.themeObserver = nil
+        }
         statusItem.menu = nil
         NSStatusBar.system.removeStatusItem(statusItem)
     }
 
     // MARK: - The glyph
 
-    /// How far the cut-out moves while nothing is being dictated.
-    private static let idleAmplitude: CGFloat = 0.55
-    /// How far it moves while a recording is running.
+    /// How far the cut-out moves while a recording is running.
     private static let recordingAmplitude: CGFloat = 1
-    /// Frames per second while idle: one breath every eight seconds.
-    private static let idleFrameRate: Double = 3
-    /// Frames per second while a recording runs: one breath every 1.2 seconds.
-    private static let recordingFrameRate: Double = 20
 
-    /// Starts the breathing glyph.
-    ///
-    /// A menu bar item that never changes is furniture, and one that pulses
-    /// quickly while idle is noise. Worse, every image the button is given
-    /// makes AppKit snapshot the whole status item again for its replicants, so
-    /// a fast idle animation is not free: three frames a second is a slow drift
-    /// a person reads as alive, and the fast breath belongs to the seconds when
-    /// a recording is actually running.
-    private func startGlyph() {
-        glyphTimer?.invalidate()
-        let rate = menuState.isRecording ? Self.recordingFrameRate : Self.idleFrameRate
-        let timer = Timer(timeInterval: 1.0 / rate, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.advanceGlyph() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        glyphTimer = timer
-        advanceGlyph()
-    }
-
-    private func advanceGlyph() {
+    /// Updates `button.image` only when recording state or menu bar appearance changes
+    /// to avoid triggering FrontBoard status-item replicant snapshots and XPC fences.
+    private func updateGlyph(force: Bool = false) {
         let recording = menuState.isRecording
-        glyphFrame += 1
-        button.image = MenuGlyph.frame(
-            index: glyphFrame,
-            amplitude: recording ? Self.recordingAmplitude : Self.idleAmplitude,
-            dark: Self.menuBarIsDark
+        let dark = Self.menuBarIsDark
+        guard force || appliedRecording != recording || appliedDark != dark else { return }
+        appliedRecording = recording
+        appliedDark = dark
+        button.image = MenuGlyph.image(
+            phase: 0,
+            amplitude: recording ? Self.recordingAmplitude : 0,
+            dark: dark
         )
     }
 
@@ -164,9 +165,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     ///
     /// The bar belongs to the system, not to this app: Dot's own appearance
     /// setting must never change it, and `NSApp.appearance` would. The global
-    /// domain's `AppleInterfaceStyle` is the system's answer, it is unaffected
-    /// by anything set through `NSApp.appearance`, and reading it once a frame
-    /// costs a dictionary lookup.
+    /// domain's `AppleInterfaceStyle` is the system's answer and is unaffected
+    /// by anything set through `NSApp.appearance`.
     private static var menuBarIsDark: Bool {
         let value = CFPreferencesCopyAppValue(
             "AppleInterfaceStyle" as CFString,

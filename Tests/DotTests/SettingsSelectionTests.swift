@@ -28,7 +28,7 @@ final class SettingsSelectionTests: XCTestCase {
 
         init(
             config: DotConfig,
-            setKey: @escaping (String, String) -> String? = { _, _ in nil },
+            setKey: @escaping (String, String) async -> String? = { _, _ in nil },
             cache: CredentialCache = .shared,
             checkCache: any CredentialCheckCaching = CredentialCheckCache(),
             runsChecks: Bool = false,
@@ -77,8 +77,8 @@ final class SettingsSelectionTests: XCTestCase {
         }
 
         /// Saves a key the way Connect does, without a keyboard.
-        func save(_ secret: String) {
-            view.save(secret: secret)
+        func save(_ secret: String) async {
+            await view.save(secret: secret)
         }
     }
 
@@ -278,10 +278,10 @@ final class SettingsSelectionTests: XCTestCase {
     }
 
     /// The page says the Keychain refused the key, with the writer's words.
-    func testARefusedKeySaveIsShownOnThePage() throws {
+    func testARefusedKeySaveIsShownOnThePage() async throws {
         let refusal = "The Keychain did not give the key back."
         let harness = Harness(config: keyedConfig(), setKey: { _, _ in refusal })
-        harness.save("sk-test-key-0123456789abcdef")
+        await harness.save("sk-test-key-0123456789abcdef")
 
         let status = harness.credentials.status
         XCTAssertEqual(status.title, "Key not saved", "the label does not say the key was not saved")
@@ -296,14 +296,14 @@ final class SettingsSelectionTests: XCTestCase {
     }
 
     /// The next successful save replaces the refusal.
-    func testASavedKeyReplacesTheRefusalOnThePage() throws {
+    func testASavedKeyReplacesTheRefusalOnThePage() async throws {
         let refusal = "The Keychain did not give the key back."
         let harness = Harness(config: keyedConfig(), setKey: { _, _ in refusal })
-        harness.save("sk-test-key-0123456789abcdef")
+        await harness.save("sk-test-key-0123456789abcdef")
         XCTAssertEqual(harness.credentials.status, .notSaved(refusal), "the refusal was never shown")
 
         let saved = Harness(config: keyedConfig(), setKey: { _, _ in nil })
-        saved.save("sk-test-key-0123456789abcdef")
+        await saved.save("sk-test-key-0123456789abcdef")
         XCTAssertNotEqual(
             saved.credentials.status,
             .notSaved(refusal),
@@ -327,6 +327,7 @@ final class SettingsSelectionTests: XCTestCase {
 
         let harness = try makeHarness()
         harness.pick("no-such-row")
+        Log.shared.flush()
         let text = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(text.contains("settings.pick.dropped"), "a dropped pick left no trace")
         XCTAssertTrue(text.contains("no-such-row"), "the line does not name the row that was dropped")
@@ -552,6 +553,20 @@ final class SettingsSelectionTests: XCTestCase {
                 checkCache: recording,
                 runsChecks: true
             )
+            // The page must be live before the keyboard is: a value present at the
+            // first body evaluation is the starting value, not an edit.
+            let storedEntry = CredentialCheckCache.entry(
+                providerID: ProviderIdentifier.openAI,
+                baseURL: "http://127.0.0.1:9/v1",
+                authStyle: settings.authStyle?.rawValue,
+                credential: storedKey
+            )
+            let askedOnAppear = await waitFor {
+                let names = await recording.recorded()
+                return names.contains(storedEntry)
+            }
+            XCTAssertTrue(askedOnAppear, "the page never asked about the row it opened on")
+
             harness.type(typedKey)
             let answered = await waitFor { harness.credentials.status == .notSaved(message) }
             XCTAssertTrue(
@@ -854,8 +869,12 @@ final class SpeechConnectionSourceGuardTests: XCTestCase {
             "the Status row lost its accessible value"
         )
         XCTAssertTrue(
-            statusDeclaration.contains(".help(credentialStatus.message)"),
-            "the whole Status row lost its tooltip"
+            statusDeclaration.contains(".accessibilityHint(credentialStatus.message)"),
+            "the whole Status row lost its accessibility hint"
+        )
+        XCTAssertFalse(
+            statusDeclaration.contains(".help("),
+            "the Status row must not show a hover tooltip"
         )
         XCTAssertFalse(text.contains("SpeechCredentialLabel"), "the picker-label view came back")
         for helper in ["statusChip", "isServiceConnected", "keyStatus"] {
@@ -867,5 +886,88 @@ final class SpeechConnectionSourceGuardTests: XCTestCase {
         let startIndex = try XCTUnwrap(text.range(of: start)?.lowerBound)
         let endIndex = try XCTUnwrap(text.range(of: end, range: startIndex..<text.endIndex)?.lowerBound)
         return String(text[startIndex..<endIndex])
+    }
+
+    @MainActor
+    func testSwitchingTabsHidesInactiveCachedTabContainers() {
+        var config = DotConfig()
+        config.assistant.rewrite.enabled = true
+        let store = ConfigStore(config: config)
+        let providers = MenuBuilder.providerRows(config: config) { _ in false }
+
+        func makeView(tab: Int) -> AnyView {
+            AnyView(
+                SettingsView(
+                    store: store,
+                    providers: providers,
+                    tab: tab,
+                    onChange: {},
+                    onSetAPIKey: { _, _ in nil },
+                    onChangeShortcut: {}
+                )
+                .environment(\.settingsHeadless, true)
+                .environment(\.assistantKeyedProviders, [])
+            )
+        }
+
+        let host = NSHostingView(rootView: makeView(tab: 0))
+        host.frame = NSRect(x: 0, y: 0, width: 820, height: 600)
+
+        func pump() {
+            for _ in 0 ..< 4 {
+                host.layoutSubtreeIfNeeded()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+        }
+
+        func collectViews(
+            in root: NSView,
+            visibleEditors: inout [NSView],
+            hiddenEditors: inout [NSView],
+            cachedTabs: inout [NSView]
+        ) {
+            let typeName = String(reflecting: type(of: root))
+            if typeName.contains("SettingsCachedTab") && typeName.hasSuffix(".ContainerView") {
+                cachedTabs.append(root)
+            }
+            if root is NSTextField || root is NSTextView {
+                if root.isHiddenOrHasHiddenAncestor {
+                    hiddenEditors.append(root)
+                } else {
+                    visibleEditors.append(root)
+                }
+            }
+            for subview in root.subviews {
+                collectViews(
+                    in: subview,
+                    visibleEditors: &visibleEditors,
+                    hiddenEditors: &hiddenEditors,
+                    cachedTabs: &cachedTabs
+                )
+            }
+        }
+
+        pump()
+        host.rootView = makeView(tab: 1)
+        pump()
+        host.rootView = makeView(tab: 5)
+        pump()
+        host.rootView = makeView(tab: 0)
+        pump()
+
+        var visibleEditors: [NSView] = []
+        var hiddenEditors: [NSView] = []
+        var cachedTabs: [NSView] = []
+        collectViews(
+            in: host,
+            visibleEditors: &visibleEditors,
+            hiddenEditors: &hiddenEditors,
+            cachedTabs: &cachedTabs
+        )
+
+        XCTAssertEqual(cachedTabs.count, 3, "expected general, provider, and assistant tabs to stay cached")
+        XCTAssertEqual(cachedTabs.filter { !$0.isHidden }.count, 1, "only the active tab container should be visible")
+        XCTAssertGreaterThanOrEqual(hiddenEditors.count, 2, "expected cached provider and assistant editors to remain mounted in hidden tabs")
+        XCTAssertTrue(visibleEditors.isEmpty, "hidden provider and assistant text inputs leaked into visible tree: \(visibleEditors)")
     }
 }

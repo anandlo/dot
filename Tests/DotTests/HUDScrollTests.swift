@@ -190,6 +190,22 @@ final class HUDScrollTests: XCTestCase {
         XCTAssertGreaterThan(offset, -5)
     }
 
+    func testInlineTranscriptTextViewMatchesClipWidthWithoutHorizontalOverflow() throws {
+        let fixture = try makeTranscriptPanel(text: longText)
+        defer { fixture.panel.orderOut(nil) }
+
+        let clipWidth = fixture.scrollView.contentView.bounds.width
+        let document = try XCTUnwrap(fixture.scrollView.documentView as? NSTextView)
+        XCTAssertGreaterThan(clipWidth, 100)
+        XCTAssertLessThanOrEqual(
+            document.frame.width,
+            clipWidth + 1.0,
+            "document view expanded beyond clip view (\(document.frame.width) vs \(clipWidth))"
+        )
+        let containerWidth = document.textContainer?.containerSize.width ?? 0
+        XCTAssertLessThanOrEqual(containerWidth, clipWidth + 1.0)
+    }
+
     // MARK: - The dwell
 
     func testThePointerOverTheCardSuspendsTheDwell() throws {
@@ -523,6 +539,31 @@ final class HUDScrollTests: XCTestCase {
         )
     }
 
+    /// The follow of a reveal ends only after the clip holds still for three frames and fifty milliseconds.
+    ///
+    /// On a loaded runner one late frame after a stall, or a burst of frames the
+    /// timer fires back to back, read the clip unmoved while the reveal still has
+    /// a short step to write. Ending the follow on either left the record a point
+    /// short of where the reveal stopped, and the rail never matched it again.
+    func testTheRevealFollowOutlastsALateFrameAndABurstOfFrames() {
+        XCTAssertFalse(
+            HUD.railFollowEnds(stillFrames: 1, stillFor: 0.2),
+            "one late frame after a stall ended the follow"
+        )
+        XCTAssertFalse(
+            HUD.railFollowEnds(stillFrames: 2, stillFor: 0.2),
+            "two still frames ended the follow"
+        )
+        XCTAssertFalse(
+            HUD.railFollowEnds(stillFrames: 5, stillFor: 0.012),
+            "frames fired back to back ended the follow"
+        )
+        XCTAssertTrue(
+            HUD.railFollowEnds(stillFrames: 3, stillFor: 0.05),
+            "a reveal that held still for three frames at 60 Hz was still followed"
+        )
+    }
+
     /// A write to the rail is the person's when it carries the rail further than the residue can.
     ///
     /// The rail scrolls sideways only and its clip's height never moves, so a
@@ -850,7 +891,7 @@ final class HUDScrollTests: XCTestCase {
     /// step that crossed it, and the opening correction would then pull the rail
     /// back by the rest of the travel. One write past the threshold qualifies the
     /// ones after it, and they are followed, at any distance, until the clip
-    /// holds still for a frame.
+    /// holds still.
     func testTheRecordFollowsARevealsLastSteps() throws {
         try WindowCapture.requireFullMotion()
         let card = overflowingCard()
@@ -885,17 +926,17 @@ final class HUDScrollTests: XCTestCase {
         )
         hud.debugStopRenderLoop()
         hud.debugPrimeRailTrackingFromTheRecord()
-        // One step per tracking frame: the render loop is stopped here, so each
-        // write gets exactly one of the card's own tracking frames. Waiting for
-        // the wall-clock loop instead lets a loaded machine deliver a frame with
-        // no write, which ends the follow before the last step.
+        var now: CFTimeInterval = 1
         for _ in 0 ..< 4 {
             origin += 1
             clip.scroll(to: NSPoint(x: origin, y: 0))
             rail.reflectScrolledClipView(clip)
-            hud.debugAdvanceRailTrackingFrame()
+            hud.debugAdvanceRailTrackingFrame(now: now)
+            // A late tick can run before SwiftUI delivers its next scroll step.
+            now += 0.2
+            hud.debugAdvanceRailTrackingFrame(now: now)
+            now += 0.016
         }
-        print("rr2 last steps: origin=\(origin) record=\(hud.debugRailIntendedOrigin.x)")
         XCTAssertEqual(
             hud.debugRailIntendedOrigin.x,
             origin,

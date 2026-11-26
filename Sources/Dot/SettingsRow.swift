@@ -13,8 +13,8 @@ struct SettingsRow<Trailing: View>: View {
     let title: String
     /// A concrete fact the title does not already state.
     var subtitle: String?
-    /// An explanation attached to the name and to the control, shown as a
-    /// tooltip and spoken by VoiceOver when either one has focus.
+    /// An explanation attached to the name and to the control, spoken by
+    /// VoiceOver when either one has focus.
     var help: String?
     /// An SF Symbol drawn before the title, at 16 points.
     var symbol: String?
@@ -149,8 +149,7 @@ private extension View {
     @ViewBuilder
     func settingsHelp(_ text: String?) -> some View {
         if let text {
-            self.help(text)
-                .accessibilityHint(text)
+            self.accessibilityHint(text)
                 .environment(\.settingsRowHelp, text)
         } else {
             self
@@ -184,9 +183,27 @@ extension SettingsRow where Trailing == EmptyView {
 enum SettingsExplanation {
     static let calibrationHelp =
         "Dot learns this microphone's background noise to set the level meter's floor and the threshold for trimming silence at the ends of a take. Reset clears what it learned; microphone gain is never changed."
+    static let recordingModeSubtitle = "Press to toggle, or hold to record."
+    static let mouseButtonSubtitle = "Hold to record. Apps stop receiving its clicks."
+    static let mouseButtonHelp =
+        "While a button is chosen, Dot uses it only for recording, and apps no longer receive its click."
+    static let reduceMotionSubtitle = "Replaces Dot's animations with still or fading versions."
+    static let accessibilityForPaste = "Pasting into another app needs this permission."
+    static let accessibilityForMouse = "Recording with a mouse button needs this permission."
+    static let accessibilityForBoth = "Pasting and recording with a mouse button need this permission."
+    static let pasteSubtitle = "When off, Dot copies the transcript without pasting."
+    static let menuBarRecordSubtitle =
+        "Clicking the icon starts and stops recording instead of opening the menu."
+    static let launchSubtitle = "Starts Dot when you log in to your Mac."
+    static let logTranscriptsSubtitle = "Writes transcript text to Dot.log for troubleshooting."
+    static let historySubtitle = "How many recent transcripts Dot keeps in History."
+    static let microphoneSubtitle = "The input Dot records from."
+    static let calibrationSubtitle = "Sets the meter floor and the threshold for trimming silent ends."
+    static let formatSubtitle = "Adapts pasted text to the app where you start dictating."
+    static let standingRulesSubtitle = "Adds these rules to the end of each Agent prompt Dot writes."
     static let calibrationNone = "Not learned yet."
     static let calibrationOne = "Learned from 1 recording."
-    static let dwellSubtitle = "How long a copied result or an answer stays on the island."
+    static let dwellSubtitle = "How long results stay on the island."
     static let dwellHelp =
         "Pasted results close after at most 3.5 seconds. Hovering, scrolling or editing the card pauses the countdown, and a rewrite card stays at least 60 seconds."
     static let historyHelp =
@@ -194,7 +211,7 @@ enum SettingsExplanation {
     static let formatHelp =
         "Dot formats pasted text for the app where you started dictating. History keeps the original transcript."
     static let segmentSubtitle =
-        "The longest stretch of audio sent in one request. A longer recording is sent in parts of this length."
+        "Longer recordings are sent in parts of this length."
     static let segmentHelp =
         "Service default uses the longest stretch the service accepts, and a longer choice is capped at that limit."
     static let temperatureHelp =

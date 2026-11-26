@@ -82,6 +82,7 @@ final class ShutdownTests: XCTestCase {
 
     /// The event of every line the logger wrote, in the order it wrote them.
     private func logEvents() throws -> [String] {
+        log.flush()
         let url = try XCTUnwrap(log.url)
         return try String(contentsOf: url, encoding: .utf8)
             .split(separator: "\n")

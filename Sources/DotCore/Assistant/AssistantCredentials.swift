@@ -18,6 +18,11 @@ public enum AssistantCredentials {
         CredentialStore.hasKey(for: providerID)
     }
 
+    /// Which chat providers have a key, answered in one batch without decrypting.
+    public static func hasKeys(for providerIDs: [String]) -> Set<String> {
+        CredentialStore.hasKeys(for: providerIDs)
+    }
+
     /// The key of a chat provider, resolved once per session.
     ///
     /// This decrypts on the first call. The main actor must not be the caller;
@@ -41,16 +46,9 @@ public enum AssistantCredentials {
     ///   finish in time.
     public static func resolvedKey(
         for providerID: String,
-        cache: CredentialCache = .shared,
-        within timeout: Duration = .seconds(5)
+        cache: CredentialCache = .shared
     ) async -> String? {
-        let outcome = await BoundedWork.run(within: timeout) {
-            cache.key(for: providerID)
-        }
-        switch outcome {
-        case .finished(let key): return key
-        case .timedOut: return nil
-        }
+        await cache.resolved(for: providerID)
     }
 
     /// Stores a key, registers it as a secret, and updates the cache.
@@ -64,9 +62,9 @@ public enum AssistantCredentials {
         _ key: String,
         for providerID: String,
         cache: CredentialCache = .shared
-    ) throws {
+    ) async throws {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        try CredentialStore.write(trimmed, providerID: providerID)
+        try await CredentialStore.write(trimmed, providerID: providerID)
         Log.shared.registerSecret(trimmed)
         cache.store(trimmed, for: providerID)
     }
@@ -75,8 +73,8 @@ public enum AssistantCredentials {
     public static func delete(
         for providerID: String,
         cache: CredentialCache = .shared
-    ) throws {
-        try CredentialStore.delete(providerID: providerID)
+    ) async throws {
+        try await CredentialStore.delete(providerID: providerID)
         cache.invalidate(providerID)
     }
 }

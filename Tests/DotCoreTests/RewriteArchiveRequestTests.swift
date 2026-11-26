@@ -43,6 +43,7 @@ final class RewriteArchiveRequestTests: XCTestCase {
     }
 
     private func rawLog() throws -> String {
+        log.flush()
         let url = try XCTUnwrap(log.url)
         return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
     }

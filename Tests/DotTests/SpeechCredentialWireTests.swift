@@ -1,6 +1,7 @@
 import AppKit
 import DotCore
 import Network
+import os
 import SwiftUI
 import XCTest
 
@@ -699,5 +700,33 @@ final class DelayServer: @unchecked Sendable {
 
     deinit {
         listener.cancel()
+    }
+}
+
+extension SpeechCredentialWireTests {
+    func testKeylessAppleCheckPerformsZeroKeychainReads() async throws {
+        let counter = OSAllocatedUnfairLock(initialState: 0)
+        let cache = CredentialCache(reader: { _ in
+            counter.withLock { $0 += 1 }
+            return .missing
+        }, logsReads: false)
+        let checks = SpeechCredentialChecks(cache: cache, checkCache: CredentialCheckCache())
+        var config = DotConfig.default
+        config.provider = ProviderIdentifier.apple
+
+        checks.check(
+            providerID: ProviderIdentifier.apple,
+            config: config,
+            typedKey: nil,
+            serviceName: "Apple Speech",
+            requiresKey: false,
+            allowsKey: false,
+            immediate: true
+        )
+        for _ in 0..<20 {
+            if checks.status != SpeechCredentialStatus.checking { break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertEqual(counter.withLock { $0 }, 0, "allowsKey: false touched the Keychain reader")
     }
 }

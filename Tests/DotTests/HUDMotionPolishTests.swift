@@ -1333,8 +1333,8 @@ final class HUDMotionPolishTests: XCTestCase {
         // own name. It is drawn only while the request runs.
         XCTAssertEqual(HUDAction.stopRewrite.symbol, "stop.fill")
         XCTAssertEqual(HUDAction.stopRewrite.label(), "Stop rewriting")
-        XCTAssertEqual(HUDAction.stopRewrite.restingColor, HUDTheme.live)
-        XCTAssertEqual(HUDAction.stopRewrite.hoverColor, HUDTheme.live)
+        XCTAssertEqual(HUDAction.stopRewrite.restingColor, HUDTheme.recording)
+        XCTAssertEqual(HUDAction.stopRewrite.hoverColor, HUDTheme.recording)
         XCTAssertTrue(HUDAction.stopRewrite.isAvailable(in: HUDPreview.previewActions))
         // The header's trailing run, from the card's trailing edge: the controls
         // the transcript card draws (24 pt each, 4 pt between), the divider and

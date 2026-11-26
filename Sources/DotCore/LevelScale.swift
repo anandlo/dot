@@ -172,6 +172,16 @@ public enum LevelScale {
         let x = min(max(position, 0), 1)
         return x + knee * x * (1 - x)
     }
+
+    /// The position inside the window, linear in decibels, that ``perceptual(_:)``
+    /// maps to `level`: the root of `knee * x^2 - (1 + knee) * x + level = 0` in `[0, 1]`.
+    public static func position(perceptual level: Double) -> Double {
+        let y = min(max(level, 0), 1)
+        guard knee > 0 else { return y }
+        let b = 1 + knee
+        let root = (b - (b * b - 4 * knee * y).squareRoot()) / (2 * knee)
+        return min(max(root, 0), 1)
+    }
 }
 
 /// The two decibel bounds a microphone's level is drawn between.

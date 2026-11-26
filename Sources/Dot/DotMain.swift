@@ -30,6 +30,38 @@ enum DotMain {
 
         let application = NSApplication.shared
 
+        // The listener stops at the first shutdown signal. The flock lease is
+        // released only after `application.run()` has returned.
+        var ownedCoordinator: SingleInstanceCoordinator?
+        defer {
+            ownedCoordinator?.beginShutdown()
+            ownedCoordinator?.close()
+        }
+
+        // A single-instance lease belongs to the user-facing app only. Render
+        // tools, menu dumps, XCTest hosts and trigger-enabled one-shots must
+        // keep their current paths and never create a lease or a socket.
+        if !SingleInstance.bypassesCoordinator() {
+            do {
+                let coordinator = try SingleInstanceCoordinator()
+                switch try coordinator.acquireOrHandOff(
+                    deadline: .after(milliseconds: SingleInstanceCoordinator.handoffDeadlineMilliseconds)
+                ) {
+                case .secondary:
+                    // The running instance will reopen after its ready handler
+                    // has run. This launch has no lease and no app state to unwind.
+                    exit(0)
+                case .primary:
+                    SingleInstanceCoordinator.shared = coordinator
+                    coordinator.startReopenLoop()
+                    ownedCoordinator = coordinator
+                }
+            } catch {
+                FileHandle.standardError.write(Data("\(error)\n".utf8))
+                exit(1)
+            }
+        }
+
         // The identity migration is the very first thing that runs. `DotConfig`
         // and `Log` compute their paths when they are first touched, and both
         // of those paths changed with the name, so the folders have to be in
@@ -67,6 +99,25 @@ enum DotMain {
                 exit(0)
             } catch {
                 FileHandle.standardError.write(Data("Demo render failed: \(error)\n".utf8))
+                exit(1)
+            }
+        }
+
+        // The About page's matrix motion is rendered to a directory and the
+        // process exits. No window is created and nothing is ordered front.
+        if let directory = UIPreview.requestedMotionDirectory() {
+            application.setActivationPolicy(.prohibited)
+            // A render bundle carries the app's own font directory, the same
+            // way the packaged app does. Registering here keeps a strip in the
+            // shipped face instead of a silent system-font fallback.
+            if let resources = Bundle.main.resourceURL {
+                DotType.registerFonts(at: resources.appendingPathComponent("Fonts"))
+            }
+            do {
+                try UIPreview.renderAboutMotionStudy(to: directory)
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data("About motion render failed: \(error)\n".utf8))
                 exit(1)
             }
         }

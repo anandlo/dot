@@ -187,67 +187,55 @@ private struct DotSelectTrigger: View {
     @FocusState private var isFocused: Bool
     @State private var isHovering = false
     @State private var isOpen = false
-    @State private var isPressed = false
     @State private var anchor = DotSelectAnchor()
 
     var body: some View {
-        content
-            .accessibilityHidden(true)
-            .padding(.horizontal, 10)
-            .frame(height: DotSelectMetrics.height)
-            .frame(width: fillsWidth ? nil : width)
-            .frame(maxWidth: fillsWidth ? .infinity : nil)
-            .background(
-                RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous)
-                    .fill(fill)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous)
-                    .strokeBorder(borderColour, lineWidth: isFocused || isOpen ? 1.5 : 1)
-            )
-            .background(DotSelectAnchorReporter(anchor: anchor))
-            .contentShape(RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous))
-            .onTapGesture(perform: toggle)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in isPressed = isEnabled }
-                    .onEnded { _ in isPressed = false }
-            )
-            .focusable()
-            .focusEffectDisabled()
-            .focused($isFocused)
-            .onKeyPress(.space) { activate(); return .handled }
-            .onKeyPress(.return) { activate(); return .handled }
-            .onKeyPress(.downArrow) { activate(); return .handled }
-            .onHover { inside in
-                isHovering = inside && isEnabled
+        Button(action: toggle) {
+            content
+                .padding(.horizontal, 10)
+                .frame(height: DotSelectMetrics.height)
+                .frame(width: fillsWidth ? nil : width)
+                .frame(maxWidth: fillsWidth ? .infinity : nil)
+                .contentShape(RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous))
+        }
+        .buttonStyle(DotSelectTriggerButtonStyle(
+            isFocused: isFocused,
+            isOpen: isOpen,
+            isHovering: isHovering,
+            isEnabled: isEnabled,
+            reducesMotion: reducesMotion
+        ))
+        .accessibilityHidden(true)
+        .background(DotSelectAnchorReporter(anchor: anchor))
+        .focusable()
+        .focusEffectDisabled()
+        .focused($isFocused)
+        .onKeyPress(.space) { activate(); return .handled }
+        .onKeyPress(.return) { activate(); return .handled }
+        .onKeyPress(.downArrow) { activate(); return .handled }
+        .onHover { inside in
+            if DotScrollInteraction.isScrolling {
+                if isHovering { isHovering = false }
+                return
             }
-            .onDisappear {
-                isPressed = false
-                if isOpen { DotSelectListController.shared.close() }
-            }
-            .opacity(isEnabled ? 1 : 0.45)
-            // The held trigger answers with its fill, not with its geometry: a
-            // field that shrank under the pointer would pull the panel anchor
-            // with it and the list would open a point off the control it
-            // belongs to. 120 ms of the app's press curve is the whole answer,
-            // and the same 120 ms eases the hover wash.
-            .animation(
-                DotPressFeedback.animation(reduceMotion: reducesMotion),
-                value: isPressed
+            isHovering = inside && isEnabled
+        }
+        .onDisappear {
+            if isOpen { DotSelectListController.shared.close() }
+        }
+        .opacity(isEnabled ? 1 : 0.45)
+        .animation(
+            reducesMotion ? nil : .easeOut(duration: DotPressFeedback.duration),
+            value: isHovering
+        )
+        .background(
+            DotSelectAccessibilityElement(
+                label: label,
+                value: title,
+                isEnabled: isEnabled,
+                onOpen: activate
             )
-            .animation(
-                reducesMotion ? nil : .easeOut(duration: DotPressFeedback.duration),
-                value: isHovering
-            )
-            .background(
-                DotSelectAccessibilityElement(
-                    label: label,
-                    value: title,
-                    isEnabled: isEnabled,
-                    onOpen: activate
-                )
-            )
+        )
     }
 
     private var content: some View {
@@ -272,26 +260,9 @@ private struct DotSelectTrigger: View {
         reduceMotion || DotMotion.reducesMotion
     }
 
-    /// A field being edited is the focus ring's colour; a field under the
-    /// pointer is one step darker than a field at rest.
-    private var borderColour: Color {
-        if isFocused || isOpen { return DotTheme.focusRing }
-        if isHovering || isPressed { return DotTheme.cardBorderSelected }
-        return DotTheme.fieldBorder
-    }
-
-    /// The fill an open list, a held trigger and a hover draw.
-    private var fill: Color {
-        isHovering || isOpen || isPressed ? DotTheme.fieldFillFocused : DotTheme.fieldFill
-    }
-
     /// Opens the list, or closes the one this trigger owns.
     private func toggle() {
         guard isEnabled else { return }
-        // A click that opened the list also ends the press: the drag that drew
-        // the held state never ends when the pointer leaves the trigger for the
-        // list, so the state is cleared here.
-        isPressed = false
         if isOpen {
             DotSelectListController.shared.close()
             return
@@ -314,6 +285,46 @@ private struct DotSelectTrigger: View {
     private func activate() {
         guard isEnabled, !isOpen else { return }
         toggle()
+    }
+}
+
+private struct DotSelectTriggerButtonStyle: ButtonStyle {
+    let isFocused: Bool
+    let isOpen: Bool
+    let isHovering: Bool
+    let isEnabled: Bool
+    let reducesMotion: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        let isPressed = configuration.isPressed && isEnabled
+        let borderColour: Color = if isFocused || isOpen {
+            DotTheme.focusRing
+        } else if isHovering || isPressed {
+            DotTheme.cardBorderSelected
+        } else {
+            DotTheme.fieldBorder
+        }
+        let fill: Color = (isHovering || isOpen || isPressed)
+            ? DotTheme.fieldFillFocused
+            : DotTheme.fieldFill
+
+        return configuration.label
+            .background(
+                RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous)
+                    .fill(fill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DotSelectMetrics.corner, style: .continuous)
+                    .strokeBorder(borderColour, lineWidth: isFocused || isOpen ? 1.5 : 1)
+            )
+            // The held trigger answers with its fill, not with its geometry: a
+            // field that shrank under the pointer would pull the panel anchor
+            // with it and the list would open a point off the control it
+            // belongs to.
+            .animation(
+                DotPressFeedback.animation(reduceMotion: reducesMotion),
+                value: isPressed
+            )
     }
 }
 
@@ -463,7 +474,6 @@ final class DotSelectAccessibilityView: NSView {
         setAccessibilityValue(value)
         setAccessibilityEnabled(isEnabled)
         setAccessibilityHelp(help)
-        toolTip = help
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {

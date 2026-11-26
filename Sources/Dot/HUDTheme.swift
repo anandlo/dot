@@ -14,12 +14,6 @@ enum HUDTheme {
     static let surfaceTop = Color(red: 0.071, green: 0.061, blue: 0.051)
     /// The bottom of the card's surface.
     static let surfaceBottom = Color(red: 0.031, green: 0.026, blue: 0.022)
-    /// The opacity of the surface. High enough that nothing reads through it.
-    static let surfaceOpacity: Double = 0.985
-    /// The top of the border.
-    static let borderTop = Color.white.opacity(0.12)
-    /// The bottom of the border.
-    static let borderBottom = Color.white.opacity(0.035)
 
     // MARK: - Ink
 
@@ -57,13 +51,24 @@ enum HUDTheme {
     static let mint = Color(red: 0.722, green: 0.690, blue: 0.643)
     /// Success, named for what it is: a quiet silver.
     static let silver = mint
-    /// The live dot and a failure, `#F5B944`.
+    /// Active voice on the Black card, `#FFC414`.
     ///
-    /// It is also the voice. The meter's bars are this colour at the height of
-    /// ordinary speech, deeper below it and warmer above it, so the dot and the
-    /// shape that answers it are one material rather than a coloured dot beside
-    /// a white shape.
-    static let live = Color(red: 0.961, green: 0.725, blue: 0.267)
+    /// The live dot, the recording sparkle, the speaking marks and the Stop
+    /// control all share the body stop of the visualizer's gold ramp, so the
+    /// marks beside a bar are the same gold as the bar.
+    static let recording = Color(red: 1, green: 196.0 / 255, blue: 20.0 / 255)
+    /// Active voice on the Glass card, `#FFD838`.
+    static let recordingGlass = Color(red: 1, green: 216.0 / 255, blue: 56.0 / 255)
+    /// The active-voice colour of one material.
+    static func recordingInk(_ material: HUDMaterial) -> Color {
+        material == .glass ? recordingGlass : recording
+    }
+    /// A warning or a failure, the earlier live amber `#F5B944`.
+    ///
+    /// It stays separate from the voice: a failed rewrite is not a recording,
+    /// and giving it the visualizer's bright gold would make the two states
+    /// hard to tell apart.
+    static let warning = Color(red: 0.961, green: 0.725, blue: 0.267)
     /// The running arc on the selected, cream pill, `#8A5A0F`.
     ///
     /// The live amber is a light colour: on the cream pill it reads at about
@@ -73,12 +78,6 @@ enum HUDTheme {
     static let arcOnPill = Color(red: 138 / 255, green: 90 / 255, blue: 15 / 255)
     /// The transcribing state.
     static let amber = Color(red: 0.659, green: 0.639, blue: 0.604)
-    /// The faithfulness badge of a rewrite that kept every fact.
-    ///
-    /// The card's only other status colours are the amber of the live dot and
-    /// the silver of a delivery, and a silver dot beside the word "Faithful"
-    /// read as decoration rather than as "this one is safe".
-    static let faithful = Color(red: 0.361, green: 0.749, blue: 0.435)
 
     /// The colour of one bar of the meter.
     ///
@@ -88,8 +87,8 @@ enum HUDTheme {
     /// - Returns: a warm amber, dim and short at the floor, bright with a warm
     ///   tip at a peak. Never white: the top of the shape has to keep a colour
     ///   to say "that was loud" with.
-    static func meter(_ level: Double, ceiling: Double) -> Color {
-        let tint = MeterRamp.tint(level: level, ceiling: ceiling)
+    static func meter(_ level: Double, ceiling: Double, material: HUDMaterial = .black) -> Color {
+        let tint = MeterRamp.tint(level: level, ceiling: ceiling, material: material)
         return Color(red: tint.red, green: tint.green, blue: tint.blue).opacity(tint.opacity)
     }
 
@@ -126,8 +125,6 @@ enum HUDTheme {
     static var liveFont: Font { DotType.font(13, .regular) }
     /// The message.
     static var messageFont: Font { DotType.font(13, .medium) }
-    /// The one line of an assistant card that is not a transcript.
-    static var assistantFont: Font { DotType.font(13, .regular) }
 
     /// The tracking of the small caps labels.
     static let labelTracking: CGFloat = 1.6
@@ -183,35 +180,6 @@ enum HUDTheme {
     static let hairline = Color.white.opacity(0.075)
 
     // MARK: - Glass
-
-    /// The colour the recording card's Liquid Glass is tinted with.
-    static let glassTint = Color(red: 0.05, green: 0.06, blue: 0.09)
-
-    /// How opaque that tint is, measured against the ink the card has to carry.
-    ///
-    /// Liquid Glass is a refracting material, not a wash. On a bright page it
-    /// lifts the backdrop toward white, and ink over it loses contrast faster
-    /// than a tint can put back. The table below was measured on the regular
-    /// variant, through window-server captures of the real 316 by 54 card, over
-    /// a white backdrop (luma 0.92), a mid grey (0.5), a dark page (0.12) and a
-    /// colour photograph, as the WCAG ratio of ``ink`` against the pixels behind
-    /// the REC glyphs:
-    ///
-    /// | tint | white | grey | dark | colour |
-    /// | 0.00 | 1.96  | 3.49 | 10.66 | 6.87 |
-    /// | 0.25 | 1.83  | 3.23 | 9.77  | 6.24 |
-    /// | 0.35 | 1.78  | 3.11 | 9.34  | 6.01 |
-    /// | 0.45 | 1.74  | 2.99 | 9.07  | 5.81 |
-    /// | 0.55 | 1.69  | 2.91 | 8.67  | 5.56 |
-    ///
-    /// Every step of tint lowered all four, because a dark tint on this material
-    /// brightens the fill in the dark appearance the island's panel forces. The
-    /// card therefore ships the material untinted. The contrast the ink needs is
-    /// carried by the scrim in ``glassScrimOpacity`` instead, which is drawn
-    /// over the material, and the card draws the clear variant in
-    /// ``glassVariant``: a tint on the clear variant is not measured, because
-    /// the tint's own table is the reason there is none.
-    static let glassTintOpacity: Double = 0
 
     /// The variant of the system glass the card draws.
     ///
@@ -276,20 +244,6 @@ enum HUDTheme {
     /// 255 and its contrast by less than 0.05 to 1 on every backdrop.
     static let glassScrimOpacity: Double = 0.30
 
-    /// The system's Liquid Glass at ``glassVariant``, tinted to the measured
-    /// opacity.
-    ///
-    /// A zero-opacity tint is the same picture as no tint with a call that says
-    /// something untrue about the material, so at zero the untinted material is
-    /// asked for.
-    @available(macOS 26.0, *)
-    static var glass: Glass {
-        let material: Glass = glassVariant == .clear ? .clear : .regular
-        return glassTintOpacity > 0
-            ? material.tint(glassTint.opacity(glassTintOpacity))
-            : material
-    }
-
     /// The opacity of the clock's ink on the glass material.
     ///
     /// The clock is the quietest glyph the card draws, and the glass leaves it on
@@ -349,91 +303,38 @@ enum HUDTheme {
     /// - Parameters:
     ///   - colour: the delivery's own colour, or ``live`` for a failure.
     ///   - material: the card's fill.
+    ///   - useSystemInk: whether Glass draws its labels with semantic ink.
+    ///     The measured cream token remains the default for callers that judge
+    ///     that token rather than the live card.
     /// - Returns: the colour the status label and its glyph are drawn in.
-    static func statusInk(_ colour: Color, material: HUDMaterial) -> Color {
+    static func statusInk(
+        _ colour: Color,
+        material: HUDMaterial,
+        useSystemInk: Bool = false
+    ) -> Color {
+        if useSystemInk, material == .glass { return Color.primary }
         guard material == .glass else { return colour }
         return inkBase.opacity(statusInkOpacity)
     }
 
     /// The clock's ink on one material.
     ///
-    /// - Parameter material: the card's fill. The black card's clock is
-    ///   ``ink2``; the glass card's is the same colour at
-    ///   ``clockInkOpacity``.
+    /// - Parameters:
+    ///   - material: the card's fill. The black card's clock is
+    ///     ``ink2``; the glass card's is the same colour at
+    ///     ``clockInkOpacity`` unless semantic ink is requested.
+    ///   - useSystemInk: whether Glass draws its labels with semantic ink.
     /// - Returns: the colour the clock's figures are drawn in.
-    static func clockInk(_ material: HUDMaterial) -> Color {
+    static func clockInk(_ material: HUDMaterial, useSystemInk: Bool = false) -> Color {
+        if useSystemInk, material == .glass { return Color.secondary }
         guard material == .glass else { return ink2 }
         return inkBase.opacity(clockInkOpacity)
     }
 
-    /// How far a visualizer's lit ink is mixed toward the card's ink on the glass
-    /// material.
-    ///
-    /// A visualizer's amber is a light colour on a material that is now a light
-    /// one too. The clear variant at the shipped scrim measures 0.2386 of
-    /// luminance behind the canvas over the bright page, where the regular
-    /// variant the ink was measured on measured 0.1413, so every style's marks
-    /// were left a backdrop's worth of light closer to their own brightness. On
-    /// the bright page the Stretch row's loudest ink read 1.83 to 1 and the halo's
-    /// brightest mark 2.51 to 1, against the 2 to 1 the row is held to and the 3
-    /// to 1 the halo is.
-    ///
-    /// The fix is not a second palette: a style's lit ink keeps its hue, its
-    /// opacity and its shape and is mixed toward ``inkBase`` by this fraction, so
-    /// a lifted mark is the same amber with the card's own light in it. The mix is
-    /// linear in sRGB components, `c' = c + k * (ink - c)`, and leaves the alpha
-    /// every mark is drawn at untouched, so a glow that was a share of a bar's ink
-    /// stays that share of the lifted ink. The black material draws at zero, see
-    /// ``HUDWaveform/material``, so its renders are the same picture they were.
-    ///
-    /// The table below is one window-server capture per step of the real card over
-    /// the bright page (0.92) and the dark one (0.12), at the loudest moment of the
-    /// script. The row's figures are its brightest ink against the material it is
-    /// drawn on, and the halo's are its brightest mark against the same surface,
-    /// beside the mean local luminance change its ink makes against silence, which
-    /// the halo's suite holds to 0.04 on both backdrops.
-    ///
-    /// | k    | row bright | row dark | halo bright | halo dark | halo change bright | halo change dark |
-    /// | 0.00 | 1.830 | 5.727 | 2.51 | 10.48 | 0.0507 | 0.0650 |
-    /// | 0.05 | 1.862 | 5.820 | 2.53 | 10.58 | 0.0531 | 0.0659 |
-    /// | 0.10 | 1.888 | 5.898 | 2.58 | 10.74 | 0.0548 | 0.0664 |
-    /// | 0.15 | 1.912 | 6.011 | 2.59 | 10.82 | 0.0562 | 0.0678 |
-    /// | 0.20 | 1.949 | 6.143 | 2.63 | 11.01 | 0.0580 | 0.0686 |
-    /// | 0.25 | 1.969 | 6.207 | 2.64 | 11.11 | 0.0600 | 0.0693 |
-    /// | 0.30 | 1.989 | 6.311 | 2.69 | 11.32 | 0.0623 | 0.0705 |
-    /// | 0.35 | 2.018 | 6.446 | 2.71 | 11.41 | 0.0644 | 0.0721 |
-    /// | 0.40 | 2.044 | 6.540 | 2.75 | 11.57 | 0.0661 | 0.0736 |
-    /// | 0.45 | 2.084 | 6.667 | 2.78 | 11.70 | 0.0667 | 0.0749 |
-    /// | 0.50 | 2.119 | 6.737 | 2.80 | 11.81 | 0.0680 | 0.0758 |
-    /// | 0.55 | 2.135 | 6.793 | 2.85 | 12.00 | 0.0703 | 0.0770 |
-    /// | 0.60 | 2.173 | 6.950 | 2.88 | 12.08 | 0.0727 | 0.0782 |
-    ///
-    /// The row clears its floor at 0.35, and 0.35 is the smallest step that does.
-    /// The halo's column is its amber core's, and it clears its own floor at no
-    /// step of that search: its brightest pixel is the core's warm tip, `#FFDA8B`,
-    /// whose luminance is 0.733 at full opacity, and the material behind it needs
-    /// 0.815 to read 3 to 1, so the tip passes only once it is mixed most of the
-    /// way into the card's ink. A single render at a k of 1.00, where every
-    /// style's ink is the card's ink, puts that core at 3.20 on the bright page and
-    /// 13.40 on the dark one; between 0.60 and there the style is drawn in
-    /// porcelain and its amber is gone, which is a design change rather than a
-    /// lift.
-    ///
-    /// The card therefore draws 0.35, and the rest of the halo's floor is carried by
-    /// the halo's own core rather than by this token: on the glass material the
-    /// centre of the core is the card's ink at full opacity out to
-    /// ``HUDWaveform/Halo/hotCentreShare`` of its radius, which is the white-hot centre the
-    /// filament already has, and the amber ramp continues from its edge. With that
-    /// centre and this lift the halo's brightest mark reads 3.37 to 1 on the bright
-    /// page and 14.92 to 1 on the dark one, and its ink moves the local luminance
-    /// by 0.0668 and 0.0763.
-    ///
-    /// Filament is exempt, and one render at 0.35 is why: its white-hot core
-    /// already stands at 1.0 of luminance and reads 3.69 to 1 on the bright page
-    /// and 16.06 to 1 on the dark one, and its blackbody colour is the design
-    /// rather than a tint of the meter. Matrix and Silk are untouched: neither is
-    /// held to a glass criterion.
-    static let visualizerGlassLift: Double = 0.35
+    // The visualizer no longer lifts its ink toward the card's white. Each
+    // material draws its own gold stops from MeterRamp, and the specular stop is
+    // used only where the picture has a physical highlight: a loud bar's centre,
+    // a lit dot's die, a ribbon's upper rim and the orbit's sun.
 }
 
 /// The variant of the system's Liquid Glass a surface asks for.
@@ -471,14 +372,81 @@ struct VisualEffectBlur: NSViewRepresentable {
     }
 }
 
+/// Which rung of the card's ink ladder a label sits on.
+enum HUDInkLevel {
+    case primary
+    case secondary
+    case tertiary
+}
+
+private struct HUDUsesSystemInkKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Whether the card's labels use the system's semantic ink. Glass sets it;
+    /// Black and the fallback leave it false and keep the cream tokens.
+    var hudUsesSystemInk: Bool {
+        get { self[HUDUsesSystemInkKey.self] }
+        set { self[HUDUsesSystemInkKey.self] = newValue }
+    }
+}
+
+private struct HUDInkModifier: ViewModifier {
+    @Environment(\.hudUsesSystemInk) private var useSystemInk
+    let level: HUDInkLevel
+    let opacity: Double
+
+    func body(content: Content) -> some View {
+        Group {
+            if useSystemInk {
+                switch level {
+                case .primary: content.foregroundStyle(.primary)
+                case .secondary: content.foregroundStyle(.secondary)
+                case .tertiary: content.foregroundStyle(.tertiary)
+                }
+            } else {
+                switch level {
+                case .primary: content.foregroundStyle(HUDTheme.ink.opacity(opacity))
+                case .secondary: content.foregroundStyle(HUDTheme.ink2.opacity(opacity))
+                case .tertiary: content.foregroundStyle(HUDTheme.ink3.opacity(opacity))
+                }
+            }
+        }
+        .opacity(useSystemInk && opacity < 1 ? opacity : 1)
+    }
+}
+
+extension View {
+    /// Applies the card's ink for the current material.
+    func hudInk(_ level: HUDInkLevel, opacity: Double = 1) -> some View {
+        modifier(HUDInkModifier(level: level, opacity: opacity))
+    }
+
+    /// Applies the material's ink in one state and a fixed colour in another,
+    /// for controls whose accent or warning colour must stay unchanged.
+    func hudInk(
+        _ level: HUDInkLevel,
+        when useInk: Bool,
+        otherwise color: Color,
+        opacity: Double = 1
+    ) -> some View {
+        Group {
+            if useInk {
+                self.hudInk(level, opacity: opacity)
+            } else {
+                self.foregroundStyle(color).opacity(opacity)
+            }
+        }
+    }
+}
+
 /// The surface of the card: one shape, one fill, one border, supporting Glass and Black materials.
 ///
-/// On macOS 26 and later the Glass fill is the system's Liquid Glass at the
-/// clear variant: the material draws the backdrop, the refraction and its own
-/// edge, and the app draws neither a blur, a tint, a specular highlight nor a
-/// rim on top of it. The one thing it does draw over the material is the
-/// measured scrim the card's ink is read against, see
-/// ``HUDTheme/glassScrimOpacity``.
+/// On macOS 26 and later the Glass fill is the system's Liquid Glass at its
+/// regular, adaptive variant. The material draws the backdrop, the refraction
+/// and its own edge; the app draws neither a wash, a tint, a specular highlight
+/// nor a rim on top of it, and its labels use the system's semantic ink.
 /// Before macOS 26 there is no such material, so the same shape is filled with
 /// the behind-window blur, the smoky tint and the specular sheen the app has
 /// always drawn, under its own 1.25 point rim. Black is one opaque gradient on
@@ -521,7 +489,6 @@ struct HUDSurface: View {
                 if Self.drawsSystemGlass(material, useSystemGlass: useSystemGlass) {
                     if #available(macOS 26.0, *) {
                         systemGlass
-                        scrim
                     }
                 } else {
                     legacyGlass
@@ -539,31 +506,16 @@ struct HUDSurface: View {
         }
     }
 
-    /// The fill on macOS 26 and later: the system's Liquid Glass.
-    ///
-    /// The variant and the tint are the material's own and not colours laid over
-    /// it, which is why both are properties of the material in ``HUDTheme`` and
-    /// are measured rather than picked by eye. The wash that carries the card's
-    /// ink is the scrim, drawn over the material at the measured
-    /// ``HUDTheme/glassScrimOpacity``.
+    /// The fill on macOS 26 and later: the system's untinted Liquid Glass at its
+    /// regular, adaptive variant. The material's own legibility treatment is used
+    /// instead of an app-drawn wash, so nothing covers the rim or the backdrop.
     @available(macOS 26.0, *)
     private var systemGlass: some View {
         Color.clear
             .glassEffect(
-                HUDTheme.glass,
+                .regular,
                 in: RoundedRectangle(cornerRadius: HUDTheme.cornerRadius, style: .continuous)
             )
-    }
-
-    /// The black scrim that carries the card's ink, clipped to the card's shape.
-    ///
-    /// It is drawn over the material and under the card's content: the content
-    /// sits above this surface, so the scrim darkens what the ink is read against
-    /// and leaves the ink itself untouched. A dim layer under the material was
-    /// measured and rejected, see ``HUDTheme/glassScrimOpacity``.
-    private var scrim: some View {
-        RoundedRectangle(cornerRadius: HUDTheme.cornerRadius, style: .continuous)
-            .fill(Color.black.opacity(HUDTheme.glassScrimOpacity))
     }
 
     /// The fill before Liquid Glass: the behind-window blur, the tint and the sheen.

@@ -1,4 +1,6 @@
 import DotCore
+import os
+import QuartzCore
 import SwiftUI
 
 /// The arithmetic every style shares.
@@ -38,7 +40,7 @@ enum VisualizerMath {
     /// - Returns: the stop's colour at the given opacity. At a lift of zero it is
     ///   the tint itself, component for component, so a canvas that asks for no
     ///   lift draws the picture it always drew. The glass material asks for
-    ///   ``HUDTheme/visualizerGlassLift`` and the black material asks for nothing,
+    ///   the material's own gold stops and the black material asks for nothing,
     ///   see ``HUDWaveform/material``.
     static func ramp(_ tint: MeterTint, opacity: Double, lift: Double = 0) -> Color {
         let alpha = min(max(opacity, 0), 1)
@@ -52,6 +54,27 @@ enum VisualizerMath {
             green: tint.green + (ink.green - tint.green) * amount,
             blue: tint.blue + (ink.blue - tint.blue) * amount
         ).opacity(alpha)
+    }
+
+    static func cgColor(
+        _ tint: MeterTint,
+        opacity: Double,
+        lift: Double = 0,
+        colorSpace: CGColorSpace
+    ) -> CGColor {
+        let alpha = CGFloat(min(max(opacity, 0), 1))
+        let amount = min(max(lift, 0), 1)
+        if amount > 0 {
+            let ink = HUDTheme.inkRGB
+            let r = CGFloat(tint.red + (ink.red - tint.red) * amount)
+            let g = CGFloat(tint.green + (ink.green - tint.green) * amount)
+            let b = CGFloat(tint.blue + (ink.blue - tint.blue) * amount)
+            return CGColor(colorSpace: colorSpace, components: [r, g, b, alpha])!
+        }
+        return CGColor(
+            colorSpace: colorSpace,
+            components: [CGFloat(tint.red), CGFloat(tint.green), CGFloat(tint.blue), alpha]
+        )!
     }
 
     /// A hold: the largest value of each sample's own window, for a style drawn
@@ -97,9 +120,8 @@ enum VisualizerMath {
 ///
 /// Every style is driven by the same two inputs: the 60 Hz envelope history and
 /// the 5-band spectrum. Every mark is a measurement of the voice, drawn in the
-/// amber ramp of ``MeterRamp`` (Filament in its own blackbody colours, Wave in
-/// the brighter yellow of ``WaveInk``), deep at the floor, the live amber at
-/// speech and warm at a peak. The shape rests at a hairline when nothing is being said, so
+/// gold ramp of ``MeterRamp``, deep at the floor, live amber-gold at
+/// speech and warm specular at a peak. The shape rests at a hairline when nothing is being said, so
 /// the card is alive without pretending to hear a voice in an empty room.
 ///
 /// Height is linear from zero everywhere in this file: a level of `0.01` is a
@@ -126,17 +148,17 @@ struct HUDWaveform: View {
     /// The loudest moment of this take, from `0` to `1`, so a peak is drawn as a
     /// peak of this voice rather than as a peak of any voice.
     var ceiling: Double = 1
+    /// Where the speaker's loud speech sits in the meter window; see
+    /// ``VoiceMeter/speechTop``.
+    var speechTop: Double = VoiceMeter.defaultSpeechTop
     /// How much of the shape has arrived, from `0` to `1`.
     ///
     /// It is what makes the shape grow out of the axis when a recording starts
     /// and settle back into it when the recording ends, instead of appearing at
     /// a full height it had from nowhere.
     var reveal: Double = 1
-    /// Whether a shining dot carries its specular highlight.
-    ///
-    /// The highlight is the one part of the shine that is a picture rather than a
-    /// measurement: it is drawn in the renders beside a version without it, and
-    /// the picture that reads better is the one the card keeps.
+    /// Whether a shining dot draws its centred specular die. Tests turn this off
+    /// to isolate the specular against the body.
     var highlight: Bool = true
     /// A reduce-motion setting a still render can pass without a system
     /// preference. The card's own view carries the same override.
@@ -146,13 +168,11 @@ struct HUDWaveform: View {
     /// It is the one input that decides whether the lit ink is lifted: the clear
     /// glass behind the canvas is a light surface that the amber was not measured
     /// on, and the black material is the surface every mark in this file was
-    /// drawn for. See ``HUDTheme/visualizerGlassLift``.
+    /// drawn for. Each material reads its own stops from ``MeterRamp``.
     var material: HUDMaterial = .black
-    /// How far the lit ink is mixed toward the card's ink on the glass material.
-    ///
-    /// It is ``HUDTheme/visualizerGlassLift`` and the app passes nothing else: a
-    /// test varies it to prove that the lift never reaches the black material.
-    var glassLift: Double = HUDTheme.visualizerGlassLift
+    /// Kept for callers that still pass a lift; the gold ramp does not mix the
+    /// ink toward white, so the value has no effect on any material.
+    var glassLift: Double = 0
     /// How far the halo's ring ink is mixed toward the card's ink on the glass
     /// material.
     ///
@@ -164,6 +184,8 @@ struct HUDWaveform: View {
     /// It is ``HUDWaveform/Halo/glassRingInkGain`` and the app passes nothing
     /// else: a test varies it on the ladder the ring's brightness is chosen from.
     var glassRingInkGain: Double = HUDWaveform.Halo.glassRingInkGain
+    /// Optional telemetry hook reporting `(timestamp, drawDurationMS)` for live visualizers.
+    var onCanvasDraw: (@Sendable (CFTimeInterval, Double) -> Void)? = nil
 
     /// Whether the person asked for reduced motion, as the environment says.
     ///
@@ -176,8 +198,10 @@ struct HUDWaveform: View {
     private var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
 
     var body: some View {
+        let onDraw = onCanvasDraw
         Canvas { context, size in
             guard size.width > 0, size.height > 0 else { return }
+            let drawStarted = onDraw != nil ? CACurrentMediaTime() : 0
 
             switch visualizer {
             case .stretch:
@@ -190,6 +214,10 @@ struct HUDWaveform: View {
                 drawMatrix(context: context, size: size)
             case .haloEdge:
                 drawHalo(context: context, size: size)
+            }
+            if let onDraw {
+                let ended = CACurrentMediaTime()
+                onDraw(ended, (ended - drawStarted) * 1000)
             }
         }
     }
@@ -221,7 +249,7 @@ struct HUDWaveform: View {
     /// card has none. That is what keeps the black card's renders the same
     /// picture they were.
     private var lift: Double {
-        material == .glass ? min(max(glassLift, 0), 1) : 0
+        0
     }
 
     /// One lit colour of a style, on this canvas's material.
@@ -231,7 +259,7 @@ struct HUDWaveform: View {
 
     /// The colour of one lit mark of this frame, on this canvas's material.
     private func tint(_ value: Double) -> Color {
-        lit(MeterRamp.tint(level: value, ceiling: ceiling))
+        lit(MeterRamp.tint(level: value, ceiling: ceiling, material: material))
     }
 
     /// How far the halo's rings are mixed toward the card's ink.
@@ -349,6 +377,18 @@ struct HUDWaveform: View {
 
         /// The height of a bar at the top of its range, in points.
         static let maxHeight: CGFloat = 24.0
+
+        /// Power-curve exponent restoring visual dynamic range across quiet, medium,
+        /// and loud speech above `LevelScale.perceptual`'s upward knee.
+        static let responseExponent: Double = 1.70
+
+        /// Convex power curve counteracting `LevelScale.perceptual`'s upward knee
+        /// so quiet, medium, and loud speech sweep the full height range without
+        /// early top-shoulder saturation.
+        static func responseCurve(_ level: Double) -> Double {
+            let clamped = min(1, max(0, level))
+            return pow(clamped, responseExponent)
+        }
 
         // MARK: The age
 
@@ -516,8 +556,9 @@ struct HUDWaveform: View {
 
         /// How tall a bar of this level is drawn, in points.
         static func height(_ level: Double) -> CGFloat {
-            let value = min(max(level, 0), springCeiling)
-            return minHeight + (maxHeight - minHeight) * CGFloat(value)
+            let clamped = min(max(level, 0), springCeiling)
+            let curved = clamped <= 1 ? responseCurve(clamped) : clamped
+            return minHeight + (maxHeight - minHeight) * CGFloat(curved)
         }
 
         /// How tall the live edge's glow is drawn, in points.
@@ -624,13 +665,14 @@ struct HUDWaveform: View {
             time: Double,
             reveal: Double,
             canvas: CGFloat,
-            reduceMotion: Bool
+            reduceMotion: Bool,
+            sampleTick: Int? = nil
         ) -> [Bar] {
             guard canvas > 0, !history.isEmpty else { return [] }
             if reduceMotion {
                 return stillBars(history: history, reveal: reveal, canvas: canvas)
             }
-            let tick = newestSample(at: time, phase: phase)
+            let tick = sampleTick ?? newestSample(at: time, phase: phase)
             let filled = arrived(tick)
             let closed = closedWindows(tick)
             let scroll = progress(tick: tick, phase: phase)
@@ -648,6 +690,10 @@ struct HUDWaveform: View {
                 )
             }
             let closedLevel = springValue(trail)
+            let rawClosed = windowLevel(offset: filled, history: history, reveal: reveal)
+            let settle = MeterRamp.smoothstep(0, 1, scroll)
+            let rankZeroLevel = closedLevel + (rawClosed - closedLevel) * settle
+
             var liveTrail = trail
             liveTrail[liveTrail.count - 1] = liveLevel(
                 history: history,
@@ -657,6 +703,7 @@ struct HUDWaveform: View {
             let liveEdge = springValue(liveTrail)
 
             var row: [Bar] = []
+            row.reserveCapacity(Int(canvas / pitch) + 3)
             let liveCentre = centre(rank: -1, progress: scroll, canvas: canvas)
             if isVisible(centre: liveCentre) {
                 row.append(bar(closed + 1, at: liveCentre, level: liveEdge, canvas: canvas, isLive: true))
@@ -665,10 +712,10 @@ struct HUDWaveform: View {
             while true {
                 let x = centre(rank: rank, progress: scroll, canvas: canvas)
                 guard isVisible(centre: x) else { break }
-                // The window of the voice a bar holds: the newest one has just
-                // closed, and each older bar is one window further into the past.
+                // Rank 0 smoothly converges from `closedLevel` to `rawClosed` across its
+                // 3-tick window so handing off to rank 1 never pops in height or luminance.
                 let held = rank == 0
-                    ? closedLevel
+                    ? rankZeroLevel
                     : windowLevel(
                         offset: filled + rank * windowTicks,
                         history: history,
@@ -750,10 +797,14 @@ struct HUDWaveform: View {
             time: effectiveTime,
             reveal: shownReveal,
             canvas: size.width,
-            reduceMotion: reduceMotion
+            reduceMotion: reduceMotion,
+            sampleTick: spectrumHistory.last?.sample
         )
         guard !row.isEmpty else { return }
         let mid = size.height / 2
+        let verticalScale: CGFloat = size.height < 26
+            ? max(0.5, (size.height - 2) / Stretch.maxHeight)
+            : 1
 
         // Oldest first, so the bar being born at the edge is drawn over the ones it
         // is born beside.
@@ -761,13 +812,14 @@ struct HUDWaveform: View {
             // The level is already normalised to the take, so the colour is
             // read on the full ramp rather than on the take's ceiling twice.
             let colour = Self.stretchInk(level: bar.value, material: material)
+            let barHeight = bar.height * verticalScale
 
             // The glow is the one part of the row that is light rather than ink: it
             // is added to the surface under the bar, so the live edge reads as the
             // lamp at the end of the row instead of as a brighter bar.
             if bar.isLive {
                 let glowWidth = bar.width * Stretch.glowWidthShare
-                let glowHeight = Stretch.glowHeight(bar.height)
+                let glowHeight = Stretch.glowHeight(bar.height) * verticalScale
                 var glow = context
                 glow.blendMode = .plusLighter
                 glow.fill(
@@ -786,9 +838,9 @@ struct HUDWaveform: View {
 
             let rect = CGRect(
                 x: bar.centre - bar.width / 2,
-                y: mid - bar.height / 2,
+                y: mid - barHeight / 2,
                 width: bar.width,
-                height: bar.height
+                height: barHeight
             )
             // The bar is lit from its middle: the gradient down its own rect is what
             // makes a column of one colour read as a capsule with rounded ends
@@ -796,7 +848,7 @@ struct HUDWaveform: View {
             // a dash, and its corners are halved with its height so it stays a dash
             // instead of becoming a dot.
             context.fill(
-                Path(roundedRect: rect, cornerRadius: min(bar.width, bar.height) / 2),
+                Path(roundedRect: rect, cornerRadius: min(bar.width, barHeight) / 2),
                 with: .linearGradient(
                     Gradient(stops: [
                         .init(color: colour.opacity(Stretch.tipInk * bar.ink), location: 0),
@@ -807,6 +859,33 @@ struct HUDWaveform: View {
                     endPoint: CGPoint(x: rect.midX, y: rect.maxY)
                 )
             )
+
+            // The shine is a narrow column inside the bar, not a gradient across
+            // the row: at two points wide a lateral gradient would shimmer as the
+            // bar scrolls. It is a fixed function of the level, so a loud syllable
+            // makes its own bar gleam without a clock-driven glint.
+            let shine = MeterRamp.smoothstep(0.55, 0.90, bar.value)
+            if shine > 0 {
+                let specular = MeterRamp.specularBand(level: bar.value, material: material)
+                let bandWidth = bar.width * 0.5
+                let straight = barHeight - min(bar.width, barHeight)
+                if straight > 0 {
+                    let band = CGRect(
+                        x: bar.centre - bandWidth / 2,
+                        y: mid - straight / 2,
+                        width: bandWidth,
+                        height: straight
+                    )
+                    context.fill(
+                        Path(roundedRect: band, cornerRadius: min(bandWidth, straight) / 2),
+                        with: .color(Color(
+                            red: specular.red,
+                            green: specular.green,
+                            blue: specular.blue
+                        ).opacity(bar.ink * shine))
+                    )
+                }
+            }
         }
     }
 
@@ -928,12 +1007,19 @@ struct HUDWaveform: View {
         // MARK: Heat
 
         /// How many samples of the history the wire's temperature is integrated
-        /// over.
-        static let lagSamples = 48
-        /// The time the wire takes to reach a temperature it is given, in seconds.
-        static let attackTau: Double = 0.035
-        /// The time the wire takes to lose that temperature, in seconds.
-        static let releaseTau: Double = 0.220
+        /// over (3.0 s at 60 Hz, matching slow ember cool-down).
+        static let lagSamples = 180
+        /// Linear conductive/convective cooling rate (s^-1) governing the lingering
+        /// crimson ember afterglow once radiative emission drops off. Together with
+        /// the radiative rate it sets the wire's warm-up: a full-scale voice reaches
+        /// 63 % of its temperature in about 0.17 s, a medium one in about 0.4 s.
+        static let linearCooling: Double = 2.00
+        /// Radiative Stefan-Boltzmann cooling coefficient (s^-1), scaling as T^4
+        /// so incandescent peaks cool swiftly into cherry red.
+        static let radiativeCooling: Double = 2.60
+        /// Total Joule heating rate (s^-1) matching `linearCooling + radiativeCooling`
+        /// so steady unit drive settles cleanly at `theta = 1.0`.
+        static var heatingRate: Double { linearCooling + radiativeCooling }
         /// How many ticks a still frame's temperature holds, at sixty a second.
         static let stillHoldTicks = 30
         /// How many temperatures along the span are computed.
@@ -946,21 +1032,25 @@ struct HUDWaveform: View {
         ///
         /// A filament with no current in it is still a wire, and a wire that
         /// vanished between two words would be a picture of a voice rather than of
-        /// an object: at `0.14` it is a deep ember, visible and clearly unlit.
+        /// an object: at `0.14` it is a deep crimson ember, visible and clearly unlit.
         static let ember: Double = 0.14
         /// How much of the wire's heat range above the ember the voice drives.
         static let emberGain: Double = 0.86
-        /// The reading at which the wire is as hot as it gets.
-        ///
-        /// It is a little under the top of the level scale, so a mix of the
-        /// envelope and the bands reaches the top of the wire's range on a
-        /// syllable that is loud on the fixed scale rather than on a syllable that
-        /// happens to be the loudest of this take. It is the rung of the measured
-        /// ladder at which a voice at -20 dBFS is still below four fifths of the
-        /// range and only a voice at 0 dBFS reaches the white of the top.
-        static let fullReading: Double = 0.95
-        /// The exponent the mixed reading is raised to.
-        static let temperatureExponent: Double = 0.75
+        /// The steady temperature at the speaker's own loud speech
+        /// (``VoiceMeter/speechTop``): past ``coreOnset``, so the core is lit, with
+        /// the last few percent left for louder voices. Below it the temperature is
+        /// linear in decibels from the room's gate, so the wire spans the voice it
+        /// hears rather than the microphone's headroom above it.
+        static let speechHeat: Double = 0.96
+        /// How far above loud speech the wire reaches `1`, as a window position:
+        /// about 12 dB on a window 50 dB tall.
+        static let headroomSpan: Double = 0.24
+        /// Minimum envelope-gated drive share carried regardless of per-band contrast.
+        static let bandFloor: Double = 0.08
+        /// What is added to every band before it is compared with the frame's
+        /// strongest one, so a silent or faint spectrum heats the wire evenly
+        /// instead of letting noise in one band take all of the power.
+        static let bandContrastSoftening: Double = 0.15
         /// The share of its temperature the wire keeps at the very ends of the
         /// spindle, and how much of the rest the envelope gives back.
         ///
@@ -989,19 +1079,43 @@ struct HUDWaveform: View {
             var alpha: Double
         }
 
-        /// The colours a tungsten wire has as it is heated, from an ember to white.
-        ///
-        /// There is no grey stop: the wire of this filament is never unlit, so the
-        /// ramp starts at the dull red of a wire that has almost gone out.
-        static let blackbody: [Blackbody] = [
-            Blackbody(heat: 0.00, red: 0.20, green: 0.03, blue: 0.01, alpha: 0.0),
-            Blackbody(heat: 0.12, red: 0.50, green: 0.10, blue: 0.03, alpha: 0.85),
-            Blackbody(heat: 0.30, red: 0.80, green: 0.24, blue: 0.05, alpha: 1),
-            Blackbody(heat: 0.50, red: 1.00, green: 0.50, blue: 0.14, alpha: 1),
-            Blackbody(heat: 0.70, red: 1.00, green: 0.70, blue: 0.38, alpha: 1),
-            Blackbody(heat: 0.88, red: 1.00, green: 0.84, blue: 0.64, alpha: 1),
-            Blackbody(heat: 1.00, red: 1.00, green: 0.93, blue: 0.84, alpha: 1),
-        ]
+        /// True incandescent blackbody stops from cold dark filament through
+        /// deep crimson ember, cherry red-hot, vermilion-orange, warm amber-gold,
+        /// and white-hot peak at `1.0`. Every stop obeys `red > green > blue`.
+        private static func buildRampStops(for material: HUDMaterial) -> [Blackbody] {
+            switch material {
+            case .black:
+                return [
+                    Blackbody(heat: 0.00, red: 0.18, green: 0.02, blue: 0.01, alpha: 0.00),
+                    Blackbody(heat: 0.14, red: 0.46, green: 0.06, blue: 0.02, alpha: 0.88),
+                    Blackbody(heat: 0.32, red: 0.82, green: 0.13, blue: 0.02, alpha: 1.00),
+                    Blackbody(heat: 0.54, red: 0.97, green: 0.34, blue: 0.04, alpha: 1.00),
+                    Blackbody(heat: 0.74, red: 1.00, green: 0.66, blue: 0.10, alpha: 1.00),
+                    Blackbody(heat: 0.88, red: 1.00, green: 0.85, blue: 0.36, alpha: 1.00),
+                    Blackbody(heat: 1.00, red: 1.00, green: 0.96, blue: 0.82, alpha: 1.00),
+                ]
+            case .glass:
+                return [
+                    Blackbody(heat: 0.00, red: 0.24, green: 0.03, blue: 0.01, alpha: 0.00),
+                    Blackbody(heat: 0.14, red: 0.56, green: 0.09, blue: 0.03, alpha: 0.90),
+                    Blackbody(heat: 0.32, red: 0.90, green: 0.18, blue: 0.04, alpha: 1.00),
+                    Blackbody(heat: 0.54, red: 1.00, green: 0.42, blue: 0.07, alpha: 1.00),
+                    Blackbody(heat: 0.74, red: 1.00, green: 0.72, blue: 0.16, alpha: 1.00),
+                    Blackbody(heat: 0.88, red: 1.00, green: 0.88, blue: 0.44, alpha: 1.00),
+                    Blackbody(heat: 1.00, red: 1.00, green: 0.97, blue: 0.86, alpha: 1.00),
+                ]
+            }
+        }
+
+        private static let blackRampStops = buildRampStops(for: .black)
+        private static let glassRampStops = buildRampStops(for: .glass)
+
+        static func rampStops(for material: HUDMaterial) -> [Blackbody] {
+            switch material {
+            case .black: blackRampStops
+            case .glass: glassRampStops
+            }
+        }
 
         // MARK: Light
 
@@ -1033,13 +1147,11 @@ struct HUDWaveform: View {
         /// How much the compression of the wire raises its own colour.
         static let wireEdgeGain: Double = 0.12
         /// The heat above which the wire carries a white-hot core.
-        static let coreOnset: Double = 0.5
+        static let coreOnset: Double = 0.80
+        /// The heat above which loop turnarounds carry white specular glints.
+        static let glintOnset: Double = 0.80
         /// The width of the white-hot core, in points.
         static let coreWidth: CGFloat = 0.28
-        /// The core's own colour: white with a hair of the card's warmth in it.
-        static let coreRed: Double = 1.00
-        static let coreGreen: Double = 0.96
-        static let coreBlue: Double = 0.88
         /// How much of the core a compressed point of the wire gets, and how much
         /// the compression adds.
         static let coreEdgeFloor: Double = 0.6
@@ -1052,11 +1164,6 @@ struct HUDWaveform: View {
         static let glintGain: CGFloat = 0.8
         /// The share of ink a shine point carries at the top of the heat range.
         static let glintInk: Double = 0.85
-        /// The shine point's colour, which is the nearest the picture comes to a
-        /// specular white.
-        static let glintRed: Double = 1.00
-        static let glintGreen: Double = 0.97
-        static let glintBlue: Double = 0.90
         /// The width of the light the whole coil throws on the card, as a share of
         /// the span, and its height, in points.
         static let ambientWidthShare: CGFloat = 0.92
@@ -1227,38 +1334,44 @@ struct HUDWaveform: View {
         /// - Parameters:
         ///   - heat: the temperature of the wire, from `0` to `1`.
         ///   - ink: how opaque the wire is here, from `0` to `1`.
-        static func light(heat: Double, ink: Double) -> Color {
-            let stop = components(heat: heat)
+        static func light(heat: Double, ink: Double, material: HUDMaterial = .black) -> Color {
+            let stop = components(heat: heat, material: material)
             return Color(red: stop.red, green: stop.green, blue: stop.blue)
                 .opacity(min(1, max(0, ink)))
         }
 
         /// The light the wire has at a temperature, as the ramp's own colour.
-        static func color(heat: Double, ink: Double = 1) -> Color {
-            let stop = components(heat: heat)
+        static func color(heat: Double, ink: Double = 1, material: HUDMaterial = .black) -> Color {
+            let stop = components(heat: heat, material: material)
             return Color(red: stop.red, green: stop.green, blue: stop.blue)
                 .opacity(min(1, max(0, stop.alpha * ink)))
         }
 
-        /// The four components of the blackbody ramp at a temperature.
+        /// The four components of the incandescent blackbody ramp at a temperature.
         ///
         /// The interpolation is linear in sRGB between two neighbouring stops, so
         /// the ramp the drawing uses is the ramp a test measures: a temperature
         /// between two stops is a mix of those two colours and never a third one.
         ///
-        /// - Parameter heat: the temperature of the wire, from `0` to `1`. A
-        ///   temperature outside the ramp reads its nearest end.
-        static func components(heat: Double) -> (red: Double, green: Double, blue: Double, alpha: Double) {
-            guard let first = blackbody.first, let last = blackbody.last else {
+        /// - Parameters:
+        ///   - heat: the temperature of the wire, from `0` to `1`. A
+        ///     temperature outside the ramp reads its nearest end.
+        ///   - material: the card material whose blackbody stops are used.
+        static func components(
+            heat: Double,
+            material: HUDMaterial = .black
+        ) -> (red: Double, green: Double, blue: Double, alpha: Double) {
+            let stops = rampStops(for: material)
+            guard let first = stops.first, let last = stops.last else {
                 return (0, 0, 0, 0)
             }
             let value = min(1, max(0, heat))
             if value <= first.heat { return (first.red, first.green, first.blue, first.alpha) }
             if value >= last.heat { return (last.red, last.green, last.blue, last.alpha) }
-            for index in 1..<blackbody.count {
-                let high = blackbody[index]
+            for index in 1..<stops.count {
+                let high = stops[index]
                 guard value <= high.heat else { continue }
-                let low = blackbody[index - 1]
+                let low = stops[index - 1]
                 let span = high.heat - low.heat
                 let fraction = span > 0 ? (value - low.heat) / span : 0
                 return (
@@ -1291,103 +1404,178 @@ struct HUDWaveform: View {
             return min(1, max(0, max(now, (now + before) * 0.5)))
         }
 
-        /// The temperature of every band of the wire at the newest sample.
-        ///
-        /// Each band is integrated forward over the last ``lagSamples`` frames from
-        /// a cold wire. The rows are read in the order the recorder measures them,
-        /// row `0` the sibilants and row `4` the fundamental, and the wire maps a
-        /// position onto them in ``heatProfile(history:spectrum:reveal:reduceMotion:)``.
-        static func bandHeat(_ spectrum: [AudioSpectrumFrame], reduceMotion: Bool) -> [Double] {
-            guard !spectrum.isEmpty else { return [0, 0, 0, 0, 0] }
-            let first = max(0, spectrum.count - lagSamples)
-            let frames = Array(first..<spectrum.count)
-            return (0..<5).map { row in
-                let raw = frames.map { band(spectrum, index: $0, row: row) }
-                return reduceMotion ? held(raw) : thermalLag(raw)
-            }
+        /// The temperature the wire settles at for a sustained meter level: linear
+        /// in decibels up to ``speechHeat`` at the speaker's loud speech, then
+        /// easing to `1` across ``headroomSpan`` so a shout still reads hotter.
+        static func targetTemperature(envelope: Double, speechTop: Double = VoiceMeter.defaultSpeechTop) -> Double {
+            let position = LevelScale.position(perceptual: envelope)
+            let top = min(max(speechTop, VoiceMeter.speechTopRange.lowerBound), VoiceMeter.speechTopRange.upperBound)
+            guard position > top else { return max(0, speechHeat * position / top) }
+            let rest = 1 - min(1, (position - top) / headroomSpan)
+            return 1 - (1 - speechHeat) * pow(rest, 1.5)
         }
 
-        /// The temperature of the wire as a whole at the newest sample.
-        static func envelopeHeat(_ history: [Double], reduceMotion: Bool) -> Double {
-            guard !history.isEmpty else { return 0 }
-            let raw = history.suffix(lagSamples).map { VisualizerMath.displayEnergy($0) }
-            return reduceMotion ? held(Array(raw)) : thermalLag(Array(raw))
+        /// The Joule power that holds the wire at ``targetTemperature(envelope:)``:
+        /// the power whose radiative and conductive losses balance there, so the
+        /// fourth-power loss sets only the warm-up and cool-down, never the range.
+        static func fullPower(envelope: Double, speechTop: Double = VoiceMeter.defaultSpeechTop) -> Double {
+            let t = targetTemperature(envelope: envelope, speechTop: speechTop)
+            return (linearCooling * t + radiativeCooling * t * t * t * t) / heatingRate
+        }
+
+        /// The share of the power a band receives for its share of the frame's
+        /// strongest band, both softened by ``bandContrastSoftening`` so a silent
+        /// frame heats every band fully.
+        static func bandWeight(_ share: Double) -> Double {
+            bandFloor + (1.0 - bandFloor) * min(1, max(0, share))
+        }
+
+        /// One linearly implicit step of the incandescent tungsten thermal balance:
+        /// `d(theta)/dt = heatingRate * drive - linearCooling * theta - radiativeCooling * theta^4`.
+        static func thermalStep(
+            current: Double,
+            drive: Double,
+            dt: Double = 1 / VisualizerMath.sampleRate
+        ) -> Double {
+            let clampedDrive = min(1, max(0, drive))
+            let theta = min(1, max(0, current))
+            let step = max(0, dt)
+            let numerator = theta + step * heatingRate * clampedDrive
+            let denominator = 1.0 + step * (linearCooling + radiativeCooling * theta * theta * theta)
+            return min(1, max(0, numerator / denominator))
+        }
+
+        /// Steady-state normalized temperature solving `k_lin * t + k_rad * t^4 = k_heat * drive`.
+        static func equilibriumTemperature(drive: Double) -> Double {
+            let d = min(1, max(0, drive))
+            if d <= 0 { return 0 }
+            if d >= 1 { return 1 }
+            let target = heatingRate * d
+            var t = pow(d, 0.25)
+            for _ in 0..<6 {
+                let t3 = t * t * t
+                let f = linearCooling * t + radiativeCooling * t3 * t - target
+                let df = linearCooling + 4.0 * radiativeCooling * t3
+                if df > 1e-9 {
+                    t = min(1, max(0, t - f / df))
+                }
+            }
+            return t
+        }
+
+        /// The normalized excess temperature of every band channel at the newest sample,
+        /// gated by absolute envelope loudness so auto-scaled bands never pin quiet speech.
+        static func bandTemperatures(
+            history: [Double],
+            spectrum: [AudioSpectrumFrame],
+            reduceMotion: Bool,
+            speechTop: Double = VoiceMeter.defaultSpeechTop,
+            speechTops: [Double] = []
+        ) -> [Double] {
+            guard !history.isEmpty else { return [0, 0, 0, 0, 0] }
+            let n = min(lagSamples, max(history.count, spectrum.count))
+            guard n > 0 else { return [0, 0, 0, 0, 0] }
+            let dt = 1 / VisualizerMath.sampleRate
+            // Oldest first: the drive of every band at every sample of the window.
+            var drives: [[Double]] = (0..<5).map { _ in
+                var row: [Double] = []
+                row.reserveCapacity(n)
+                return row
+            }
+            for age in stride(from: n - 1, through: 0, by: -1) {
+                let env = age < history.count
+                    ? VisualizerMath.displayEnergy(history[history.count - 1 - age])
+                    : 0
+                // Each sample is read against the reference it was written with.
+                let top = speechTops.count == history.count && age < history.count
+                    ? speechTops[history.count - 1 - age]
+                    : speechTop
+                let power = fullPower(envelope: env, speechTop: top)
+                if age < spectrum.count {
+                    let index = spectrum.count - 1 - age
+                    let levels = (
+                        band(spectrum, index: index, row: 0),
+                        band(spectrum, index: index, row: 1),
+                        band(spectrum, index: index, row: 2),
+                        band(spectrum, index: index, row: 3),
+                        band(spectrum, index: index, row: 4)
+                    )
+                    let strongest = max(levels.0, levels.1, levels.2, levels.3, levels.4) + bandContrastSoftening
+                    drives[0].append(power * bandWeight((levels.0 + bandContrastSoftening) / strongest))
+                    drives[1].append(power * bandWeight((levels.1 + bandContrastSoftening) / strongest))
+                    drives[2].append(power * bandWeight((levels.2 + bandContrastSoftening) / strongest))
+                    drives[3].append(power * bandWeight((levels.3 + bandContrastSoftening) / strongest))
+                    drives[4].append(power * bandWeight((levels.4 + bandContrastSoftening) / strongest))
+                } else {
+                    // No band information for this sample, so the wire heats evenly.
+                    for row in 0..<5 { drives[row].append(power) }
+                }
+            }
+            if reduceMotion {
+                return drives.map { equilibriumTemperature(drive: held($0)) }
+            }
+            return drives.map { thermalLag($0, dt: dt) }
         }
 
         /// The largest raw value of the most recent ticks.
-        ///
-        /// A style drawn without motion shows the wire at one moment of the voice's
-        /// own recent past, and a hold is what keeps a still frame from being the
-        /// picture of the gap between two syllables.
         static func held(_ raw: [Double]) -> Double {
-            VisualizerMath.peakHold(raw, ticks: stillHoldTicks).last ?? 0
+            raw.suffix(stillHoldTicks).max() ?? 0
         }
 
-        /// The temperature a wire settles at, from a cold start.
-        ///
-        /// Tungsten heats in ``attackTau`` and cools in ``releaseTau``, and the
-        /// difference between the two is the whole of the movement: a syllable
-        /// lights its part of the wire before the syllable is over, and the wire is
-        /// still red after the word has ended.
-        static func thermalLag(_ values: [Double], dt: Double = 1 / VisualizerMath.sampleRate) -> Double {
-            let attack = 1 - exp(-max(0, dt) / attackTau)
-            let release = 1 - exp(-max(0, dt) / releaseTau)
-            var heat = 0.0
-            for value in values {
-                heat += (value - heat) * (value > heat ? attack : release)
+        /// Integrates a sequence of Joule heating drives `[0, 1]` from a cold wire.
+        static func thermalLag(_ drives: [Double], dt: Double = 1 / VisualizerMath.sampleRate) -> Double {
+            var theta = 0.0
+            for drive in drives {
+                theta = thermalStep(current: theta, drive: drive, dt: dt)
             }
-            return heat
-        }
-
-        /// The reading a mixed position of the wire has put it at.
-        ///
-        /// The envelope arrives already normalised to ``fullReading`` at the loudest
-        /// moment of the take, so a mix of the envelope and one band tops out three
-        /// quarters of the way up the ramp. Dividing by that reading puts the
-        /// loudest mixed reading of the take at the top of the range, and the
-        /// exponent lifts the middle of it with it, so an ordinary syllable is
-        /// orange rather than deep red and only a peak is white.
-        static func temperature(_ reading: Double) -> Double {
-            pow(min(1, max(0, reading / fullReading)), temperatureExponent)
+            return theta
         }
 
         /// The temperature along the wire, from the left point of the spindle to the
         /// right one.
-        ///
-        /// The ends of the wire are where the sibilants are and the middle of it is
-        /// where the fundamental is, so a position reads its own band by walking the
-        /// five rows from the centre outwards: `4 - 8 |u - 0.5|` is row `4` at the
-        /// centre and row `0` at either end, and a position between two rows is the
-        /// straight line between them. That reading becomes a temperature through
-        /// ``temperature(_:)`` on top of the ember the wire always carries, the
-        /// temperatures are conducted along the wire, and the whole of it is then
-        /// tapered towards the ends of the spindle.
         static func heatProfile(
             history: [Double],
             spectrum: [AudioSpectrumFrame],
             reveal: Double,
-            reduceMotion: Bool
+            reduceMotion: Bool,
+            speechTop: Double = VoiceMeter.defaultSpeechTop,
+            speechTops: [Double] = []
         ) -> [Double] {
-            let envelope = envelopeHeat(history, reduceMotion: reduceMotion)
-            let bands = bandHeat(spectrum, reduceMotion: reduceMotion)
+            let bands = bandTemperatures(
+                history: history,
+                spectrum: spectrum,
+                reduceMotion: reduceMotion,
+                speechTop: speechTop,
+                speechTops: speechTops
+            )
             let shown = min(1, max(0, reveal))
-            var profile = (0..<heatSamples).map { sample -> Double in
-                let u = Double(sample) / Double(max(1, heatSamples - 1))
+            var profile = [Double](repeating: 0, count: heatSamples)
+            let lastIndex = Double(max(1, heatSamples - 1))
+            for sample in 0..<heatSamples {
+                let u = Double(sample) / lastIndex
                 let row = 4 - 8 * abs(u - 0.5)
-                let low = min(4, max(0, Int(row.rounded(.down))))
+                let floored = row.rounded(.down)
+                let low = min(4, max(0, Int(floored)))
                 let high = min(4, max(0, Int(row.rounded(.up))))
-                let fraction = row - row.rounded(.down)
-                let band = bands[low] * (1 - fraction) + bands[high] * fraction
-                let reading = temperature(0.5 * envelope + 0.5 * band)
-                return shown * (ember + emberGain * reading)
+                let fraction = row - floored
+                let theta = bands[low] * (1 - fraction) + bands[high] * fraction
+                profile[sample] = shown * (ember + emberGain * theta)
             }
+            var scratch = [Double](repeating: 0, count: heatSamples)
+            let last = heatSamples - 1
             for _ in 0..<conductionPasses {
-                profile = conduct(profile)
+                for index in 0..<heatSamples {
+                    let left = profile[max(0, index - 1)]
+                    let right = profile[min(last, index + 1)]
+                    scratch[index] = conduction[0] * left + conduction[1] * profile[index] + conduction[2] * right
+                }
+                swap(&profile, &scratch)
             }
-            return profile.indices.map { index in
-                let u = Double(index) / Double(max(1, heatSamples - 1))
-                return min(1, max(0, profile[index] * taper(u)))
+            for index in 0..<heatSamples {
+                let u = Double(index) / lastIndex
+                profile[index] = min(1, max(0, profile[index] * taper(u)))
             }
+            return profile
         }
 
         /// One pass of the wire's own conduction.
@@ -1475,6 +1663,191 @@ struct HUDWaveform: View {
         ///   - reduceMotion: whether the wire is still.
         /// - Returns: the strand's samples, from the left end of the span to the
         ///   right one.
+        struct CachedNode: Sendable {
+            let u: Double
+            let point: CGPoint
+            let depth: Double
+            let sine: Double
+            let edge: Double
+            let shimmerPhase: Double
+            var isFront: Bool { depth > 0 }
+        }
+
+        struct CachedSegment: Sendable {
+            let strand: Int
+            let start: Int
+            let end: Int
+            let isFront: Bool
+            let bin: Int
+            let edge: Double
+        }
+
+        struct CachedTemplate: Sendable {
+            let strands: [[CachedNode]]
+            let segments: [CachedSegment]
+            let glintIndices: [[Int]]
+        }
+
+        private enum FilamentGeometryCache {
+            struct Key: Hashable {
+                let widthBits: UInt64
+                let heightBits: UInt64
+                let startBits: UInt64
+                let endBits: UInt64
+                let centreYBits: UInt64
+                let stepsPerTurn: Int
+            }
+
+            private static let maxEntries = 32
+            private static let lock = OSAllocatedUnfairLock<(order: [Key], map: [Key: CachedTemplate])>(
+                initialState: ([], [:])
+            )
+
+            static func template(for bulb: Geometry, stepsPerTurn: Int = Filament.stepsPerTurn) -> CachedTemplate {
+                let key = Key(
+                    widthBits: Double(bulb.size.width).bitPattern,
+                    heightBits: Double(bulb.size.height).bitPattern,
+                    startBits: Double(bulb.start).bitPattern,
+                    endBits: Double(bulb.end).bitPattern,
+                    centreYBits: Double(bulb.centreY).bitPattern,
+                    stepsPerTurn: stepsPerTurn
+                )
+                if let cached = lock.withLock({ $0.map[key] }) {
+                    return cached
+                }
+                let built = buildTemplate(for: bulb, stepsPerTurn: stepsPerTurn)
+                return lock.withLock { state in
+                    if let existing = state.map[key] {
+                        return existing
+                    }
+                    if state.order.count >= maxEntries, let oldest = state.order.first {
+                        state.order.removeFirst()
+                        state.map.removeValue(forKey: oldest)
+                    }
+                    state.order.append(key)
+                    state.map[key] = built
+                    return built
+                }
+            }
+
+            private static func buildTemplate(for bulb: Geometry, stepsPerTurn: Int) -> CachedTemplate {
+                let span = bulb.end - bulb.start
+                let fit = Filament.fit(forHeight: bulb.size.height)
+                var strands: [[CachedNode]] = []
+                strands.reserveCapacity(strandCount)
+                var segments: [CachedSegment] = []
+                var glintIndices: [[Int]] = []
+                glintIndices.reserveCapacity(strandCount)
+
+                for strand in 0..<strandCount {
+                    let turnCount = turns(strand: strand, span: span)
+                    let count = max(2, Int((turnCount * Double(stepsPerTurn)).rounded()))
+                    var points: [CGPoint] = []
+                    var depths: [Double] = []
+                    var sines: [Double] = []
+                    var heights: [CGFloat] = []
+                    var depths3D: [CGFloat] = []
+                    points.reserveCapacity(count + 1)
+                    depths.reserveCapacity(count + 1)
+                    sines.reserveCapacity(count + 1)
+                    heights.reserveCapacity(count + 1)
+                    depths3D.reserveCapacity(count + 1)
+
+                    for index in 0...count {
+                        let u = Double(index) / Double(count)
+                        let radius = radius(u, strand: strand, fit: fit)
+                        let theta = angle(u, strand: strand, turns: turnCount)
+                        let sine = sin(theta)
+                        let cosine = cos(theta)
+                        let swing = radius * loopShare * CGFloat(cosine)
+                        let point = CGPoint(
+                            x: bulb.start + span * CGFloat(u) + swing,
+                            y: bulb.centreY + axisOffset(u, strand: strand, fit: fit) + radius * CGFloat(sine)
+                        )
+                        points.append(point)
+                        heights.append(point.y)
+                        depths.append(cosine)
+                        sines.append(sine)
+                        depths3D.append(radius * CGFloat(cosine))
+                    }
+
+                    var steps = [Double](repeating: 0, count: count)
+                    for index in 0..<count {
+                        let dx = points[index + 1].x - points[index].x
+                        let dy = heights[index + 1] - heights[index]
+                        let dz = depths3D[index + 1] - depths3D[index]
+                        let threeD = sqrt(dx * dx + dy * dy + dz * dz)
+                        let screen = sqrt(dx * dx + dy * dy)
+                        steps[index] = edge(threeD: threeD, screen: screen)
+                    }
+
+                    var nodes: [CachedNode] = []
+                    nodes.reserveCapacity(count + 1)
+                    for index in 0...count {
+                        let u = Double(index) / Double(count)
+                        let before = steps[max(0, index - 1)]
+                        let after = steps[min(count - 1, index)]
+                        nodes.append(CachedNode(
+                            u: u,
+                            point: points[index],
+                            depth: depths[index],
+                            sine: sines[index],
+                            edge: (before + after) / 2,
+                            shimmerPhase: 2 * Double.pi * (shimmerStep * u + Double(strand))
+                        ))
+                    }
+
+                    var start = 0
+                    for index in 1...nodes.count {
+                        let ends = index == nodes.count || nodes[index].isFront != nodes[start].isFront
+                        guard ends else { continue }
+                        let last = index == nodes.count ? index - 1 : index
+                        var segStart = start
+                        while segStart < last {
+                            let bin = binIndex(nodes[segStart].u)
+                            var segEnd = segStart + 1
+                            while segEnd < last, binIndex(nodes[segEnd].u) == bin {
+                                segEnd += 1
+                            }
+                            segments.append(CachedSegment(
+                                strand: strand,
+                                start: segStart,
+                                end: segEnd,
+                                isFront: nodes[segStart].isFront,
+                                bin: bin,
+                                edge: (nodes[segStart].edge + nodes[segEnd].edge) / 2
+                            ))
+                            segStart = segEnd
+                        }
+                        start = index
+                    }
+
+                    var strandGlints: [Int] = []
+                    if nodes.count > 2 {
+                        for index in 1..<(nodes.count - 1) {
+                            let node = nodes[index]
+                            guard node.depth > glintDepth else { continue }
+                            let before = nodes[index - 1].sine
+                            let after = nodes[index + 1].sine
+                            if (node.sine > before && node.sine > after)
+                                || (node.sine < before && node.sine < after) {
+                                strandGlints.append(index)
+                            }
+                        }
+                    }
+
+                    strands.append(nodes)
+                    glintIndices.append(strandGlints)
+                }
+
+                return CachedTemplate(strands: strands, segments: segments, glintIndices: glintIndices)
+            }
+        }
+
+        static func template(for bulb: Geometry, stepsPerTurn: Int = Filament.stepsPerTurn) -> CachedTemplate {
+            FilamentGeometryCache.template(for: bulb, stepsPerTurn: stepsPerTurn)
+        }
+
         static func nodes(
             strand: Int,
             in bulb: Geometry,
@@ -1482,68 +1855,24 @@ struct HUDWaveform: View {
             time: Double,
             reduceMotion: Bool
         ) -> [Node] {
-            let span = bulb.end - bulb.start
-            let turnCount = turns(strand: strand, span: span)
-            let count = max(2, Int((turnCount * Double(stepsPerTurn)).rounded()))
-            let fit = fit(forHeight: bulb.size.height)
-            var points: [CGPoint] = []
-            var depths: [Double] = []
-            var sines: [Double] = []
-            var heights: [CGFloat] = []
-            var depths3D: [CGFloat] = []
-            var heats: [Double] = []
-            points.reserveCapacity(count + 1)
-            for index in 0...count {
-                let u = Double(index) / Double(count)
-                let radius = radius(u, strand: strand, fit: fit)
-                let theta = angle(u, strand: strand, turns: turnCount)
-                let sine = sin(theta)
-                // The swing across the span is what turns the side-on sinusoid into
-                // a drawn loop: the wire comes round towards the person instead of
-                // running flat through the picture.
-                let swing = radius * loopShare * CGFloat(cos(theta))
-                let point = CGPoint(
-                    x: bulb.start + span * CGFloat(u) + swing,
-                    y: bulb.centreY + axisOffset(u, strand: strand, fit: fit) + radius * CGFloat(sine)
-                )
-                points.append(point)
-                heights.append(point.y)
-                depths.append(cos(theta))
-                sines.append(sine)
-                // The wire is a curve in space: its depth from the person is the
-                // helix's own radius, not the unit depth its side is read from, or
-                // the arc length would mix points with a number that has no unit.
-                depths3D.append(radius * CGFloat(cos(theta)))
-                heats.append(heat(at: u, in: profile))
+            let cached = template(for: bulb)
+            let strandNodes = cached.strands[strand]
+            let angular = 2 * Double.pi * shimmerRate * time
+            var result: [Node] = []
+            result.reserveCapacity(strandNodes.count)
+            for node in strandNodes {
+                let nodeHeat = heat(at: node.u, in: profile)
+                let shiver = reduceMotion ? 0 : shimmerGain * nodeHeat * sin(angular + node.shimmerPhase)
+                result.append(Node(
+                    u: node.u,
+                    point: CGPoint(x: node.point.x, y: node.point.y + CGFloat(shiver)),
+                    depth: node.depth,
+                    sine: node.sine,
+                    heat: nodeHeat,
+                    edge: node.edge
+                ))
             }
-
-            var steps = [Double](repeating: 0, count: count)
-            for index in 0..<count {
-                let dx = points[index + 1].x - points[index].x
-                let dy = heights[index + 1] - heights[index]
-                let dz = depths3D[index + 1] - depths3D[index]
-                let threeD = sqrt(dx * dx + dy * dy + dz * dz)
-                let screen = sqrt(dx * dx + dy * dy)
-                steps[index] = edge(threeD: threeD, screen: screen)
-            }
-
-            return (0...count).map { index in
-                let u = Double(index) / Double(count)
-                let shiver = reduceMotion
-                    ? 0
-                    : shimmerGain * heats[index]
-                        * sin(2 * Double.pi * (shimmerRate * time + shimmerStep * u + Double(strand)))
-                let before = steps[max(0, index - 1)]
-                let after = steps[min(count - 1, index)]
-                return Node(
-                    u: u,
-                    point: CGPoint(x: points[index].x, y: points[index].y + CGFloat(shiver)),
-                    depth: depths[index],
-                    sine: sines[index],
-                    heat: heats[index],
-                    edge: (before + after) / 2
-                )
-            }
+            return result
         }
 
         /// The wire of a bulb, sampled and batched for one frame.
@@ -1680,15 +2009,52 @@ struct HUDWaveform: View {
             history: history,
             spectrum: spectrumHistory,
             reveal: shown,
-            reduceMotion: reduceMotion
+            reduceMotion: reduceMotion,
+            speechTop: speechTop
         )
         let meanHeat = Filament.mean(profile)
-        let coil = Filament.coil(
-            in: bulb,
-            heat: profile,
-            time: effectiveTime,
-            reduceMotion: reduceMotion
-        )
+        let cached = Filament.template(for: bulb)
+        let angular = 2 * Double.pi * Filament.shimmerRate * effectiveTime
+
+        var strandPoints: [[CGPoint]] = []
+        var strandHeats: [[Double]] = []
+        strandPoints.reserveCapacity(cached.strands.count)
+        strandHeats.reserveCapacity(cached.strands.count)
+        for strandNodes in cached.strands {
+            var points: [CGPoint] = []
+            var heats: [Double] = []
+            points.reserveCapacity(strandNodes.count)
+            heats.reserveCapacity(strandNodes.count)
+            if reduceMotion {
+                for node in strandNodes {
+                    points.append(node.point)
+                    heats.append(Filament.heat(at: node.u, in: profile))
+                }
+            } else {
+                for node in strandNodes {
+                    let nodeHeat = Filament.heat(at: node.u, in: profile)
+                    let shiver = Filament.shimmerGain * nodeHeat * sin(angular + node.shimmerPhase)
+                    points.append(CGPoint(x: node.point.x, y: node.point.y + CGFloat(shiver)))
+                    heats.append(nodeHeat)
+                }
+            }
+            strandPoints.append(points)
+            strandHeats.append(heats)
+        }
+
+        let segmentPaths: [Path] = cached.segments.map { seg in
+            let pts = strandPoints[seg.strand]
+            var path = Path()
+            path.move(to: pts[seg.start])
+            for index in (seg.start + 1)...seg.end {
+                path.addLine(to: pts[index])
+            }
+            return path
+        }
+        let segmentHeats: [Double] = cached.segments.map { seg in
+            let heats = strandHeats[seg.strand]
+            return (heats[seg.start] + heats[seg.end]) / 2
+        }
 
         var surface = context
         surface.opacity = shown
@@ -1697,6 +2063,9 @@ struct HUDWaveform: View {
         // The light the coil throws on the card around it. It goes down first: a
         // wash added over the wire would be light in front of the object rather than
         // light coming off it.
+        let specular = MeterRamp.stops(for: material).specular
+        let activeMaterial = material
+
         func drawAmbient() {
             guard meanHeat > 0.02 else { return }
             let height = min(Filament.ambientHeight, size.height - 2)
@@ -1707,124 +2076,147 @@ struct HUDWaveform: View {
                 width: (bulb.end - bulb.start) * Filament.ambientWidthShare,
                 height: height
             )
-            var layer = surface
-            layer.blendMode = .plusLighter
-            layer.drawLayer { light in
-                light.blendMode = .plusLighter
-                light.concatenate(Filament.stretch(box))
-                light.fill(
-                    Path(ellipseIn: CGRect(
-                        x: box.midX - box.width / 2,
-                        y: box.midY - box.width / 2,
-                        width: box.width,
-                        height: box.width
-                    )),
-                    with: .radialGradient(
-                        Gradient(stops: [
-                            .init(color: Filament.light(
-                                heat: meanHeat,
-                                ink: Filament.ambientInk * pow(meanHeat, Filament.ambientExponent)
-                            ), location: 0),
-                            .init(color: Filament.light(heat: meanHeat, ink: 0), location: 1),
-                        ]),
-                        center: CGPoint(x: box.midX, y: box.midY),
-                        startRadius: 0,
-                        endRadius: box.width / 2
-                    )
+            var light = surface
+            light.blendMode = .plusLighter
+            light.concatenate(Filament.stretch(box))
+            light.fill(
+                Path(ellipseIn: CGRect(
+                    x: box.midX - box.width / 2,
+                    y: box.midY - box.width / 2,
+                    width: box.width,
+                    height: box.width
+                )),
+                with: .radialGradient(
+                    Gradient(stops: [
+                        .init(color: Filament.light(
+                            heat: meanHeat,
+                            ink: Filament.ambientInk * pow(meanHeat, Filament.ambientExponent),
+                            material: activeMaterial
+                        ), location: 0),
+                        .init(color: Filament.light(heat: meanHeat, ink: 0, material: activeMaterial), location: 1),
+                    ]),
+                    center: CGPoint(x: box.midX, y: box.midY),
+                    startRadius: 0,
+                    endRadius: box.width / 2
                 )
-            }
+            )
         }
 
         /// One pass of the wire over both halves of every strand.
-        ///
-        /// - Parameters:
-        ///   - width: the stroke width of the near half, in points.
-        ///   - radius: the blur radius of the pass, or `nil` for a sharp one.
-        ///   - ink: how opaque the near half of a stroke is.
-        ///   - colour: the colour of a stroke at its own heat and compression.
         func drawPass(
-            _ pieces: [Filament.Piece],
+            onlyCore: Bool = false,
             width: CGFloat,
             radius: CGFloat?,
-            ink: (Filament.Piece) -> Double,
-            colour: (Filament.Piece) -> Color
+            ink: (Double, Double) -> Double,
+            colorHeat: ((Double, Double) -> Double)? = nil,
+            fixedColor: Color? = nil
         ) {
-            // `drawLayer` calls its closure synchronously on this thread, so the
-            // two closures never cross an isolation boundary; Swift 6.3's release
-            // build cannot see that and reports the capture as a data race.
-            nonisolated(unsafe) let ink = ink
-            nonisolated(unsafe) let colour = colour
-            var layer = surface
-            layer.blendMode = .plusLighter
-            // A filter added to a context applies to every drawing operation after
-            // it, so a pass of a hundred strokes behind one filter would be a
-            // hundred blurs: the strokes go into a layer of their own and the filter
-            // is put over that layer's single composite.
-            layer.drawLayer { canvas in
-                if let radius {
-                    canvas.addFilter(.blur(radius: radius))
-                    canvas.drawLayer { inner in
-                        inner.blendMode = .plusLighter
-                        stroke(pieces, into: inner, width: width, ink: ink, colour: colour)
-                    }
-                    return
+            var hasVisible = false
+            for idx in cached.segments.indices {
+                let seg = cached.segments[idx]
+                let segHeat = segmentHeats[idx]
+                if onlyCore && segHeat <= Filament.coreOnset { continue }
+                let raw = ink(segHeat, seg.edge)
+                if (seg.isFront ? raw : raw * Filament.backInk) > 0.002 {
+                    hasVisible = true
+                    break
                 }
-                canvas.blendMode = .plusLighter
-                stroke(pieces, into: canvas, width: width, ink: ink, colour: colour)
             }
-        }
+            guard hasVisible else { return }
+            nonisolated(unsafe) let ink = ink
+            nonisolated(unsafe) let colorHeat = colorHeat
 
-        /// Every stroke of one pass, the far half of the wire first.
-        func stroke(
-            _ pieces: [Filament.Piece],
-            into canvas: GraphicsContext,
-            width: CGFloat,
-            ink: (Filament.Piece) -> Double,
-            colour: (Filament.Piece) -> Color
-        ) {
-            for piece in pieces where !piece.isFront {
-                let value = ink(piece) * Filament.backInk
-                guard value > 0.002 else { continue }
-                canvas.stroke(
-                    piece.path,
-                    with: .color(colour(piece).opacity(value)),
-                    style: StrokeStyle(
-                        lineWidth: width * Filament.backWidthShare,
-                        lineCap: .round,
-                        lineJoin: .round
+            func strokeHalf(
+                into canvas: GraphicsContext,
+                isFront: Bool,
+                lineWidth: CGFloat,
+                inkScale: Double
+            ) {
+                let heatSteps = colorHeat == nil ? 1 : 16
+                let alphaSteps = 16
+                let bucketCount = heatSteps * alphaSteps
+                var paths = [Path?](repeating: nil, count: bucketCount)
+                var heatSums = [Double](repeating: 0, count: bucketCount)
+                var alphaSums = [Double](repeating: 0, count: bucketCount)
+                var counts = [Int](repeating: 0, count: bucketCount)
+                for idx in cached.segments.indices {
+                    let seg = cached.segments[idx]
+                    guard seg.isFront == isFront else { continue }
+                    let segHeat = segmentHeats[idx]
+                    if onlyCore && segHeat <= Filament.coreOnset { continue }
+                    let value = min(1, ink(segHeat, seg.edge) * inkScale)
+                    guard value > 0.002 else { continue }
+                    let effHeat = colorHeat.map { min(1, max(0, $0(segHeat, seg.edge))) } ?? 0
+                    let hBin = heatSteps == 1 ? 0 : min(heatSteps - 1, max(0, Int(effHeat * Double(heatSteps))))
+                    let aBin = min(alphaSteps - 1, max(0, Int(sqrt(value) * Double(alphaSteps))))
+                    let bucketIdx = hBin * alphaSteps + aBin
+                    if paths[bucketIdx] == nil {
+                        paths[bucketIdx] = segmentPaths[idx]
+                    } else {
+                        paths[bucketIdx]?.addPath(segmentPaths[idx])
+                    }
+                    heatSums[bucketIdx] += effHeat
+                    alphaSums[bucketIdx] += value
+                    counts[bucketIdx] += 1
+                }
+                let style = StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+                for bucketIdx in 0..<bucketCount {
+                    guard let path = paths[bucketIdx], counts[bucketIdx] > 0 else { continue }
+                    let count = Double(counts[bucketIdx])
+                    let avgAlpha = alphaSums[bucketIdx] / count
+                    let baseColor = fixedColor ?? Filament.light(
+                        heat: heatSums[bucketIdx] / count,
+                        ink: 1,
+                        material: activeMaterial
                     )
-                )
+                    canvas.stroke(path, with: .color(baseColor.opacity(avgAlpha)), style: style)
+                }
             }
-            for piece in pieces where piece.isFront {
-                let value = ink(piece)
-                guard value > 0.002 else { continue }
-                canvas.stroke(
-                    piece.path,
-                    with: .color(colour(piece).opacity(value)),
-                    style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
-                )
+
+            if let radius {
+                var layer = surface
+                layer.blendMode = .plusLighter
+                layer.addFilter(.blur(radius: radius))
+                layer.drawLayer { inner in
+                    inner.blendMode = .plusLighter
+                    strokeHalf(into: inner, isFront: false, lineWidth: width * Filament.backWidthShare, inkScale: Filament.backInk)
+                    strokeHalf(into: inner, isFront: true, lineWidth: width, inkScale: 1)
+                }
+            } else {
+                var direct = surface
+                direct.blendMode = .plusLighter
+                strokeHalf(into: direct, isFront: false, lineWidth: width * Filament.backWidthShare, inkScale: Filament.backInk)
+                strokeHalf(into: direct, isFront: true, lineWidth: width, inkScale: 1)
             }
         }
 
-        // The shine points at the turnarounds: the nearest the picture comes to a
-        // specular highlight, and the one thing that says the wire is round. They
-        // share one layer because a layer per point would cost more than every other
-        // pass of the frame together.
         func drawGlints() {
             guard meanHeat > 0.02 else { return }
-            let points = Filament.glints(coil)
-            guard !points.isEmpty else { return }
-            var layer = surface
-            layer.blendMode = .plusLighter
-            layer.drawLayer { light in
-                light.blendMode = .plusLighter
-                for node in points {
-                    let radius = Filament.glintRadius + Filament.glintGain * CGFloat(node.heat)
-                    let ink = Filament.glintInk * node.heat * (node.isFront ? 1 : Filament.backInk)
+            var light = surface
+            light.blendMode = .plusLighter
+            let specularColor = Color(
+                red: specular.red,
+                green: specular.green,
+                blue: specular.blue
+            )
+            let glintSpan = max(1e-6, 1.0 - Filament.glintOnset)
+            for strand in cached.glintIndices.indices {
+                let indices = cached.glintIndices[strand]
+                guard !indices.isEmpty else { continue }
+                let pts = strandPoints[strand]
+                let heats = strandHeats[strand]
+                let nodes = cached.strands[strand]
+                for index in indices {
+                    let nodeHeat = heats[index]
+                    guard nodeHeat > Filament.glintOnset else { continue }
+                    let glintT = (nodeHeat - Filament.glintOnset) / glintSpan
+                    let radius = Filament.glintRadius + Filament.glintGain * CGFloat(glintT)
+                    let ink = Filament.glintInk * pow(glintT, 1.2) * (nodes[index].isFront ? 1 : Filament.backInk)
                     guard ink > 0.002, radius > 0 else { continue }
+                    let point = pts[index]
                     let box = CGRect(
-                        x: node.point.x - radius,
-                        y: node.point.y - radius,
+                        x: point.x - radius,
+                        y: point.y - radius,
                         width: radius * 2,
                         height: radius * 2
                     )
@@ -1832,18 +2224,10 @@ struct HUDWaveform: View {
                         Path(ellipseIn: box),
                         with: .radialGradient(
                             Gradient(stops: [
-                                .init(color: Color(
-                                    red: Filament.glintRed,
-                                    green: Filament.glintGreen,
-                                    blue: Filament.glintBlue
-                                ).opacity(min(1, ink)), location: 0),
-                                .init(color: Color(
-                                    red: Filament.glintRed,
-                                    green: Filament.glintGreen,
-                                    blue: Filament.glintBlue
-                                ).opacity(0), location: 1),
+                                .init(color: specularColor.opacity(min(1, ink)), location: 0),
+                                .init(color: specularColor.opacity(0), location: 1),
                             ]),
-                            center: node.point,
+                            center: point,
                             startRadius: 0,
                             endRadius: radius
                         )
@@ -1855,49 +2239,39 @@ struct HUDWaveform: View {
         drawAmbient()
 
         drawPass(
-            coil.pieces,
             width: Filament.haloWidth,
             radius: Filament.haloRadius,
-            ink: { Filament.haloInk * pow($0.heat, Filament.haloExponent) },
-            colour: { Filament.light(heat: $0.heat, ink: 1) }
+            ink: { heat, _ in Filament.haloInk * pow(heat, Filament.haloExponent) },
+            colorHeat: { heat, _ in heat }
         )
         drawPass(
-            coil.pieces,
             width: Filament.glowWidth,
             radius: Filament.glowRadius,
-            ink: {
-                Filament.glowInk * pow($0.heat, Filament.glowExponent)
-                    * (Filament.glowEdgeFloor + Filament.glowEdgeGain * $0.edge)
+            ink: { heat, edge in
+                Filament.glowInk * pow(heat, Filament.glowExponent)
+                    * (Filament.glowEdgeFloor + Filament.glowEdgeGain * edge)
             },
-            colour: { Filament.light(heat: $0.heat, ink: 1) }
+            colorHeat: { heat, _ in heat }
         )
         drawPass(
-            coil.pieces,
             width: Filament.wireWidth,
             radius: nil,
-            ink: { _ in 1 },
-            colour: {
-                Filament.light(
-                    heat: min(1, $0.heat + Filament.wireEdgeGain * $0.edge),
-                    ink: 1
-                )
-            }
+            ink: { _, _ in 1 },
+            colorHeat: { heat, edge in min(1, heat + Filament.wireEdgeGain * edge) }
         )
         drawPass(
-            Filament.corePieces(coil),
+            onlyCore: true,
             width: Filament.coreWidth,
             radius: nil,
-            ink: {
-                (($0.heat - Filament.coreOnset) / (1 - Filament.coreOnset))
-                    * (Filament.coreEdgeFloor + Filament.coreEdgeGain * $0.edge)
+            ink: { heat, edge in
+                ((heat - Filament.coreOnset) / (1 - Filament.coreOnset))
+                    * (Filament.coreEdgeFloor + Filament.coreEdgeGain * edge)
             },
-            colour: { _ in
-                Color(
-                    red: Filament.coreRed,
-                    green: Filament.coreGreen,
-                    blue: Filament.coreBlue
-                )
-            }
+            fixedColor: Color(
+                red: specular.red,
+                green: specular.green,
+                blue: specular.blue
+            )
         )
 
         drawGlints()
@@ -1958,7 +2332,7 @@ struct HUDWaveform: View {
         /// The phase of each ribbon's thickness, in radians.
         static let thicknessPhase: [Double] = [0, 1.3, 2.6, 3.9, 5.2]
         /// How much of the reach a ribbon's half thickness can take.
-        static let thicknessShare: [Double] = [0.95, 0.80, 0.65, 0.50, 0.40]
+        static let thicknessShare: [Double] = [0.74, 0.62, 0.50, 0.40, 0.30]
         /// Centreline cycles across the width, one per ribbon.
         static let centreCycles: [Double] = [0.8, 1.3, 1.9, 2.4, 3.0]
         /// How fast a ribbon's centreline travels, in cycles per second.
@@ -1966,7 +2340,29 @@ struct HUDWaveform: View {
         /// The phase of each ribbon's centreline, in radians.
         static let centrePhase: [Double] = [0.6, 2.1, 3.4, 5.0, 0.2]
         /// How much of the reach a ribbon's centreline can take.
-        static let centreShare: [Double] = [0.34, 0.30, 0.26, 0.22, 0.18]
+        static let centreShare: [Double] = [0.26, 0.24, 0.21, 0.18, 0.15]
+        /// Exponent driving ribbon thickness bloom across medium to loud speech.
+        static let thicknessExponent: Double = 2.05
+        /// Exponent driving ribbon vertical weave separation across speech levels.
+        static let centreExponent: Double = 1.45
+
+        static func thicknessEnergy(_ energy: Double) -> Double {
+            max(silentFloor, pow(min(1, max(0, energy)), thicknessExponent))
+        }
+
+        static func centreEnergy(_ energy: Double) -> Double {
+            max(silentFloor, pow(min(1, max(0, energy)), centreExponent))
+        }
+
+        static func fillOpacityScale(for energy: Double) -> Double {
+            let clamped = min(1, max(0, energy))
+            return 0.72 + 0.28 * pow(clamped, 1.4)
+        }
+
+        static func rimOpacityScale(for energy: Double) -> Double {
+            let clamped = min(1, max(0, energy))
+            return 0.68 + 0.32 * pow(clamped, 1.4)
+        }
         /// The ramp position each ribbon's fill is read at.
         static let fillStops: [Double] = [0.20, 0.40, 0.62, 0.82, 1.0]
         /// The opacity of a ribbon's top edge.
@@ -1985,6 +2381,11 @@ struct HUDWaveform: View {
         /// The reach of a ribbon from the centre line, in points.
         static func reach(forHeight height: CGFloat) -> CGFloat {
             max(1, height / 2 - 1)
+        }
+
+        /// Precomputed end tapers for the standard ``sampleCount`` samples across a ribbon.
+        static let cachedEdges: [Double] = (0..<sampleCount).map { index in
+            edge(Double(index) / Double(sampleCount - 1))
         }
 
         /// The taper at a position across the ribbons: `0` at each end, `1` in
@@ -2065,14 +2466,15 @@ struct HUDWaveform: View {
             )
         }
 
-        /// The display value of the voice at a position across the ribbons.
+        /// The raw display value of the voice at a position across the ribbons.
         ///
         /// - Parameters:
         ///   - controls: the window's controls, oldest first.
         ///   - u: the position across the ribbons, from `0` to `1`.
-        /// - Returns: the display value, never below ``silentFloor``.
+        /// - Returns: the clamped `0...1` display energy; ``thicknessEnergy(_:)``
+        ///   and ``centreEnergy(_:)`` apply ``silentFloor`` and dynamic-range curves.
         static func energy(_ controls: [Double], at u: Double) -> Double {
-            max(silentFloor, VisualizerMath.displayEnergy(spline(controls, at: u)))
+            VisualizerMath.displayEnergy(spline(controls, at: u))
         }
 
         /// The half thickness of a ribbon at a position and a moment.
@@ -2083,10 +2485,28 @@ struct HUDWaveform: View {
             reach: CGFloat,
             time: Double
         ) -> CGFloat {
+            halfThickness(
+                ribbon: ribbon,
+                u: u,
+                energy: energy,
+                reach: reach,
+                time: time,
+                taper: edge(u)
+            )
+        }
+
+        static func halfThickness(
+            ribbon: Int,
+            u: Double,
+            energy: Double,
+            reach: CGFloat,
+            time: Double,
+            taper: Double
+        ) -> CGFloat {
             let theta = 2 * Double.pi * (thicknessCycles[ribbon] * u - thicknessSpeed[ribbon] * time)
                 + thicknessPhase[ribbon]
             let wave = 0.15 + 0.85 * abs(cos(theta))
-            return reach * thicknessShare[ribbon] * energy * edge(u) * wave
+            return reach * thicknessShare[ribbon] * thicknessEnergy(energy) * taper * wave
         }
 
         /// The offset of a ribbon's centreline from the canvas's middle, in
@@ -2098,10 +2518,34 @@ struct HUDWaveform: View {
             reach: CGFloat,
             time: Double
         ) -> CGFloat {
+            centreOffset(
+                ribbon: ribbon,
+                u: u,
+                energy: energy,
+                reach: reach,
+                time: time,
+                taper: edge(u)
+            )
+        }
+
+        static func centreOffset(
+            ribbon: Int,
+            u: Double,
+            energy: Double,
+            reach: CGFloat,
+            time: Double,
+            taper: Double
+        ) -> CGFloat {
             let theta = 2 * Double.pi * (centreCycles[ribbon] * u - centreSpeed[ribbon] * time)
                 + centrePhase[ribbon]
-            return reach * centreShare[ribbon] * energy * edge(u) * sin(theta)
+            return reach * centreShare[ribbon] * centreEnergy(energy) * taper * sin(theta)
         }
+    }
+
+    /// A shared-ramp colour at a ribbon's own ink, without the meter's level
+    /// opacity: Silk multiplies this alpha into overlapping translucent bands.
+    private static func ribbonInk(_ tint: MeterTint, _ ink: Double) -> Color {
+        VisualizerMath.ramp(tint, opacity: ink)
     }
 
     private func drawSilk(context: GraphicsContext, size: CGSize) {
@@ -2122,6 +2566,9 @@ struct HUDWaveform: View {
         for index in 0..<count {
             energies.append(Silk.energy(controls, at: Double(index) / last))
         }
+        let framePeak = energies.max() ?? 0
+        let fillScale = Silk.fillOpacityScale(for: framePeak)
+        let rimScale = Silk.rimOpacityScale(for: framePeak)
 
         let gradientStart = CGPoint(x: 0, y: mid - reach)
         let gradientEnd = CGPoint(x: 0, y: mid + reach)
@@ -2136,6 +2583,7 @@ struct HUDWaveform: View {
             halfThickness.reserveCapacity(count)
             for index in 0..<count {
                 let u = Double(index) / last
+                let taper = Silk.cachedEdges[index]
                 let energy = energies[index]
                 let x = inset + CGFloat(u) * width
                 let centre = mid + Silk.centreOffset(
@@ -2143,14 +2591,16 @@ struct HUDWaveform: View {
                     u: u,
                     energy: energy,
                     reach: reach,
-                    time: clock
+                    time: clock,
+                    taper: taper
                 )
                 let half = Silk.halfThickness(
                     ribbon: ribbon,
                     u: u,
                     energy: energy,
                     reach: reach,
-                    time: clock
+                    time: clock,
+                    taper: taper
                 )
                 top.append(CGPoint(x: x, y: centre - half))
                 bottom.append(CGPoint(x: x, y: centre + half))
@@ -2166,13 +2616,21 @@ struct HUDWaveform: View {
             for point in top.dropFirst() { band.addLine(to: point) }
             for point in bottom.reversed() { band.addLine(to: point) }
             band.closeSubpath()
-            let colour = HUDTheme.meter(Silk.fillStops[ribbon], ceiling: ceiling)
+            // The fill stays on the body of the shared ramp: burnished floor at
+            // its shaded side, saturated body at the lit side. The ribbon's own
+            // inks multiply the RGB stops, so the ramp's level opacity is not
+            // applied a second time.
+            let lit = MeterRamp.rgb(
+                level: min(Silk.fillStops[ribbon], MeterRamp.bodyPosition),
+                material: material
+            )
+            let shaded = MeterRamp.rgb(level: 0, material: material)
             context.fill(
                 band,
                 with: .linearGradient(
                     Gradient(stops: [
-                        .init(color: colour.opacity(Silk.topInk[ribbon]), location: 0),
-                        .init(color: colour.opacity(Silk.bottomInk[ribbon]), location: 1),
+                        .init(color: Self.ribbonInk(lit, Silk.topInk[ribbon] * fillScale), location: 0),
+                        .init(color: Self.ribbonInk(shaded, Silk.bottomInk[ribbon] * fillScale), location: 1),
                     ]),
                     startPoint: gradientStart,
                     endPoint: gradientEnd
@@ -2182,8 +2640,14 @@ struct HUDWaveform: View {
             // The rim: each contour stroked on its own, and only over the runs
             // where the ribbon is thick enough for an edge to be a line rather
             // than a smear. A hairline at silence has no rim at all.
-            let rimColour = HUDTheme.meter(Silk.rimStops[ribbon], ceiling: ceiling)
-            for contour in [top, bottom] {
+            // Only the upper contour catches the light: peak gold becomes the
+            // specular stop as the ribbon rises, while the lower contour keeps
+            // the saturated peak. One point of shine on a foil edge reads as
+            // metal; the same shine spread over the fill reads as pale paint.
+            let rimLevel = Silk.rimStops[ribbon]
+            let upper = MeterRamp.specularBand(level: rimLevel, material: material)
+            let lower = MeterRamp.rgb(level: rimLevel, material: material)
+            for (index, contour) in [top, bottom].enumerated() {
                 var run: [CGPoint] = []
                 func flush() {
                     guard run.count > 1 else { run.removeAll(); return }
@@ -2192,7 +2656,7 @@ struct HUDWaveform: View {
                     for point in run.dropFirst() { path.addLine(to: point) }
                     context.stroke(
                         path,
-                        with: .color(rimColour.opacity(Silk.rimInk[ribbon])),
+                        with: .color(Self.ribbonInk(index == 0 ? upper : lower, Silk.rimInk[ribbon] * rimScale)),
                         style: StrokeStyle(
                             lineWidth: Silk.rimWidth,
                             lineCap: .round,
@@ -2223,9 +2687,9 @@ struct HUDWaveform: View {
     /// pitch is the smaller of a row's height and five points, so the rows stay
     /// square and a card of the usual height gets the five point lattice it was
     /// designed for. A dot's radius grows with its band from a quarter of the
-    /// pitch to a third, so the widest dot is `0.66` of the pitch across and two
-    /// neighbours keep `0.34` of the pitch between them at every level, which is
-    /// what makes a loud word a grid of lamps rather than a stain.
+    /// pitch to just under a third, so the widest dot is `0.56` of the pitch
+    /// across and two neighbours keep `0.44` of the pitch between them at every
+    /// level, which is what makes a loud word a grid of lamps rather than a stain.
     ///
     /// The grid slides. One dot is one sample pair of the spectrum, two meter
     /// ticks of it, and it travels one pitch per pair from the right edge to the
@@ -2245,14 +2709,10 @@ struct HUDWaveform: View {
     /// clock and adding the meter's phase afterwards would step the grid by a
     /// third of a pitch on every frame the two disagree.
     ///
-    /// Nothing here can become a blob. A dot's body is at most a third of the pitch
-    /// in radius, its halo stops at `0.45` of a pitch, and the halo is added to the
-    /// card's surface with `plusLighter` and an opacity that already falls to
-    /// nothing at its own bound. The bound is short of the midpoint between two
-    /// neighbours by a twentieth of a pitch, so the one point where two dots face
-    /// each other receives no light from either of them. The halo's ink is
-    /// multiplied by the dot's own reveal as well, so a cell at the floor carries
-    /// no halo at all.
+    /// Nothing here can become a blob. A dot's body is at most `0.28` of the
+    /// pitch in radius and every pixel it lights lies inside that circle. There
+    /// is no halo, no crossed glint and no off-centre disc, so two neighbours
+    /// never share light and a quiet cell carries no ink outside its own rim.
     ///
     /// A dot is drawn whole or faded, never cut. The fade is measured from each
     /// side of the canvas to the edge of a half-pitch band inside it, so a dot is
@@ -2269,9 +2729,9 @@ struct HUDWaveform: View {
         /// The widest pitch, in points.
         static let maximumPitch: CGFloat = 5
         /// The radius of a dot at rest, as a share of the pitch.
-        static let restRadiusShare: CGFloat = 0.25
+        static let restRadiusShare: CGFloat = 0.26
         /// How much of the pitch the radius gains at the top of the range.
-        static let radiusGain: CGFloat = 0.08
+        static let radiusGain: CGFloat = 0.02
         /// The radius of the widest dot, as a share of the pitch.
         static var maximumRadiusShare: CGFloat { restRadiusShare + radiusGain }
         /// How many ticks of the meter one pitch of the grid takes.
@@ -2289,75 +2749,19 @@ struct HUDWaveform: View {
         /// that adds light in proportion to the voice.
         static let litOnset: Double = 0.00
         /// How far past ``litOnset`` a dot takes to reach its full lamp.
-        ///
-        /// The lamp is faded in across this span rather than switched on at the
-        /// onset. A dot that goes from the floor to an opaque white centre
-        /// between two frames is a flicker at the threshold, so the light a dot
-        /// carries is a continuous function of its level across the whole range:
-        /// two neighbouring frames differ by as much as the voice between them
-        /// did, and no level is the level at which a lamp arrives.
-        ///
-        /// It is a third of the range rather than a fifth because the steep part
-        /// of the warp below sits at the bottom: the display value is
-        /// `pow(energy, 1.6)`, so a band between a fifth and a half of its range
-        /// is where a syllable's edge lands, and the fade has to cover that whole
-        /// stretch to keep an ordinary syllable from crossing a threshold in one
-        /// frame.
         static let litRamp: Double = 0.35
+        /// The display value exponent applied to normalized energy before computing reveal/ramp color.
+        static let displayExponent: Double = 1.60
         /// The display value above which a dot counts as shining.
         static let shineOnset: Double = 0.55
-        /// The display value from which a dot carries a highlight.
-        ///
-        /// Below half heat a dot has no highlight. Above it the highlight grows
-        /// linearly, reaching its full ink at full heat. The glint keeps its own
-        /// onset; this threshold only governs the off-centre specular.
-        static let highlightOnset: Double = 0.5
-        /// The ink of a highlight at full heat.
-        static let highlightInk: Double = 0.75
-        /// The distance from the dot's centre to the highlight's centre, as a
-        /// share of the dot's diameter, measured along the diagonal.
-        static let highlightOffset: CGFloat = 0.18
-        /// The radius of the highlight, as a share of the dot's radius.
-        static let highlightRadius: CGFloat = 0.38
-        /// The reach of a dot's halo, as a share of the pitch.
-        ///
-        /// It is `0.45` of the pitch, which ends the halo `0.05` of a pitch, a
-        /// quarter of a point on the card's lattice, short of the midpoint between
-        /// two neighbours. The midpoint therefore receives no light from either of
-        /// them, and the falloff that was already nothing at its own bound has a
-        /// clear margin to the one place two dots meet.
-        static let glowRadiusShare: CGFloat = 0.45
-        /// The band of the canvas's side over which a dot fades, as a share of the
-        /// pitch.
-        ///
-        /// It is half a pitch, the distance from the edge to the midpoint between
-        /// two neighbours, and it is not the halo's own radius. A fade measured
-        /// from the halo's bound would leave a dot at its full ink after `0.95` of
-        /// a pitch of travel, because the halo no longer reaches the edge on the
-        /// frame the dot is born on; measured from this bound, a dot is born with
-        /// no ink and reaches all of it after exactly one pitch, which is the rule
-        /// the grid's arrival is built on.
+        /// The display value from which a dot's specular die reaches full
+        /// brightness. It is a spatial mix within the dot, never a glint in time.
+        static let specularOnset: Double = 0.35
+        /// The band of the canvas's side over which a dot fades, as a share of
+        /// the pitch. It is half a pitch: the distance from the edge to the
+        /// midpoint between two neighbours.
         static let edgeReachShare: CGFloat = 0.5
-        /// The share of its full ink a halo carries at the dot's own edge.
-        static let glowInk: Double = 0.35
-        /// The share of that ink the halo carries half way out.
-        ///
-        /// It is a quarter, which with the zero at the outer edge is a quadratic
-        /// falloff: the light is at the dot, the space between two dots is the
-        /// card, and nothing is added far from a lamp.
-        static let glowMidInk: Double = 0.25
-        /// The display value from which a dot carries a glint.
-        static let glintOnset: Double = 0.80
-        /// How long a dot keeps its glint, in seconds.
-        static let glintLife: Double = 0.25
-        /// The ink of a glint at the full onset of its dot.
-        static let glintInk: Double = 0.8
-        /// The longest a glint is drawn, as a share of the pitch.
-        static let glintLengthShare: CGFloat = 0.9
-        /// The longest a glint is drawn, as a multiple of its dot's radius.
-        static let glintRadiusShare: CGFloat = 2.6
-        /// The width of a glint at its centre, in points.
-        static let glintWidth: CGFloat = 0.6
+
         /// The band of the canvas's side over which a dot fades, in pitches.
         static let edgeFadeShare: CGFloat = 1
 
@@ -2389,8 +2793,6 @@ struct HUDWaveform: View {
             let reveal: Double
             /// How much of its ink the dot keeps at the canvas's sides.
             let edgeFade: Double
-            /// The ink of the dot's glint, from `0` to `1`.
-            let glint: Double
             /// How long the dot has been travelling, in seconds.
             let age: Double
         }
@@ -2410,9 +2812,8 @@ struct HUDWaveform: View {
         /// It is the smoothstep from ``litOnset`` across ``litRamp``, so the light
         /// of a dot is a continuous function of its level on the whole range: no
         /// level turns a lamp on, and no frame is the first frame of a lamp. Every
-        /// alpha of the lamp is multiplied by it, and the highlight and the halo
-        /// with them, so the dot fades in whole rather than growing a bright core
-        /// over a dim disc.
+        /// alpha of every layer of the lamp is multiplied by it, so the dot fades
+        /// in whole rather than growing a bright core over a dim disc.
         static func reveal(forDisplay display: Double) -> Double {
             MeterRamp.smoothstep(litOnset, litOnset + litRamp, display)
         }
@@ -2504,11 +2905,6 @@ struct HUDWaveform: View {
                 && centre.y + radius <= size.height
         }
 
-        /// The reach of a dot's halo, in points.
-        static func glowRadius(forPitch pitch: CGFloat) -> CGFloat {
-            pitch * glowRadiusShare
-        }
-
         /// The tick of the newest whole sample pair at a moment.
         ///
         /// A dot belongs to a pair of samples, so the pair it reads is the largest
@@ -2536,7 +2932,7 @@ struct HUDWaveform: View {
 
         /// Where the dot of one sample pair stands, in points from the left edge.
         ///
-        /// The dot is born with its halo tangent to the right edge and travels one
+        /// The dot is born with its body tangent to the right edge and travels one
         /// pitch every two ticks, so its place is a continuous function of the
         /// clock: a frame between two ticks draws the grid between two columns
         /// rather than on one of them.
@@ -2554,11 +2950,10 @@ struct HUDWaveform: View {
         ///
         /// The distance is taken from each side to the nearest point half a pitch
         /// in, across one pitch, so a dot has no ink on the frame it is born on and
-        /// all of it once it has travelled a whole pitch inside. The halo is
-        /// smaller than that bound by design, see ``glowRadiusShare``, so the light
-        /// of a dot is always clear of the card's border. Nothing pops at either
-        /// side, and no dot is ever drawn cut: the drawing skips a dot whose disc
-        /// the canvas would cross.
+        /// all of it once it has travelled a whole pitch inside. The dot itself
+        /// is smaller than that bound by design, so its ink is always clear of the
+        /// card's border. Nothing pops at either side, and no dot is ever drawn
+        /// cut: the drawing skips a dot whose disc the canvas would cross.
         static func edgeFade(centreX: CGFloat, pitch: CGFloat, width: CGFloat) -> Double {
             guard pitch > 0 else { return 0 }
             let reach = pitch * edgeReachShare
@@ -2566,41 +2961,6 @@ struct HUDWaveform: View {
             return MeterRamp.smoothstep(0, Double(edgeFadeShare), Double(distance / pitch))
         }
 
-        /// The length of the glint a dot of this radius carries, in points.
-        ///
-        /// A glint is a spark rather than a cross: it is held inside the space a
-        /// dot owns, so a bright cell cannot paint into its neighbour's column.
-        static func glintLength(radius: CGFloat, pitch: CGFloat) -> CGFloat {
-            min(glintLengthShare * pitch, glintRadiusShare * radius)
-        }
-
-        /// The ink of a dot's glint, from `0` to `1`.
-        ///
-        /// The glint is the spark of a lamp at the top of its range. It is drawn
-        /// only above ``glintOnset``, and only for the first ``glintLife`` seconds
-        /// of a dot's travel, so the newest syllables of a word sparkle and the
-        /// trace they leave does not.
-        static func glint(display: Double, age: Double, edgeFade: Double) -> Double {
-            let spark = MeterRamp.smoothstep(glintOnset, 1, display)
-            let fresh = 1 - MeterRamp.smoothstep(0, glintLife, age)
-            return spark * glintInk * fresh * min(max(edgeFade, 0), 1)
-        }
-    }
-
-    /// The ink of the card's own marks, `#FFF4E6`, which a lit dot carries in the
-    /// centre of its light and in its highlight.
-    private static let matrixInk = Color(red: 1.0, green: 0.957, blue: 0.902)
-
-    /// The warm tip of the ramp mixed towards the card's ink.
-    ///
-    /// The mix itself is ``MeterRamp/hot(_:)``: the rewrite card's lattice draws
-    /// its centres with the same one, so the two dot surfaces stay one material.
-    ///
-    /// - Parameter amount: how far towards the ink to go, from `0` to `1`.
-    /// - Returns: the colour of the centre of a dot at that heat.
-    private static func hot(_ amount: Double) -> Color {
-        let tint = MeterRamp.hot(amount)
-        return Color(red: tint.red, green: tint.green, blue: tint.blue)
     }
 
     /// The dots one frame of the grid draws, by the view's own rules.
@@ -2614,16 +2974,39 @@ struct HUDWaveform: View {
     /// - Returns: the dots to draw, newest first, without the dots that have left
     ///   the canvas.
     func matrixDots(in size: CGSize) -> [MatrixLattice.Dot] {
+        let resolvedHistory: [Double]
+        if !history.isEmpty {
+            resolvedHistory = history
+        } else if !halfHeights.isEmpty {
+            let maxH = max(1.0, (HUDTheme.waveformHeight / 2) - Waveform.minimumHalfHeight)
+            resolvedHistory = halfHeights.map { halfHeight in
+                Double(min(1.0, max(0.0, (halfHeight - Waveform.minimumHalfHeight) / maxH)))
+            }
+        } else {
+            resolvedHistory = [level]
+        }
+        return Self.matrixDots(
+            in: size,
+            history: resolvedHistory,
+            spectrumHistory: spectrumHistory,
+            phase: phase,
+            time: effectiveTime,
+            reduceMotion: reduceMotion
+        )
+    }
+
+    nonisolated static func matrixDots(
+        in size: CGSize,
+        history: [Double],
+        spectrumHistory: [AudioSpectrumFrame],
+        phase: Double,
+        time: Double,
+        reduceMotion: Bool
+    ) -> [MatrixLattice.Dot] {
         let pitch = MatrixLattice.pitch(forHeight: size.height)
         guard pitch > 0, size.width > 0 else { return [] }
 
         if reduceMotion {
-            // A grid asked not to move keeps the lattice the card has always
-            // drawn: the newest pair in the rightmost whole column, every column
-            // whole, and no dot entering or leaving, so a still of a voice does
-            // not depend on the clock. Its glow is the same glow, and its glint is
-            // off: a glint is a moment of a dot's travel rather than a measurement
-            // of the voice.
             return (0..<MatrixLattice.columnCount(for: size)).flatMap { column in
                 (0..<MatrixLattice.rows).map { row in
                     dot(
@@ -2637,31 +3020,28 @@ struct HUDWaveform: View {
                             width: size.width
                         ),
                         pitch: pitch,
-                        energy: band(offset: column * MatrixLattice.ticksPerPitch, row: row),
+                        energy: band(
+                            offset: column * MatrixLattice.ticksPerPitch,
+                            row: row,
+                            spectrumHistory: spectrumHistory,
+                            history: history
+                        ),
                         edgeFade: 1,
-                        age: 0,
-                        glint: false
+                        age: 0
                     )
                 }
             }
         }
 
-        // The tick the frame belongs to. A ring that carries stamps carries the
-        // meter's own sample numbers, so the grid's clock is read from them and not
-        // from the frame time: the two agree while the display keeps up and diverge
-        // on a stalled frame, and the stamps are the authority. A ring built by hand
-        // without them falls back to the frame's own clock.
         let tick = spectrumHistory.last?.sample ?? HUDWaveform.Stretch.newestSample(at: time, phase: phase)
         let clock = Double(tick) + min(max(phase, 0), 1)
         let newest = MatrixLattice.newestPairTick(clock: clock, tick: tick)
-        let reach = MatrixLattice.glowRadius(forPitch: pitch)
-        // A ring bounds how far back the grid can read: a pair it no longer holds
-        // has left the canvas. The envelope fallback clamps instead of running
-        // out, which is what a card with no spectrum draws at every column.
+        let reach = pitch * MatrixLattice.maximumRadiusShare
         let stamped = spectrumHistory.last?.sample != nil
         let held = spectrumHistory.isEmpty ? Int.max : spectrumHistory.count
 
         var dots: [MatrixLattice.Dot] = []
+        dots.reserveCapacity(MatrixLattice.columnLimit(for: size) * MatrixLattice.rows)
         for column in 0..<MatrixLattice.columnLimit(for: size) {
             let sample = newest - column * MatrixLattice.ticksPerPitch
             let x = MatrixLattice.centreX(
@@ -2670,18 +3050,9 @@ struct HUDWaveform: View {
                 pitch: pitch,
                 width: size.width
             )
-            // A dot leaves by its halo rather than by its centre, and the fade has
-            // taken its ink to nothing before the halo can reach the edge, so the
-            // grid neither cuts a dot nor paints on the card's border. A column
-            // that is off the canvas is skipped rather than ending the walk: one
-            // column that cannot be drawn must not take the columns behind it with
-            // it.
             guard x - reach > 0 else { continue }
             let offset: Int
             if stamped {
-                // The pair the column stands for is found by the tick it was
-                // measured on, so the specimen a dot holds is its own for the whole
-                // of its travel instead of changing as the ring moves past it.
                 guard let found = MatrixLattice.offset(ofStamp: sample, in: spectrumHistory) else { continue }
                 offset = found
             } else {
@@ -2691,7 +3062,12 @@ struct HUDWaveform: View {
             let fade = MatrixLattice.edgeFade(centreX: x, pitch: pitch, width: size.width)
             for row in 0..<MatrixLattice.rows {
                 let centre = CGPoint(x: x, y: MatrixLattice.centreY(row: row, forHeight: size.height))
-                let energy = min(1, max(0, band(offset: offset, row: row)))
+                let energy = min(1, max(0, band(
+                    offset: offset,
+                    row: row,
+                    spectrumHistory: spectrumHistory,
+                    history: history
+                )))
                 let radius = MatrixLattice.radius(forPitch: pitch, energy: energy)
                 guard MatrixLattice.isWhole(centre: centre, radius: radius, in: size) else { continue }
                 dots.append(dot(
@@ -2702,29 +3078,14 @@ struct HUDWaveform: View {
                     pitch: pitch,
                     energy: energy,
                     edgeFade: fade,
-                    age: MatrixLattice.age(sampleTick: sample, clock: clock),
-                    glint: true
+                    age: MatrixLattice.age(sampleTick: sample, clock: clock)
                 ))
             }
         }
         return dots
     }
 
-    /// One dot of the grid, measured from the band it holds.
-    ///
-    /// - Parameters:
-    ///   - sampleTick: the tick of the sample pair the dot holds. A still grid
-    ///     has no clock, so its ticks are counted back from the newest pair.
-    ///   - column: the column the dot stands in, counted from the newest.
-    ///   - row: the band the dot draws.
-    ///   - centre: where the dot's centre stands, in points.
-    ///   - pitch: the pitch of the lattice, in points.
-    ///   - energy: the band the dot holds, from `0` to `1`.
-    ///   - edgeFade: how much of its ink the dot keeps at the canvas's sides.
-    ///   - age: how long the dot has been travelling, in seconds.
-    ///   - glint: whether the dot may carry a glint.
-    /// - Returns: the dot, with its band, its lamp and its spark.
-    private func dot(
+    private nonisolated static func dot(
         sampleTick: Int,
         column: Int,
         row: Int,
@@ -2732,11 +3093,10 @@ struct HUDWaveform: View {
         pitch: CGFloat,
         energy: Double,
         edgeFade: Double,
-        age: Double,
-        glint: Bool
+        age: Double
     ) -> MatrixLattice.Dot {
         let energy = min(1, max(0, energy))
-        let display = pow(energy, 1.6)
+        let display = pow(energy, MatrixLattice.displayExponent)
         let reveal = MatrixLattice.reveal(forDisplay: display)
         return MatrixLattice.Dot(
             sampleTick: sampleTick,
@@ -2748,29 +3108,16 @@ struct HUDWaveform: View {
             display: display,
             reveal: reveal,
             edgeFade: edgeFade,
-            glint: glint ? MatrixLattice.glint(display: display, age: age, edgeFade: edgeFade) : 0,
             age: age
         )
     }
 
-    /// The band of one cell, in this voice's own window.
-    ///
-    /// The spectrum is the adaptive per-band one: the card writes each band
-    /// between that band's own floor and peak, so the top row and the bottom row
-    /// sweep the ramp independently and a voice that has no treble is not drawn as
-    /// a flat grid. A frame the recorder gated as silence is zeros in every band,
-    /// and that is what a silent moment is drawn as: the grid rests at its floor
-    /// rather than falling back on a shape of the envelope, which is the same
-    /// picture at every row.
-    ///
-    /// - Parameters:
-    ///   - offset: how many ticks back from the newest sample the cell's pair is.
-    ///     One column of the grid is two ticks, so the column that many pairs back
-    ///     is read at the offset that column's own pair stands at.
-    ///   - row: the band to read.
-    /// - Returns: the band's value on the take's window, lifted by the frame
-    ///   before it so a syllable's edge is a shoulder rather than a cliff.
-    private func band(offset: Int, row: Int) -> Double {
+    private nonisolated static func band(
+        offset: Int,
+        row: Int,
+        spectrumHistory: [AudioSpectrumFrame],
+        history: [Double]
+    ) -> Double {
         let back = max(0, offset)
         if !spectrumHistory.isEmpty {
             let index = spectrumHistory.count - 1 - min(spectrumHistory.count - 1, back)
@@ -2780,10 +3127,10 @@ struct HUDWaveform: View {
         }
         let count = max(1, history.count)
         let base = min(count - 1, back)
-        let s0 = sample(offsetFromNewest: base)
-        let s1 = sample(offsetFromNewest: min(count - 1, base + 1))
-        let s2 = sample(offsetFromNewest: min(count - 1, base + 2))
-        let s3 = sample(offsetFromNewest: min(count - 1, base + 4))
+        let s0 = VisualizerBars.sample(history: history, offsetFromNewest: base)
+        let s1 = VisualizerBars.sample(history: history, offsetFromNewest: min(count - 1, base + 1))
+        let s2 = VisualizerBars.sample(history: history, offsetFromNewest: min(count - 1, base + 2))
+        let s3 = VisualizerBars.sample(history: history, offsetFromNewest: min(count - 1, base + 4))
         let instEnergy = max(s0, (s0 + s1) * 0.5)
         let transientAttack = min(1.0, abs(s0 - s1) * 3.8 + abs(s1 - s2) * 2.4)
         let lowBody = (s0 + s1 + s2 + s3) * 0.25
@@ -2799,41 +3146,29 @@ struct HUDWaveform: View {
     /// One mark of the grid at an opacity of its own.
     ///
     /// It is the ramp's own colour with the alpha this frame asks for, so the
-    /// floor at full ink, every stop of a body and every part of the halo are the
-    /// same amber and only their weights differ.
+    /// floor at full ink, every stop of a body and the specular die are the same
+    /// gold ramp and only their weights differ.
     private static func matrixColour(_ tint: MeterTint, opacity: Double) -> Color {
         VisualizerMath.ramp(tint, opacity: min(1, max(0, opacity)))
-    }
-
-    /// One arm of a glint: a thin diamond from a dot's centre out to both tips.
-    ///
-    /// The diamond is what tapers the spark: it is ``MatrixLattice/glintWidth``
-    /// wide at the centre and nothing at either tip, so the arm reads as light
-    /// rather than as a stroke with an end on it.
-    private static func glintArm(centre: CGPoint, horizontal: Bool, half: CGFloat, halfWidth: CGFloat) -> Path {
-        var path = Path()
-        if horizontal {
-            path.move(to: CGPoint(x: centre.x - half, y: centre.y))
-            path.addLine(to: CGPoint(x: centre.x, y: centre.y - halfWidth))
-            path.addLine(to: CGPoint(x: centre.x + half, y: centre.y))
-            path.addLine(to: CGPoint(x: centre.x, y: centre.y + halfWidth))
-        } else {
-            path.move(to: CGPoint(x: centre.x, y: centre.y - half))
-            path.addLine(to: CGPoint(x: centre.x + halfWidth, y: centre.y))
-            path.addLine(to: CGPoint(x: centre.x, y: centre.y + half))
-            path.addLine(to: CGPoint(x: centre.x - halfWidth, y: centre.y))
-        }
-        path.closeSubpath()
-        return path
     }
 
     private func drawMatrix(context: GraphicsContext, size: CGSize) {
         let pitch = MatrixLattice.pitch(forHeight: size.height)
         guard pitch > 0 else { return }
-        let glowRadius = MatrixLattice.glowRadius(forPitch: pitch)
-        let floorTint = MeterRamp.tint(level: 0, ceiling: ceiling)
+#if DEBUG
+        let started = CFAbsoluteTimeGetCurrent()
+        var drawnDots = 0
+        defer { CanvasDrawProbe.recordMatrix(duration: CFAbsoluteTimeGetCurrent() - started, dots: drawnDots) }
+#endif
+        let floorTint = MeterRamp.rgb(level: 0, material: material)
+        let floorOpacity = MeterRamp.tint(level: 0, ceiling: 1, material: material).opacity
+        let stops = MeterRamp.stops(for: material)
 
-        for dot in matrixDots(in: size) {
+        let dots = matrixDots(in: size)
+#if DEBUG
+        drawnDots = dots.count
+#endif
+        for dot in dots {
             // A dot with no ink at the canvas's side is the frame a dot is born on
             // and the frame it leaves on: nothing is painted, and the grid has no
             // step at either edge.
@@ -2846,40 +3181,44 @@ struct HUDWaveform: View {
                 height: dot.radius * 2
             )
 
-            // The floor: a cell with nothing in it is still a dot, drawn at the
-            // floor's own amber, so the grid is a grid at rest rather than a
-            // scatter of dots that appear where the voice is.
+            // The floor: a cell with nothing in it is still a dot, so the grid is
+            // a grid at rest rather than a scatter that appears where the voice is.
             context.fill(
                 Path(ellipseIn: rect),
-                with: .color(Self.matrixColour(floorTint, opacity: floorTint.opacity * fade))
+                with: .color(Self.matrixColour(
+                    floorTint,
+                    opacity: floorOpacity * fade
+                ))
             )
 
-            // A lit dot is a lamp, not a disc of paint: it is filled from a hot
-            // centre through its own colour to a slightly deeper edge, so the dot
-            // itself carries the shine. The body is drawn at the alpha of a lamp
-            // rather than of a wash: at ordinary speech the middle of a dot is
-            // most of the way to opaque, so the grid reads as lit dots on the
-            // card's dark surface instead of as a grey field.
             guard dot.reveal > 0 else { continue }
+            let body = MeterRamp.rgb(level: dot.display, material: material)
+            let rim = MeterRamp.mix(body, floorTint, 0.20)
+            let specularWeight = highlight
+                ? MeterRamp.smoothstep(MatrixLattice.specularOnset, 1, dot.display)
+                : 0
+            let die = MeterRamp.mix(body, stops.specular, specularWeight)
+            // Everything the lamp paints is inside its own ellipse. The body
+            // reaches a crisp saturated rim; the specular die is a separate,
+            // centred source-over layer, so its light is added to the body
+            // rather than replacing it. That keeps the edge gold while the
+            // middle reads as an LED die, without a halo outside the circle.
             context.fill(
                 Path(ellipseIn: rect),
                 with: .radialGradient(
                     Gradient(stops: [
-                        .init(color: Self.hot(0.75 * dot.display).opacity(dot.reveal * fade), location: 0.0),
-                        .init(
-                            color: Self.matrixColour(
-                                MeterRamp.tint(level: dot.display, ceiling: 1),
-                                opacity: (0.55 + 0.40 * dot.display) * dot.reveal * fade
-                            ),
-                            location: 0.45
-                        ),
-                        .init(
-                            color: Self.matrixColour(
-                                MeterRamp.tint(level: dot.display, ceiling: 1),
-                                opacity: (0.45 + 0.50 * dot.display) * dot.reveal * fade
-                            ),
-                            location: 1.0
-                        ),
+                        .init(color: Self.matrixColour(
+                            die, opacity: (0.85 + 0.15 * dot.display) * dot.reveal * fade
+                        ), location: 0.0),
+                        .init(color: Self.matrixColour(
+                            die, opacity: (0.85 + 0.15 * dot.display) * dot.reveal * fade
+                        ), location: 0.22),
+                        .init(color: Self.matrixColour(
+                            body, opacity: (0.55 + 0.40 * dot.display) * dot.reveal * fade
+                        ), location: 0.45),
+                        .init(color: Self.matrixColour(
+                            rim, opacity: (0.92 + 0.08 * dot.display) * dot.reveal * fade
+                        ), location: 1.0),
                     ]),
                     center: dot.centre,
                     startRadius: 0,
@@ -2887,97 +3226,24 @@ struct HUDWaveform: View {
                 )
             )
 
-            // The halo. It is light rather than ink: an annulus from the dot's own
-            // radius to the bound of ``MatrixLattice/glowRadiusShare``, added to
-            // the card's surface so the dot reads as a lamp with a warm edge
-            // rather than as a bright disc with a hard rim. The quadratic falloff
-            // puts a quarter of the ink half way out and nothing at the bound,
-            // which stops a twentieth of a pitch short of the midpoint between two
-            // neighbours, so the halo can never join two of them. A halo the
-            // canvas would cut is not drawn: the body is the measurement, and the
-            // light around it must not paint on the card's border.
-            if dot.centre.x - glowRadius > 0, dot.centre.x + glowRadius < size.width {
-                var halo = Path(
-                    ellipseIn: CGRect(
-                        x: dot.centre.x - glowRadius,
-                        y: dot.centre.y - glowRadius,
-                        width: glowRadius * 2,
-                        height: glowRadius * 2
-                    )
+            if specularWeight > 0 {
+                let dieRadius = dot.radius * 0.22
+                let dieColour = Color(
+                    red: stops.specular.red,
+                    green: stops.specular.green,
+                    blue: stops.specular.blue
                 )
-                halo.addPath(Path(ellipseIn: rect))
-                let ink = MatrixLattice.glowInk * dot.display * dot.reveal * fade
-                var light = context
-                light.blendMode = .plusLighter
-                light.fill(
-                    halo,
-                    with: .radialGradient(
-                        Gradient(stops: [
-                            .init(
-                                color: Self.matrixColour(
-                                    MeterRamp.tint(level: dot.display, ceiling: 1),
-                                    opacity: ink
-                                ),
-                                location: 0.0
-                            ),
-                            .init(
-                                color: Self.matrixColour(
-                                    MeterRamp.tint(level: dot.display, ceiling: 1),
-                                    opacity: ink * MatrixLattice.glowMidInk
-                                ),
-                                location: 0.5
-                            ),
-                            .init(color: .clear, location: 1.0),
-                        ]),
-                        center: dot.centre,
-                        startRadius: dot.radius,
-                        endRadius: glowRadius
-                    ),
-                    style: FillStyle(eoFill: true)
+                let ink = specularWeight * dot.reveal * fade
+                context.fill(
+                    Path(ellipseIn: CGRect(
+                        x: dot.centre.x - dieRadius,
+                        y: dot.centre.y - dieRadius,
+                        width: dieRadius * 2,
+                        height: dieRadius * 2
+                    )),
+                    with: .color(dieColour.opacity(ink))
                 )
             }
-
-            // A lamp above half heat has one highlight, strengthening to full ink
-            // at the top of its range. It is what the eye reads as round rather
-            // than flat. It is inside the dot, off its centre, and it is the only
-            // porcelain the grid carries.
-            if highlight {
-                let ramp = min(1, max(0, (dot.display - MatrixLattice.highlightOnset)
-                    / (1 - MatrixLattice.highlightOnset)))
-                if ramp > 0 {
-                    let sparkle = MatrixLattice.highlightRadius * dot.radius
-                    let offset = MatrixLattice.highlightOffset * 2 * dot.radius / sqrt(2)
-                    context.fill(
-                        Path(ellipseIn: CGRect(
-                            x: dot.centre.x - offset - sparkle,
-                            y: dot.centre.y - offset - sparkle,
-                            width: sparkle * 2,
-                            height: sparkle * 2
-                        )),
-                        with: .color(Self.matrixInk.opacity(
-                            MatrixLattice.highlightInk * ramp * dot.reveal * fade
-                        ))
-                    )
-                }
-            }
-
-            // The glint: two crossed arms on a dot at the top of its range, for the
-            // first quarter second of its travel. It is added to the dot as light,
-            // so a peak sparkles while the contrast of the lamp underneath is left
-            // as it was.
-            guard dot.glint > 0 else { continue }
-            let half = MatrixLattice.glintLength(radius: dot.radius, pitch: pitch) / 2
-            let halfWidth = MatrixLattice.glintWidth / 2
-            var spark = context
-            spark.blendMode = .plusLighter
-            spark.fill(
-                Self.glintArm(centre: dot.centre, horizontal: true, half: half, halfWidth: halfWidth),
-                with: .color(Self.matrixInk.opacity(dot.glint))
-            )
-            spark.fill(
-                Self.glintArm(centre: dot.centre, horizontal: false, half: half, halfWidth: halfWidth),
-                with: .color(Self.matrixInk.opacity(dot.glint))
-            )
         }
     }
 
@@ -3125,9 +3391,8 @@ struct HUDWaveform: View {
         ///
         /// The material behind the canvas is a light surface, and a core drawn only
         /// in the meter's amber tops out at 2.71 to 1 on it, under the 3 to 1 the
-        /// halo is held to, see ``HUDTheme/visualizerGlassLift``. The centre is
-        /// therefore the card's ink at full opacity out to this share, and the amber
-        /// ramp the core already had continues from it to the edge.
+        /// halo is held to. The centre is therefore the gold specular stop out to
+        /// this share, and the body ramp the core already had continues from it.
         static let hotCentreShare: Double = 0.35
         /// The horizontal room the rings keep clear, in points.
         static let horizontalInset: CGFloat = 4
@@ -3187,7 +3452,12 @@ struct HUDWaveform: View {
         /// sum a record of what was said rather than of how loud the take has
         /// been, and it is the loudness at which the picture is already fully
         /// open, so the push saturates with the shape rather than after it.
-        static let kickReference: Double = 0.60
+        /// Fixed loudness reference saturating the rotational kick at peak voice.
+        static let kickReference: Double = 0.95
+        /// Convex exponent preventing premature rotational kick saturation on medium speech.
+        static let kickExponent: Double = 1.35
+        /// Convex exponent expanding ring radius dynamic range across medium to loud speech.
+        static let ringRadiusExponent: Double = 1.50
         /// How many of the newest ticks of the voice push a ring's spin at full
         /// weight.
         static let kickFullTicks = 120
@@ -3209,7 +3479,7 @@ struct HUDWaveform: View {
         /// material.
         ///
         /// It is the lift ``VisualizerMath/ramp(_:opacity:lift:)`` takes, and the
-        /// value is the ring's own rather than ``HUDTheme/visualizerGlassLift``
+        /// value is the ring's own rather than a card-wide lift
         /// because a ring is drawn at a fraction of the opacity a bar is: the
         /// clear glass puts the page behind the canvas, so a pale amber ring
         /// reads faint over a bright one where the full amber of a bar still
@@ -3223,7 +3493,7 @@ struct HUDWaveform: View {
         /// pixels it inks reads 1.65 to 1, the near half of the rings carries
         /// 1.62 times the far half's ink, and the ink keeps a warmth of 0.26 on
         /// the dark page.
-        static let glassRingLift: Double = 0.65
+        static let glassRingLift: Double = 0
         /// How much more opaque a ring's track, its trails and its particles are
         /// drawn on the glass material.
         ///
@@ -3320,7 +3590,8 @@ struct HUDWaveform: View {
         /// the ring's share of the canvas's half width, widened by the voice of
         /// the moment the ring reads.
         static func radius(ring: Int, width: CGFloat, energy: Double) -> CGFloat {
-            let voice = CGFloat(restShare + voiceShare * min(1, max(0, energy)))
+            let scaled = pow(min(1, max(0, energy)), ringRadiusExponent)
+            let voice = CGFloat(restShare + voiceShare * scaled)
             return max(1, width / 2 - horizontalInset) * widthShare[ring] * voice
         }
 
@@ -3521,6 +3792,36 @@ struct HUDWaveform: View {
             )
         }
 
+        struct RingBasis {
+            let radius: Double
+            let cosNode: Double
+            let sinNode: Double
+            let cosIncl: Double
+            let sinIncl: Double
+
+            init(orientation: Orientation) {
+                radius = Double(orientation.radius)
+                cosNode = cos(orientation.node)
+                sinNode = sin(orientation.node)
+                cosIncl = cos(orientation.inclination)
+                sinIncl = sin(orientation.inclination)
+            }
+
+            func point(theta: Double, centre: CGPoint) -> (point: CGPoint, depth: Double) {
+                let cosT = cos(theta)
+                let sinT = sin(theta)
+                let x = radius * cosT
+                let y = radius * sinT * cosIncl
+                return (
+                    CGPoint(
+                        x: centre.x + CGFloat(x * cosNode - y * sinNode),
+                        y: centre.y + CGFloat(x * sinNode + y * cosNode)
+                    ),
+                    sinT * sinIncl
+                )
+            }
+        }
+
         /// The position of a point at an angle on a ring, and its depth.
         ///
         /// The ring is a circle in space, so a point on it is at
@@ -3533,17 +3834,7 @@ struct HUDWaveform: View {
             theta: Double,
             centre: CGPoint
         ) -> (point: CGPoint, depth: Double) {
-            let radius = Double(orientation.radius)
-            let x = radius * cos(theta)
-            let y = radius * sin(theta) * cos(orientation.inclination)
-            let node = orientation.node
-            return (
-                CGPoint(
-                    x: centre.x + CGFloat(x * cos(node) - y * sin(node)),
-                    y: centre.y + CGFloat(x * sin(node) + y * cos(node))
-                ),
-                sin(theta) * sin(orientation.inclination)
-            )
+            RingBasis(orientation: orientation).point(theta: theta, centre: centre)
         }
 
         /// The push one sample of the voice carries, from `0` to `1`, read at a
@@ -3557,7 +3848,7 @@ struct HUDWaveform: View {
         static func kickEnergy(ring: Int, offset: Int, history: [Double]) -> Double {
             let tick = offset + ring * ringStep
             let value = VisualizerBars.sample(history: history, offsetFromNewest: tick)
-            return min(1, max(0, value) / kickReference)
+            return pow(min(1, max(0, value) / kickReference), kickExponent)
         }
 
         /// How much one tick of the voice still pushes a ring's spin, from `1`
@@ -3580,7 +3871,8 @@ struct HUDWaveform: View {
         static func kick(ring: Int, history: [Double]) -> Double {
             guard !history.isEmpty else { return 0 }
             var sum = 0.0
-            for tick in 0..<Waveform.historyLength {
+            let limit = min(history.count, kickFullTicks + kickRampTicks)
+            for tick in 0..<limit {
                 let weight = kickWeight(tick)
                 guard weight > 0 else { continue }
                 sum += weight * kickEnergy(ring: ring, offset: tick, history: history)
@@ -3772,12 +4064,13 @@ struct HUDWaveform: View {
         /// A ring's back half is the angles whose depth is not positive, which
         /// is the half the core is drawn over, and its front half is the rest.
         static func track(orientation: Orientation, front: Bool, centre: CGPoint) -> Path {
+            let basis = RingBasis(orientation: orientation)
             let start = front ? 0 : Double.pi
             let span = Double.pi
             var path = Path()
             for step in 0...trackSteps {
                 let theta = start + span * Double(step) / Double(trackSteps)
-                let spot = point(orientation: orientation, theta: theta, centre: centre).point
+                let spot = basis.point(theta: theta, centre: centre).point
                 if step == 0 {
                     path.move(to: spot)
                 } else {
@@ -3943,7 +4236,7 @@ struct HUDWaveform: View {
         let reach = Halo.glowReach * radius
         let ink = Halo.glowInk * (Halo.glowRestShare + (1 - Halo.glowRestShare) * energy)
         let colour = VisualizerMath.ramp(
-            MeterRamp.tint(level: energy, ceiling: ceiling),
+            MeterRamp.tint(level: energy, ceiling: ceiling, material: material),
             opacity: ink,
             lift: lift
         )
@@ -3992,7 +4285,7 @@ struct HUDWaveform: View {
         let stretch = min(1.35, max(0, (radius - Halo.restCoreRadius) / Halo.coreGain))
         let turn = reduceMotion ? 0 : 2 * Double.pi * time / Halo.rayTurnSeconds
         let ink = VisualizerMath.ramp(
-            MeterRamp.tint(level: energy, ceiling: ceiling),
+            MeterRamp.tint(level: energy, ceiling: ceiling, material: material),
             opacity: min(1, Halo.rayInk * ringInkGain),
             lift: ringLift
         )
@@ -4046,20 +4339,30 @@ struct HUDWaveform: View {
         energy: Double
     ) {
         let colour = tint(energy)
-        let apex = VisualizerMath.ramp(MeterRamp.tip, opacity: 1, lift: lift)
+        let ramp = MeterRamp.stops(for: material)
+        let apex = VisualizerMath.ramp(
+            MeterRamp.rgb(level: MeterRamp.peakPosition, material: material),
+            opacity: 1,
+            lift: lift
+        )
+        let specular = Color(
+            red: ramp.specular.red,
+            green: ramp.specular.green,
+            blue: ramp.specular.blue
+        )
         let stops: [Gradient.Stop]
         if material == .glass {
             let share = Halo.hotCentreShare
             stops = [
-                .init(color: HUDTheme.inkBase, location: 0),
-                .init(color: HUDTheme.inkBase, location: share),
+                .init(color: specular, location: 0),
+                .init(color: specular, location: share),
                 .init(color: apex, location: share),
                 .init(color: colour, location: 0.75),
                 .init(color: colour.opacity(0), location: 1),
             ]
         } else {
             stops = [
-                .init(color: HUDTheme.inkBase.opacity(0.95), location: 0),
+                .init(color: specular, location: 0),
                 .init(color: apex, location: 0.30),
                 .init(color: colour, location: 0.70),
                 .init(color: colour.opacity(0), location: 1),
@@ -4100,8 +4403,8 @@ struct HUDWaveform: View {
         centre: CGPoint,
         clock: Double
     ) {
-        let ringTint = MeterRamp.tint(level: frame.energy, ceiling: ceiling)
-        let colour = VisualizerMath.ramp(ringTint, opacity: ringTint.opacity, lift: ringLift)
+        let ringTint = MeterRamp.rgb(level: frame.energy, material: material)
+        let colour = VisualizerMath.ramp(ringTint, opacity: 1, lift: ringLift)
         let gain = ringInkGain
         let trackInk = Halo.trackFloor + Halo.trackGain * frame.energy
         context.stroke(
@@ -4115,9 +4418,20 @@ struct HUDWaveform: View {
         let count = Halo.particleCounts[ring]
         let sign: Double = Halo.revolutions[ring] < 0 ? -1 : 1
         let trailScale = Halo.trailScale(ring: ring, speed: frame.speed)
+        let basis = Halo.RingBasis(orientation: frame.orientation)
+        let bucketCount = 16
+        var trailBuckets = [Path?](repeating: nil, count: bucketCount)
+        var spotBuckets = [Path?](repeating: nil, count: bucketCount)
+
+        func opacityBucket(_ alpha: Double) -> Int? {
+            guard alpha > 0.002 else { return nil }
+            let clamped = min(1, alpha)
+            return min(bucketCount - 1, max(0, Int(sqrt(clamped) * Double(bucketCount))))
+        }
+
         for index in 0..<count {
             let theta = Halo.particleAngle(ring: ring, index: index, kick: frame.kick, time: clock)
-            let spot = Halo.point(orientation: frame.orientation, theta: theta, centre: centre)
+            let spot = basis.point(theta: theta, centre: centre)
             guard (spot.depth > 0) == front else { continue }
             let band = Halo.particleBand(ring: ring, index: index, spectrum: spectrumHistory)
             let radius = Halo.particleRadius(band: band, depth: spot.depth)
@@ -4130,35 +4444,47 @@ struct HUDWaveform: View {
             // motion to read.
             if !reduceMotion {
                 for (ghost, angle) in Halo.trailAngles.enumerated() {
+                    guard let idx = opacityBucket(ink * Halo.trailInk[ghost]) else { continue }
                     let trailTheta = theta - sign * angle * trailScale
-                    let trail = Halo.point(
-                        orientation: frame.orientation,
-                        theta: trailTheta,
-                        centre: centre
-                    )
+                    let trail = basis.point(theta: trailTheta, centre: centre)
                     guard (trail.depth > 0) == front else { continue }
                     let trailRadius = radius * CGFloat(Halo.trailRadii[ghost])
-                    context.fill(
-                        Path(ellipseIn: CGRect(
-                            x: trail.point.x - trailRadius,
-                            y: trail.point.y - trailRadius,
-                            width: trailRadius * 2,
-                            height: trailRadius * 2
-                        )),
-                        with: .color(colour.opacity(min(1, ink * Halo.trailInk[ghost])))
+                    let rect = CGRect(
+                        x: trail.point.x - trailRadius,
+                        y: trail.point.y - trailRadius,
+                        width: trailRadius * 2,
+                        height: trailRadius * 2
                     )
+                    if trailBuckets[idx] == nil { trailBuckets[idx] = Path() }
+                    trailBuckets[idx]?.addEllipse(in: rect)
                 }
             }
 
-            context.fill(
-                Path(ellipseIn: CGRect(
+            if let spotIdx = opacityBucket(ink) {
+                let spotRect = CGRect(
                     x: spot.point.x - radius,
                     y: spot.point.y - radius,
                     width: radius * 2,
                     height: radius * 2
-                )),
-                with: .color(colour.opacity(ink))
-            )
+                )
+                if spotBuckets[spotIdx] == nil { spotBuckets[spotIdx] = Path() }
+                spotBuckets[spotIdx]?.addEllipse(in: spotRect)
+            }
+        }
+
+        for idx in 0..<bucketCount {
+            if let path = trailBuckets[idx] {
+                let u = (Double(idx) + 0.5) / Double(bucketCount)
+                let alpha = u * u
+                context.fill(path, with: .color(colour.opacity(alpha)))
+            }
+        }
+        for idx in 0..<bucketCount {
+            if let path = spotBuckets[idx] {
+                let u = (Double(idx) + 0.5) / Double(bucketCount)
+                let alpha = u * u
+                context.fill(path, with: .color(colour.opacity(alpha)))
+            }
         }
     }
 }

@@ -6,7 +6,7 @@ import SwiftUI
 /// The seven results a check can produce, the state before it has answered, and
 /// the state a key that is not in the Keychain produces, whatever the check said
 /// about it. The word and the full sentence both live here, so the label, its
-/// tooltip and its accessibility value cannot describe the same check
+/// inline detail line and its accessibility value cannot describe the same check
 /// differently.
 enum SpeechCredentialStatus: Equatable {
     /// The request is on its way, or has not been made yet.
@@ -26,7 +26,7 @@ enum SpeechCredentialStatus: Equatable {
         }
     }
 
-    /// The full sentence: the tooltip and the accessibility value.
+    /// The full sentence for the inline detail line and accessibility value.
     var message: String {
         switch self {
         case .checking: "Asking the service whether it accepts the key."
@@ -50,7 +50,7 @@ enum SpeechCredentialStatus: Equatable {
     /// The line under a Status row: the reason, when the check needs one.
     ///
     /// Checking is still in flight and Verified needs no explanation, so neither
-    /// repeats its tooltip under the row. This is the rule the AI rewrite page
+    /// repeats the message under the row. This is the rule the AI rewrite page
     /// uses for its own detail line.
     var statusDetail: String? {
         switch self {
@@ -187,6 +187,7 @@ final class SpeechCredentialChecks: ObservableObject {
         typedKey: String?,
         serviceName: String,
         requiresKey: Bool,
+        allowsKey: Bool = true,
         immediate: Bool
     ) {
         task?.cancel()
@@ -207,8 +208,15 @@ final class SpeechCredentialChecks: ObservableObject {
             }
             let extra = await Self.providerState(providerID: providerID, language: language)
             guard self.isCurrent(generation) else { return }
-            let (key, unsaved) = await credentials(for: providerID, typed: typedKey)
-            guard self.isCurrent(generation) else { return }
+            let key: String?
+            let unsaved: Bool
+            if allowsKey {
+                (key, unsaved) = await credentials(for: providerID, typed: typedKey)
+                guard self.isCurrent(generation) else { return }
+            } else {
+                key = nil
+                unsaved = false
+            }
             if requiresKey, key == nil {
                 publish(
                     .needsSetup("Add an API key for \(serviceName)."),
@@ -330,7 +338,7 @@ final class SpeechCredentialChecks: ObservableObject {
     ///
     /// Nothing was sent to the service, so this is not a credential check: it is
     /// never cached in ``CredentialCheckCache`` and never logged. The words are
-    /// the writer's own, and the label shows them as its tooltip.
+    /// the writer's own, and the status detail shows them under the row.
     ///
     /// - Parameter message: what the writer said, verbatim.
     func markNotSaved(_ message: String) {
@@ -399,21 +407,14 @@ final class SpeechCredentialChecks: ObservableObject {
             storedReadFailed = true
             return .unknown
         }
-        let outcome = await BoundedWork.run(within: keyDeadline) {
-            cache.key(for: providerID)
-        }
-        switch outcome {
-        case .timedOut:
-            return .unknown
-        case .finished(let value):
-            guard cache.isResolved(providerID) else {
-                if cache.readFailed(providerID) {
-                    storedReadFailed = true
-                }
-                return .unknown
+        _ = await cache.resolved(for: providerID)
+        guard cache.isResolved(providerID) else {
+            if cache.readFailed(providerID) {
+                storedReadFailed = true
             }
-            return .read(value)
+            return .unknown
         }
+        return .read(cache.resolvedKey(for: providerID))
     }
 }
 

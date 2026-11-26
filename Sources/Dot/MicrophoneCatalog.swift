@@ -4,41 +4,90 @@ import DotCore
 
 /// The microphones the menu can switch to.
 enum MicrophoneCatalog {
+    /// Posted once, on the main thread, when the first load of the cache finishes.
+    ///
+    /// The menu and the settings window are both on screen by then: they read the
+    /// cache at launch, while it is still empty, and this is what asks them to
+    /// read it again.
+    static let didLoadNotification = Notification.Name("dot.microphone.catalog.loaded")
+
+    /// The cache the app reads.
+    ///
+    /// It is replaceable so a test can install a cache whose first load is slow
+    /// and prove the readers do not wait for it. The app installs the live cache
+    /// once and never replaces it.
+    static var cache: CatalogCache {
+        get { installed.value }
+        set { installed.install(newValue) }
+    }
+
+    private static let installed = InstalledCache()
+
+    /// The device list and the default input as far as they are known right now.
+    ///
+    /// It never waits. Before the first load finishes it is
+    /// ``CatalogCache/Snapshot/loading``: no devices and no default input, which
+    /// the picker already draws as the system default row alone.
+    static func snapshot() -> CatalogCache.Snapshot {
+        cache.snapshot()
+    }
+
+    /// Waits for the first load of the cache.
+    ///
+    /// Only for a caller that is not the main thread. The press is the one that
+    /// uses it, because opening a microphone for a device the cache has not
+    /// listed yet would refuse a device that is there.
+    ///
+    /// - Parameter timeout: how long to wait, in seconds.
+    /// - Returns: the filled snapshot, or `nil` when the timeout expired.
+    static func awaitSnapshot(timeout: TimeInterval) -> CatalogCache.Snapshot? {
+        cache.awaitSnapshot(timeout: timeout)
+    }
+
     /// Every input device the system knows about, annotated with the one fact
     /// `AVCaptureDevice` cannot supply: whether CoreAudio built it as an
     /// aggregate.
     ///
-    /// The list is read when the menu opens, so a headset that was plugged in
-    /// after launch shows up without restarting Dot.
+    /// The answer comes from ``CatalogCache``: enumerating the machine's audio
+    /// devices is a HAL round trip, and neither a menu refresh nor the press that
+    /// starts a recording may pay one. The cache is filled once and re-read
+    /// whenever the system reports a device or the default input changed, so a
+    /// headset plugged in after launch still shows up.
     static func devices() -> [MicrophoneDevice] {
-        let session = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone],
-            mediaType: .audio,
-            position: .unspecified
-        )
-        let aggregates = CoreAudioInput.aggregateUIDs()
-        return session.devices.map { device in
-            MicrophoneDevice(
-                uid: device.uniqueID,
-                name: device.localizedName,
-                isAggregate: aggregates.contains(device.uniqueID)
-            )
-        }
+        snapshot().devices
+    }
+
+    /// Whether the system lists the input `uid` right now.
+    ///
+    /// It is the same list ``devices()`` offers, read from the same cache, so a
+    /// configured device is accepted exactly when the picker would show it.
+    static func isConnected(_ uid: String) -> Bool {
+        snapshot().devices.contains { $0.uid == uid }
     }
 
     /// The UID of the microphone a recording would use right now.
     ///
     /// A configured device is used as it is. The system default is resolved to
-    /// the device the HAL says would record, because a calibration belongs to
-    /// the microphone that produced the take and "system default" is a choice,
-    /// not a device. A HAL that cannot answer leaves the UID unknown, and an
-    /// unknown UID simply means nothing is learned or applied for that take.
+    /// the device the HAL says would record, because a calibration belongs to the
+    /// microphone that produced the take and "system default" is a choice, not a
+    /// device. The HAL is read by the cache, not here: the value is the one the
+    /// default-input listener last reported, and it is `nil` until the first load
+    /// finishes, which only means nothing is learned or applied for that take.
     ///
     /// - Parameter configured: the device the configuration names, or `nil`.
     static func recordingDeviceUID(configured: String?) -> String? {
         let trimmed = configured?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmed.isEmpty { return trimmed }
-        return CoreAudioInput.defaultInputUID()
+        return snapshot().defaultInputUID
+    }
+
+    /// Starts filling the device cache.
+    ///
+    /// Called at launch. The enumeration runs on the catalog's own queue, so the
+    /// first press and the first menu refresh read a cache that is already being
+    /// filled instead of running a discovery session themselves.
+    static func warm() {
+        cache.begin()
     }
 
     /// The inputs a person can pick.
@@ -46,6 +95,226 @@ enum MicrophoneCatalog {
         MicrophoneDirectory.offered(devices()).map {
             MenuMicrophone(id: $0.uid, name: $0.name)
         }
+    }
+
+    /// Holds the cache the app reads, so a test can put another one in its place.
+    private final class InstalledCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: CatalogCache
+
+        init() {
+            stored = CatalogCache()
+        }
+
+        var value: CatalogCache {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+
+        func install(_ cache: CatalogCache) {
+            lock.lock()
+            stored = cache
+            lock.unlock()
+        }
+    }
+}
+
+/// The device list and the default input, read once and refreshed off the main
+/// thread.
+///
+/// A discovery session and the HAL reads behind it are synchronous questions to
+/// the audio server. Both were asked on the main thread, on the press that
+/// starts a recording and on every menu refresh. Here they are asked on a
+/// private queue instead, and a reader never blocks on them: ``snapshot()`` gives
+/// the last known answer in place, and only a caller off the main thread may wait
+/// for the first one with ``awaitSnapshot(timeout:)``.
+final class CatalogCache: @unchecked Sendable {
+    /// One answer: the inputs the system lists and the one that would record.
+    struct Snapshot: Sendable, Equatable {
+        var devices: [MicrophoneDevice] = []
+        var defaultInputUID: String?
+        /// Whether the first load has finished.
+        var isLoaded = true
+
+        /// What a cache answers before its first load finishes.
+        static let loading = Snapshot(devices: [], defaultInputUID: nil, isLoaded: false)
+    }
+
+    static let shared = CatalogCache()
+
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "com.anandlo.dot.microphone-catalog", qos: .userInitiated)
+    /// Signalled when a load finishes, so a caller off the main thread can wait.
+    private let ready = NSCondition()
+    /// The question itself, injectable so a test can make it slow.
+    private let discovery: @Sendable () -> Snapshot
+    private var cached: Snapshot?
+    private var announced = false
+    private var observing = false
+    private var observers: [NSObjectProtocol] = []
+    private var readOnMainThread = true
+    private var reads = 0
+
+    /// Creates a cache. The first load starts here, on the cache's own queue.
+    ///
+    /// - Parameter discovery: makes the snapshot. The live cache enumerates the
+    ///   machine; a test supplies one that takes as long as an audio server that
+    ///   is busy.
+    init(discovery: @escaping @Sendable () -> Snapshot = { CatalogCache.read() }) {
+        self.discovery = discovery
+        begin()
+    }
+
+    /// The last known snapshot. It never waits, on any thread.
+    func snapshot() -> Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return cached ?? .loading
+    }
+
+    /// Waits for the first load of the cache.
+    ///
+    /// It blocks the caller, which is why the main thread never calls it: a menu,
+    /// a key press and a settings read all go through ``snapshot()``. The press
+    /// waits off the main thread, so that opening a microphone for a device the
+    /// cache has not listed yet does not refuse a device that is there.
+    ///
+    /// - Parameter timeout: how long to wait, in seconds.
+    /// - Returns: the filled snapshot, or `nil` when the timeout expired.
+    func awaitSnapshot(timeout: TimeInterval) -> Snapshot? {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        ready.lock()
+        defer { ready.unlock() }
+        while true {
+            lock.lock()
+            let answer = cached
+            lock.unlock()
+            if let answer { return answer }
+            if Date() >= deadline { return nil }
+            ready.wait(until: deadline)
+        }
+    }
+
+    /// Starts the first load on `queue`, without waiting for it.
+    func begin() {
+        queue.async { [weak self] in
+            self?.fillIfNeeded()
+        }
+    }
+
+    /// Whether the last discovery ran on the main thread, and how many ran.
+    ///
+    /// The app never asks; the test that proves a reader cannot run a discovery
+    /// on the main thread does.
+    var didReadOnMainThread: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return readOnMainThread
+    }
+
+    var readCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return reads
+    }
+
+    /// Fills the cache on `queue`, once.
+    private func fillIfNeeded() {
+        lock.lock()
+        let filled = cached != nil
+        lock.unlock()
+        guard !filled else { return }
+        // The observers are installed before the first read, so a device that
+        // arrives while the first list is being built is never missed.
+        startObserving()
+        store(discovery())
+    }
+
+    /// Re-reads the devices and the default input. Runs on `queue`.
+    private func refresh() {
+        store(discovery())
+    }
+
+    /// Records one discovery and its thread, and wakes whoever is waiting.
+    private func store(_ snapshot: Snapshot) {
+        lock.lock()
+        cached = snapshot
+        reads += 1
+        readOnMainThread = Thread.isMainThread
+        let announce = !announced
+        announced = true
+        lock.unlock()
+        ready.lock()
+        ready.broadcast()
+        ready.unlock()
+        if announce {
+            // One notification, on the main thread, for the two surfaces that
+            // read the cache while it was still empty.
+            DispatchQueue.main.async { [weak self] in
+                NotificationCenter.default.post(
+                    name: MicrophoneCatalog.didLoadNotification,
+                    object: self
+                )
+            }
+        }
+    }
+
+    /// Watches for the two things that change the answer.
+    private func startObserving() {
+        lock.lock()
+        guard !observing else {
+            lock.unlock()
+            return
+        }
+        observing = true
+        lock.unlock()
+
+        let center = NotificationCenter.default
+        for name in [
+            AVCaptureDevice.wasConnectedNotification,
+            AVCaptureDevice.wasDisconnectedNotification,
+        ] {
+            let token = center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                guard let self else { return }
+                self.queue.async { [weak self] in self?.refresh() }
+            }
+            observers.append(token)
+        }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        // The block is delivered on `queue`, so the HAL reads behind it never
+        // run on the thread that changed the input.
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            queue
+        ) { [weak self] _, _ in
+            self?.refresh()
+        }
+    }
+
+    /// The question itself: everything that must not run on the main thread.
+    private static func read() -> Snapshot {
+        let session = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone, .external],
+            mediaType: .audio,
+            position: .unspecified
+        )
+        let aggregates = CoreAudioInput.aggregateUIDs()
+        return Snapshot(
+            devices: session.devices.map { device in
+                MicrophoneDevice(
+                    uid: device.uniqueID,
+                    name: device.localizedName,
+                    isAggregate: aggregates.contains(device.uniqueID)
+                )
+            },
+            defaultInputUID: CoreAudioInput.defaultInputUID()
+        )
     }
 }
 
@@ -56,7 +325,7 @@ enum MicrophoneCatalog {
 /// an `AudioAggregateDevice` (`kAudioAggregateDeviceClassID`) rather than an
 /// `AudioDevice`, and it carries the aggregate transport. The UID is the bridge
 /// between the two.
-private enum CoreAudioInput {
+enum CoreAudioInput {
     /// The UIDs of the devices the HAL reports as aggregates.
     ///
     /// The aggregate `AVAudioEngine` creates is named
@@ -96,6 +365,92 @@ private enum CoreAudioInput {
             &device
         ) == noErr, device != 0 else { return nil }
         return string(device, kAudioDevicePropertyDeviceUID)
+    }
+
+    /// The UID of the device an input audio unit is running on, or `nil`.
+    ///
+    /// The engine is the only witness of what it opened: this reads
+    /// `kAudioOutputUnitProperty_CurrentDevice` from the unit, then the HAL's own
+    /// UID for that device. Nothing here guesses from the configuration, the
+    /// cache or the system default, which can all have moved while the engine was
+    /// opening.
+    ///
+    /// - Parameter unit: the audio unit of the engine's input node.
+    /// - Returns: the device the input is running on, or `nil` when it cannot be
+    ///   read.
+    static func deviceUID(of unit: AudioUnit) -> String? {
+        guard let device = currentDeviceID(of: unit) else { return nil }
+        return string(device, kAudioDevicePropertyDeviceUID)
+    }
+
+    /// The device an input audio unit is currently pointed at, or `nil`.
+    ///
+    /// This is the readback a selection needs: a write is only justified when
+    /// the unit does not already name the device the take asked for.
+    static func currentDeviceID(of unit: AudioUnit) -> AudioDeviceID? {
+        var device = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioUnitGetProperty(
+            unit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &device,
+            &size
+        ) == noErr, device != AudioDeviceID(kAudioObjectUnknown) else { return nil }
+        return device
+    }
+
+    /// The HAL device whose UID is `uid`, when it can record.
+    ///
+    /// The translation is a HAL question, not a name match: a picker offers the
+    /// UID of an `AVCaptureDevice`, and CoreAudio answers with the device an
+    /// audio unit has to be pointed at. A device with no input streams cannot be
+    /// used as a microphone even when the HAL knows its UID.
+    ///
+    /// - Parameter uid: the device UID written by the microphone picker.
+    /// - Returns: the device ID, or `nil` when the UID is unknown, has no input
+    ///   streams, or the HAL cannot answer.
+    static func deviceID(forUID uid: String) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var device = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let cfUID = uid as CFString
+        let status = withUnsafePointer(to: cfUID) { pointer in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                UInt32(MemoryLayout<CFString>.size),
+                UnsafeRawPointer(pointer),
+                &size,
+                &device
+            )
+        }
+        guard status == noErr, device != AudioDeviceID(kAudioObjectUnknown),
+              hasInputStreams(device) else { return nil }
+        return device
+    }
+
+    /// Whether a HAL device exposes input streams.
+    private static func hasInputStreams(_ device: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreams,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            device,
+            &address,
+            0,
+            nil,
+            &size
+        ) == noErr else { return false }
+        return size > 0
     }
 
     /// The devices the HAL lists right now.

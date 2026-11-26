@@ -25,7 +25,6 @@ enum MenuDump {
         var state = MenuState()
         state.isRecording = false
         state.recordShortcut = MenuShortcuts.shortcut(for: config.hotkey)
-        state.assistantShortcut = MenuShortcuts.shortcut(for: config.assistantHotkey)
         state.pasteShortcut = MenuShortcuts.shortcut(for: config.pasteHotkey)
         state.history = [
             "The meeting is at four.",
@@ -48,13 +47,8 @@ enum MenuDump {
         state.selectedPresetID = ProviderPreset.presenting(config).id
         state.autoPasteEnabled = config.autoPaste
         state.launchAtLogin = LaunchAtLogin.isEnabled
-        let assistantRow = AssistantProviderCatalogue.row(for: config.assistant.chat.resolvedProviderID)
-        state.assistantUsable = AssistantAvailability.isUsable(
-            config: config.assistant,
-            hasKey: assistantRow.requiresKey ? CredentialStore.hasKey(for: assistantRow.id) : false
-        )
 
-        print("Dot — menu bar menu")
+        print("Dot - menu bar menu")
         print(MenuBuilder.plainText(for: state))
     }
 }

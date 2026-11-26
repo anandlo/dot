@@ -15,6 +15,12 @@ public struct MicrophoneCalibration: Codable, Sendable, Equatable {
     public var noiseFloorDBFS: Double
     /// The loudest moment Dot has heard on the device, in dBFS.
     public var peakDBFS: Double
+    /// How loud the person's speech gets on the device, in dBFS: the upper end
+    /// of the 20 ms frames that carry a voice, averaged over takes.
+    ///
+    /// `nil` for an entry learned before Dot measured it. Unlike the peak, one
+    /// clap or plosive is a single frame among hundreds, so it cannot move it.
+    public var speechDBFS: Double?
     /// How many recordings were folded in.
     public var observedSamples: Int
     /// When the entry last changed.
@@ -43,10 +49,12 @@ public struct MicrophoneCalibration: Codable, Sendable, Equatable {
         noiseFloorDBFS: Double,
         peakDBFS: Double,
         observedSamples: Int,
-        updatedAt: Date
+        updatedAt: Date,
+        speechDBFS: Double? = nil
     ) {
         self.noiseFloorDBFS = noiseFloorDBFS
         self.peakDBFS = peakDBFS
+        self.speechDBFS = speechDBFS
         self.observedSamples = observedSamples
         self.updatedAt = updatedAt
     }
@@ -61,7 +69,8 @@ public struct MicrophoneCalibration: Codable, Sendable, Equatable {
             noiseFloorDBFS: Self.clamp(noiseFloorDBFS, to: Self.noiseFloorRange),
             peakDBFS: Self.clamp(peakDBFS, to: Self.peakRange),
             observedSamples: min(max(observedSamples, 0), Self.maximumObservedSamples),
-            updatedAt: updatedAt
+            updatedAt: updatedAt,
+            speechDBFS: speechDBFS.map { Self.clamp($0, to: Self.peakRange) }
         )
     }
 
@@ -83,11 +92,15 @@ public struct MicrophoneObservation: Sendable, Equatable {
     public let noiseFloorDBFS: Double
     /// The loudest moment of the take, in dBFS.
     public let peakDBFS: Double
+    /// How loud the voice got in the take, in dBFS, or `nil` when the take
+    /// held too little voice to say.
+    public let speechDBFS: Double?
 
     /// Creates an observation.
-    public init(noiseFloorDBFS: Double, peakDBFS: Double) {
+    public init(noiseFloorDBFS: Double, peakDBFS: Double, speechDBFS: Double? = nil) {
         self.noiseFloorDBFS = noiseFloorDBFS
         self.peakDBFS = peakDBFS
+        self.speechDBFS = speechDBFS
     }
 }
 
@@ -187,18 +200,28 @@ public enum MicrophoneCalibrationBook {
             // a year ago. It falls by a fixed number of decibels per take, so
             // it can be replaced.
             let peak = max(observedPeak, existing.peakDBFS - peakDecayDB)
+            // Speech is a level a person returns to, so it is averaged like
+            // the floor. A take without enough voice leaves it as it was.
+            let speech: Double?
+            if let observed = observedSpeech(observation) {
+                speech = existing.speechDBFS.map { $0 + (observed - $0) * weight } ?? observed
+            } else {
+                speech = existing.speechDBFS
+            }
             next[key] = MicrophoneCalibration(
                 noiseFloorDBFS: floor,
                 peakDBFS: peak,
                 observedSamples: min(existing.observedSamples + 1, MicrophoneCalibration.maximumObservedSamples),
-                updatedAt: now
+                updatedAt: now,
+                speechDBFS: speech
             ).clamped
         } else {
             next[key] = MicrophoneCalibration(
                 noiseFloorDBFS: observedFloor,
                 peakDBFS: observedPeak,
                 observedSamples: 1,
-                updatedAt: now
+                updatedAt: now,
+                speechDBFS: observedSpeech(observation)
             ).clamped
         }
         return trimmed(next)
@@ -240,6 +263,23 @@ public enum MicrophoneCalibrationBook {
         return max(learningRate, 1 / Double(count + 1))
     }
 
+    /// The observation's speech level, or `nil` when it has none a book can use.
+    private static func observedSpeech(_ observation: MicrophoneObservation) -> Double? {
+        guard let value = observation.speechDBFS, value.isFinite else { return nil }
+        return MicrophoneCalibration.clamp(value, to: MicrophoneCalibration.peakRange)
+    }
+
+    /// How far above the take's room a frame must be to count as voice, in dB.
+    public static let voicedMarginDB: Double = 10
+    /// The share of the voiced frames below the take's speech level.
+    ///
+    /// The upper end rather than the middle: the level is where the person's
+    /// louder syllables sit, and the top tenth leaves out the plosives,
+    /// coughs and claps a single loudest frame would be.
+    public static let speechPercentile: Double = 0.90
+    /// The fewest voiced frames that describe a voice: a fifth of a second.
+    public static let minimumVoicedFrames = 10
+
     /// How far a stored peak falls per take, in decibels.
     public static let peakDecayDB: Double = 1.5
 
@@ -274,9 +314,20 @@ public enum MicrophoneCalibrationBook {
             frames.count - 1,
             max(0, Int((Double(frames.count - 1) * roomPercentile).rounded()))
         )
+        let floor = frames[position]
+        let voiced = frames.drop { $0 < floor + voicedMarginDB }
+        var speech: Double?
+        if voiced.count >= minimumVoicedFrames {
+            let offset = min(
+                voiced.count - 1,
+                max(0, Int((Double(voiced.count - 1) * speechPercentile).rounded()))
+            )
+            speech = voiced[voiced.startIndex + offset]
+        }
         return MicrophoneObservation(
-            noiseFloorDBFS: frames[position],
-            peakDBFS: peakDBFS
+            noiseFloorDBFS: floor,
+            peakDBFS: peakDBFS,
+            speechDBFS: speech
         )
     }
 

@@ -4,11 +4,10 @@ import XCTest
 /// Where the app touches the archive, and in what order.
 ///
 /// The archive is a second copy of what was delivered, so what it must never do
-/// is visible in the order of two statements rather than in a return value: a
-/// question asked of the assistant is not archived, the history is written
-/// before a day file is opened, and the file work is handed to a task so it can
-/// never sit between the stop key and the paste. None of that can be observed
-/// from outside, so it is read off the source.
+/// is visible in the order of two statements rather than in a return value: the
+/// history is written before a day file is opened, and the file work is handed
+/// to a task so it can never sit between the stop key and the paste. None of
+/// that can be observed from outside, so it is read off the source.
 final class TranscriptArchiveHookTests: XCTestCase {
     private static var root: URL {
         URL(fileURLWithPath: #filePath)
@@ -52,21 +51,6 @@ final class TranscriptArchiveHookTests: XCTestCase {
         XCTAssertTrue(sequence.contains("await previous?.value"), "the sequence does not wait for the change before it")
         XCTAssertEqual(occurrences(of: "recordTake(", in: source), 1, "a second take call site")
         XCTAssertEqual(occurrences(of: "recordVersions(", in: source), 1, "a second versions call site")
-    }
-
-    /// A question to the assistant leaves before any take is archived.
-    func testTheAssistantBranchReturnsBeforeTheArchiveCall() throws {
-        let source = try appDelegate()
-        let assistant = try XCTUnwrap(source.range(of: "if capturePurpose == .assistant"))
-        let dictation = try XCTUnwrap(source.range(of: "capturePurpose = .dictation"))
-        let call = try XCTUnwrap(source.range(of: "archive(transcript, at: deliveredAt)"))
-
-        XCTAssertLessThan(assistant.lowerBound, dictation.lowerBound)
-        XCTAssertLessThan(dictation.lowerBound, call.lowerBound)
-        XCTAssertTrue(
-            source[assistant.lowerBound..<call.lowerBound].contains("return"),
-            "the assistant branch does not return before the archive call"
-        )
     }
 
     /// The history is on disk before the archive is touched, so a folder Dot

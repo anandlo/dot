@@ -4,18 +4,6 @@ import Foundation
 import DotCore
 import SwiftUI
 
-/// Why a take is being recorded.
-///
-/// It is the one fact that decides what happens to the words: a dictation is
-/// transcribed, rewritten, kept in the history and delivered to the cursor; a
-/// question goes to the assistant and nothing about it is written down.
-enum CapturePurpose: Equatable, Sendable {
-    /// The words become a transcript.
-    case dictation
-    /// The words are a question to the assistant.
-    case assistant
-}
-
 /// The application's coordinator.
 ///
 /// It owns the menu bar item, the HUD, the recorder, the hot keys, the key
@@ -29,7 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// schedules the save, instead of waiting for something else to redraw.
     private let configStore = ConfigStore()
 
-    override init() {
+    init(hud: HUD = HUD(), recorder: Recorder = Recorder()) {
+        self.hud = hud
+        self.recorder = recorder
         super.init()
         // Every write schedules the debounced save, whoever made it.
         configStore.onWrite = { [weak self] in
@@ -59,6 +49,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var previewedVisualizer: HUDVisualizer?
     /// The interaction last reported, so the log names a switch and not a redraw.
     private var appliedRecordingMode: RecordingMode?
+    /// The microphone UID last calibrated in Settings, avoiding redundant lookups.
+    private var appliedMicrophoneUID: String?
+    /// Signature of configuration fields reflected in the status bar menu.
+    private struct MenuConfigSignature: Equatable {
+        var hotkey: Hotkey
+        var pasteHotkey: Hotkey
+        var paletteHotkey: Hotkey
+        var provider: String
+        var providers: [String: ProviderConfig]
+        var microphoneDeviceUID: String?
+        var fastRecord: Bool
+        var recordingMode: RecordingMode
+        var historyLimit: Int
+        var autoPaste: Bool
+        var launchAtLogin: Bool
+
+        init(_ config: DotConfig, launchAtLogin: Bool = LaunchAtLogin.isEnabled) {
+            self.hotkey = config.hotkey
+            self.pasteHotkey = config.pasteHotkey
+            self.paletteHotkey = config.paletteHotkey
+            self.provider = config.provider
+            self.providers = config.providers
+            self.microphoneDeviceUID = config.microphoneDeviceUID
+            self.fastRecord = config.fastRecord
+            self.recordingMode = config.recordingMode
+            self.historyLimit = config.historyLimit
+            self.autoPaste = config.autoPaste
+            self.launchAtLogin = launchAtLogin
+        }
+    }
+    private var appliedMenuSignature: MenuConfigSignature?
+    /// Coalesces Settings menu rebuilds off the immediate click frame.
+    private var pendingMenuRefresh: DispatchWorkItem?
+    /// Serial utility queue for non-blocking configuration writes while Settings is open.
+    private let configSaveQueue = DispatchQueue(label: "com.anandlo.dot.config-save", qos: .utility)
     /// Keeps the app out of App Nap, which would delay the hotkey.
     private var activity: NSObjectProtocol?
     /// Times a press from the mouse to the moment this app hears about it.
@@ -74,8 +99,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let heartbeat = MainThreadHeartbeat()
     /// A save that is waiting for the typing to stop.
     private var pendingSave: DispatchWorkItem?
-    private let hud = HUD()
-    private let recorder = Recorder()
+    /// How Dot asks for microphone access.
+    ///
+    /// The system answer is the app's. A test replaces it with an answer it can
+    /// hold, so the permission prompt's two outcomes can be observed after the
+    /// quit gate closed.
+    struct MicrophoneAccess: Sendable {
+        var status: @Sendable () -> AVAuthorizationStatus
+        var request: @Sendable () async -> Bool
+
+        static let system = MicrophoneAccess(
+            status: { AVCaptureDevice.authorizationStatus(for: .audio) },
+            request: { await AVCaptureDevice.requestAccess(for: .audio) }
+        )
+    }
+
+    /// The permission answer the recording path asks for.
+    var microphoneAccess = MicrophoneAccess.system
+    private(set) var hud: HUD
+    private let recorder: Recorder
     private let keyWatcher = KeyWatcher()
     private let cancelWatcher = KeyWatcher()
     /// The API keys this session has resolved.
@@ -84,9 +126,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// for as long as the Keychain takes. It happens once per provider, here,
     /// and never on the path between a stop and a transcript.
     private let credentials = CredentialCache.shared
+    /// Keeps the press callback and the Stop that follows it from both rebuilding.
+    private let credentialRebuildGate = CredentialRebuildGate()
+    private var credentialPressID: String?
+    private var credentialPressSignature: ProviderSignature?
     private var statusItem: StatusItemController!
     private var hotkeys: GlobalHotkeyManager?
     private var provider: (any Provider)?
+    /// What the cache held when `provider` was built. A key that appears later
+    /// in Settings has to replace a provider built without it.
+    private var providerBuiltWithoutKey = true
+    private var providerBuildGeneration: UInt64 = 0
     private var lastTranscript: String?
     private var history = HistoryStore.loadEntries()
     /// The Markdown copy of the day's takes, when the person has turned it on.
@@ -115,6 +165,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var archiveShuttingDown = false
     private var providers: [MenuProvider] = []
     private var transcriptionTask: Task<Void, Never>?
+    private var deliveryTask: Task<Void, Never>?
+    private var deliveryGeneration: UInt64 = 0
+
+    private func cancelPendingDelivery() {
+        deliveryGeneration &+= 1
+        deliveryTask?.cancel()
+        deliveryTask = nil
+    }
+    /// Whether a quit has been accepted and nothing may record or publish.
+    ///
+    /// It is the first thing the quit sets, before the card's last versions are
+    /// read and before anything waits: a press that arrives while the quit is
+    /// pending must not open a microphone or claim a stop, and a take that fails
+    /// must not publish a recovery. It is never cleared: an accepted quit ends
+    /// the process.
+    private var quitPending = false
+    #if DEBUG
+    /// How many times the menu was rebuilt, for the recovery quit test.
+    private(set) var menuRefreshCount = 0
+    #endif
+    /// The claim that owns the card while a normal stop drains.
+    ///
+    /// The state alone is not the owner: a stop that lost the card to a newer
+    /// one is still `.working`. The claim is the identity both sides share, so an
+    /// answer that arrives late cannot finish, hide or paste over the card of the
+    /// stop that replaced it.
+    private var stopOwner: Recorder.StopClaim?
     /// Whether the app is inside `applicationWillTerminate`.
     ///
     /// Set before the transcription task is cancelled, so a task that resumes
@@ -131,6 +208,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shortcutRecorder: ShortcutRecorder?
     private var secretPrompt: SecretPrompt?
     private let settingsController = SettingsWindowController()
+    private var pendingPreviewWorkItem: DispatchWorkItem?
+    private var previewEscapeMonitor: Any?
+    private var appHideObserver: NSObjectProtocol?
     private let welcomeController = WelcomeWindowController()
     private let historyController = HistoryWindowController()
     /// The dictation palette: the recent transcripts, one keystroke away.
@@ -148,38 +228,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var frontmostNameAtPress: String?
     /// Whether the recording was asked for by the hot key.
     private var startedFromHotkey = false
-    /// Why the take that is running was started.
-    ///
-    /// It is set by whichever shortcut opened the microphone and read when the
-    /// transcript lands, which is the only point where the two paths differ.
-    private var capturePurpose: CapturePurpose = .dictation
-    /// Whether the tool log may write the argument values of a call.
-    ///
-    /// The setting lives on the main actor with the rest of the configuration
-    /// and the tool log asks from whatever thread finished a call, so the answer
-    /// is mirrored into this box whenever the configuration is saved.
-    private nonisolated let logArguments = LogArgumentsFlag()
-    /// The assistant's turn.
-    ///
-    /// Nothing it owns exists until the first question: the provider, the
-    /// connectors and the voice are built by the coordinator on demand.
-    private lazy var assistant = AssistantCoordinator(
-        factory: AssistantCatalogueFactory(
-            credentials: credentials,
-            log: ToolCallLog.shared(allowsArguments: { [logArguments] in logArguments.isOn })
-        ),
-        makeSpeaker: { [credentials] in SpeechAnswerSpeaker(credentials: credentials) },
-        paster: PasteAnswerPaster(),
-        hud: hud,
-        settings: { [weak self] in
-            guard let self else { return AssistantRuntimeSettings() }
-            return AssistantRuntimeSettings(
-                configuration: self.config.assistant,
-                autoPaste: self.config.autoPaste,
-                ownBundleIdentifier: Bundle.main.bundleIdentifier ?? ""
-            )
-        }
-    )
+    /// Whether the recording was asked for by the mouse button.
+    private var startedFromMouse = false
+    /// The mouse button trigger that consumes the assigned button's events.
+    private let mouseTrigger = MouseButtonTrigger()
+    /// The mouse button the tap is currently built for, so a change restarts it.
+    private var appliedMouseButton: MouseTriggerButton = .off
     /// The rewrite that follows a dictation.
     ///
     /// It is built once and kept: the card it feeds is the transcript card, and
@@ -217,8 +271,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .calibration(for: recordingDeviceUID, in: config.microphoneCalibration)?
             .noiseFloorDBFS
     }
-    /// The credential migration that runs off the main actor at launch.
-    private var migrationTask: Task<Void, Never>?
+    /// The observer of the catalog's first load, which the menu redraws from.
+    private var catalogLoadObserver: NSObjectProtocol?
 
     /// The part of the configuration a provider is built from.
     ///
@@ -241,6 +295,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The state of the app.
     enum State {
         case idle
+        /// The microphone is opening. Nothing is recorded yet and the card is
+        /// not up, but a stop already means something: it takes the take back.
+        case starting
         case recording
         case working
     }
@@ -258,7 +315,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DotType.registerFonts(at: resources.appendingPathComponent("Fonts"))
         }
         Log.shared.openFile()
+        // The device list is enumerated once, on the catalog's own queue, so the
+        // launch card, the menu and the press only ever read the answer.
+        MicrophoneCatalog.warm()
         heartbeat.start()
+        FrameDropMonitor.shared.start()
         // A dictation app is asked to do its one job by a key press that may
         // arrive hours after the last one. App Nap will happily put an idle,
         // invisible app to sleep and coalesce its timers, which shows up as a
@@ -275,17 +336,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         logIdentityMigration()
         loadConfiguration()
-        warmCredentials()
-        migrateProviderIfNeeded()
         applyAppearance()
         // The material the app already has is not a change: only a pick shows a
         // preview, or every unrelated setting would flash the island.
         previewedMaterial = config.hudMaterial
         previewedVisualizer = config.hudVisualizer
+        appliedRecordingMode = config.recordingMode
+        appliedMenuSignature = MenuConfigSignature(config)
+        providerSignature = ProviderSignature(
+            provider: config.provider,
+            providers: config.providers
+        )
+        // A keyless provider needs no credential read, so a Keychain prompt
+        // cannot be a reason to leave it unbuilt. The press callback must find
+        // an instance ready, or the first take has no transcriber.
+        if ProviderPreset.canBuildWithoutKey(config) {
+            rebuildProvider()
+        }
 
         hud.dwell = config.hudDwellSeconds
         hud.visualizer = config.hudVisualizer
         hud.material = config.hudMaterial
+        applyMotionPreference()
+        appliedMicrophoneUID = config.microphoneDeviceUID
         applyCalibration(for: MicrophoneCatalog.recordingDeviceUID(
             configured: config.microphoneDeviceUID
         ))
@@ -295,26 +368,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.setSpectrumProvider { [weak self] in
             self?.recorder.spectrum ?? .zero
         }
+        FrameDropMonitor.shared.hudScreen = { [weak hud] in hud?.panelScreen }
+        hud.onRenderActivityChange = { [weak self] active in
+            self?.heartbeat.setHUDActive(active)
+            FrameDropMonitor.shared.setHUDActive(active)
+        }
         installHUDActions()
 
         statusItem = StatusItemController()
         statusItem.onAction = { [weak self] action in
             self?.handle(action)
         }
+        // A menu that is about to be read re-reads the two facts that can have
+        // changed without Dot being told: the login item, which the person can
+        // switch in System Settings, and the device list, which the cache keeps
+        // current from the system's own notifications.
+        statusItem.onMenuOpen = { [weak self] in
+            guard let self else { return }
+            let cachedLogin = LaunchAtLogin.isEnabled
+            self.refreshMenu()
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                LaunchAtLogin.refresh()
+                let updated = LaunchAtLogin.isEnabled
+                guard updated != cachedLogin else { return }
+                DispatchQueue.main.async { [weak self] in
+                    self?.refreshMenu()
+                }
+            }
+        }
+        // The menu is built from a device list that is empty until the catalog's
+        // first load finishes: this is the one line that puts the devices in it.
+        catalogLoadObserver = NotificationCenter.default.addObserver(
+            forName: MicrophoneCatalog.didLoadNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainThreadTick.run { [weak self] in
+                self?.refreshMenu()
+            }
+        }
 
         recorder.onFailure = { [weak self] message in
             self?.failRecording(message)
         }
-        // The clock of the recording card is the real length of the
-        // recording, not a number that was set once.
-        recorder.onTick = { [weak self] level, elapsed in
-            _ = level
-            self?.recordingElapsed = elapsed
-            self?.hud.updateRecording(elapsed: HUDClock.string(for: elapsed))
+        // A route change that rebuilds the take onto another device is filed under
+        // the device it is recording on now, the same way its start was: the
+        // calibration of the take follows the engine, never the configuration.
+        recorder.onDeviceChange = { [weak self] deviceUID in
+            guard let self else { return }
+            self.recordingDeviceUID = deviceUID
+            self.hud.setCalibration(
+                MicrophoneCalibrationBook.calibration(
+                    for: deviceUID,
+                    in: self.config.microphoneCalibration
+                )
+            )
         }
+        // The live clock display is driven directly by HUD.tick; elapsed duration is
+        // captured from recorder.elapsed on stop.
 
         keyWatcher.onRelease = { [weak self] in
-            self?.recordKeyReleased()
+            self?.recordReleased(from: .keyboard)
+        }
+        mouseTrigger.onPress = { [weak self] in
+            self?.recordPressed(from: .mouse)
+        }
+        mouseTrigger.onRelease = { [weak self] in
+            self?.recordReleased(from: .mouse)
         }
         keyWatcher.onBlocked = { [weak self] in
             self?.hotkeyBlocked()
@@ -332,14 +452,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // way to see the release of the key, and the only way to say that
         // secure input swallowed the press.
         keyWatcher.watch(keyCode: config.hotkey.keyCode)
-        cancelWatcher.watch(keyCode: Self.escapeKeyCode, reportsUnannouncedPresses: true)
         registerHotkeys()
+        applyMouseTrigger()
         installTestTrigger()
+        appHideObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didHideNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            MainThreadTick.run { [weak self] in
+                self?.dismissSettingsPreview()
+            }
+        }
         startProviderRefresh()
-        // The provider is built once the credential cache is warm, not here:
-        // building one resolves its key, and a re-signed build answers that
-        // read with a Keychain prompt. Waiting for it on this path froze the
-        // whole launch, island included, until someone clicked Allow.
+        // A keyed provider is built only after its key has been resolved: a
+        // re-signed build answers that read with a Keychain prompt, and waiting
+        // for it on this path froze the whole launch until someone clicked
+        // Allow. The keyless provider was built above without any such read.
         refreshMenu()
         logConfiguration()
         Log.shared.info("microphone.status", [
@@ -347,9 +476,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         showLaunchIsland()
         scheduleFirstRunWelcome()
+        // A hand-off is acknowledged only after this callback has run, so the
+        // settings window and every launch dependency exist before a second
+        // launch is told that the first instance is ready.
+        SingleInstanceCoordinator.shared?.markReady { [weak self] in
+            self?.handleReopen()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        SingleInstanceCoordinator.shared?.beginShutdown()
         // The flag comes first: a transcription task cancelled below may resume
         // on this actor before the app is gone, and it must not paste or draw.
         isTerminating = true
@@ -360,23 +496,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             persistRewrite(rewrite.card)
         }
         saveConfiguration()
-        assistant.terminate()
-        migrationTask?.cancel()
         stopLiveTranscription()
         transcriptionTask?.cancel()
+        cancelPendingDelivery()
         recorder.cancel()
         keyWatcher.stop()
+        mouseTrigger.stop()
         cancelWatcher.stop()
         hotkeys?.uninstall()
         welcomeController.close()
         historyController.close()
         palette.dismiss(restoringFocus: false)
+        dismissSettingsPreview()
+        stopPreviewEscapeWatch()
         settingsController.close()
+        if let appHideObserver {
+            NotificationCenter.default.removeObserver(appHideObserver)
+            self.appHideObserver = nil
+        }
         hud.hide()
         triggerTimer?.invalidate()
         providerRefreshTimer?.invalidate()
         statusItem.tearDown()
+        heartbeat.stop()
+        FrameDropMonitor.shared.stop()
         Log.shared.info("app.stopped")
+        HistoryStore.flush()
+        // The lines are written on a queue of their own, and this is the last
+        // moment anything can wait for them.
+        Log.shared.flush()
+    }
+
+    // MARK: - Reopen
+
+    /// The one path a reopen takes, whether AppKit asked for it or a second
+    /// launch handed off. The menu's Settings item opens the same window.
+    func handleReopen() {
+        openSettings()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        handleReopen()
+        return true
     }
 
     /// The virtual key code of Escape.
@@ -391,6 +552,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .notDetermined: "not-determined"
         @unknown default: "unknown"
         }
+    }
+
+    /// The only credential question the launch path may ask.
+    ///
+    /// The probe answers from attributes, never from the item's data. An
+    /// injection point here lets a test pass a recording store and prove that
+    /// launch cannot decrypt anything.
+    nonisolated static func credentialLaunchProbe(store: CredentialBundleStore) -> CredentialProbe {
+        CredentialProbe(hasKey: { store.hasKey(for: $0) }, readKey: { _ in nil })
     }
 
     /// Says what the identity migration moved.
@@ -419,9 +589,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// there a key?", which cannot raise a prompt, so a Keychain prompt can never
     /// leave the app on a provider that was deleted.
     private func loadConfiguration() {
-        let loaded = ProviderMigration.loadConfiguration(from: DotConfig.defaultURL())
+        let loaded = ProviderMigration.loadConfiguration(
+            from: DotConfig.defaultURL(),
+            probe: Self.credentialLaunchProbe(store: CredentialStore.bundle)
+        )
         config = loaded.config
-        logArguments.set(config.logTranscripts)
         // The history file is read against the limit this configuration asks
         // for, so the window, the palette and the menu open with the same list.
         history = HistoryStore.loadEntries(limit: config.historyLimit)
@@ -460,62 +632,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveConfiguration()
     }
 
-    /// Copies credentials written by an older build, and upgrades the launch
-    /// fallback when the copy makes one of its services usable.
-    ///
-    /// The Keychain work does not run here. A read of an item whose signature
-    /// changed puts a system prompt on screen and waits for an answer, and
-    /// waiting for it in `applicationDidFinishLaunching` froze the launch. The
-    /// work therefore runs on a background queue with a deadline: a prompt that
-    /// is never answered leaves the app on the provider the launch correction
-    /// chose and the copy runs again on the next launch, instead of hanging.
-    ///
-    /// Nothing here ever reads a key value into this method: the migration
-    /// copies secret to secret and reports only which providers it touched. The
-    /// configuration is written atomically before the provider is rebuilt.
-    private func migrateProviderIfNeeded() {
-        migrationTask = Task { [weak self] in
-            guard let report = await DotMigration.migrateCredentialsAtLaunch() else {
-                // The app is already usable: the provider was chosen before
-                // this task started, without asking for any key material.
-                Log.shared.warn("credential.migration.timedOut")
-                return
-            }
-            guard let self else { return }
-            if !report.copiedProviderIDs.isEmpty {
-                Log.shared.info("credential.migrated", [
-                    "providers": .string(report.copiedProviderIDs.joined(separator: ",")),
-                    "from": .string("service-name"),
-                ])
-                // A key that the copy just produced may have been answered as
-                // "no key" before it existed: forget the answer, so the rebuild
-                // below resolves the new one.
-                for id in report.copiedProviderIDs {
-                    self.credentials.invalidate(id)
-                }
-            }
-            if report.copiedFromLegacyTool {
-                Log.shared.info("credential.migrated", [
-                    "provider": .string(ProviderIdentifier.xiaomi),
-                    "from": .string("legacy-tool"),
-                ])
-            }
-            // The copy may have produced the key the launch correction could
-            // not see yet; a provider the user chose stays untouched.
-            let correction = self.launchCorrection
-            self.launchCorrection = nil
-            if ProviderMigration.upgrade(&self.config, after: correction) {
-                self.saveConfiguration()
-                Log.shared.info("provider.upgraded", [
-                    "provider": .string(self.config.provider),
-                    "reason": .string("key-available"),
-                ])
-            }
-            self.rebuildProvider()
-            self.refreshProviders()
-        }
-    }
-
     // MARK: - HUD
 
     /// Wires the island's buttons once.
@@ -532,8 +648,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A card that holds versions delivers the one on screen, named at the
         // click, and never re-shows the transcript: that would clear the layer
         // and lose the other versions.
-        actions.copyVersion = { [weak self] text in self?.rewrite.copySelected(text) }
-        actions.pasteVersion = { [weak self] text in self?.rewrite.pasteSelected(text) }
+        actions.copyVersion = { [weak self] text in
+            guard let self else { return }
+            if self.rewrite.copySelected(text) {
+                self.hud.showActionFeedback(for: .copy, outcome: .copied)
+            }
+        }
+        actions.pasteVersion = { [weak self] text in
+            guard let self else { return }
+            switch self.rewrite.pasteSelectedOutcome(text) {
+            case .pasted:
+                self.hud.showActionFeedback(for: .paste, outcome: .pasted)
+            case .fallbackCopied:
+                self.hud.showActionFeedback(for: .paste, outcome: .fallbackCopied)
+            case .ignored:
+                break
+            }
+        }
         actions.selectOriginal = { [weak self] in self?.rewrite.select(versionID: 0) }
         actions.previousVersion = { [weak self] in self?.rewrite.selectPrevious() }
         actions.nextVersion = { [weak self] in self?.rewrite.selectNext() }
@@ -546,8 +677,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         actions.updateTranscript = { [weak self] updated in
             self?.applyInlineTranscriptEdit(updated)
         }
-        actions.history = { [weak self] in self?.openHistory() }
-        actions.settings = { [weak self] in self?.openSettings() }
+        actions.history = { [weak self] in
+            guard let self else { return }
+            self.hud.showActionFeedback(for: .history, outcome: .triggered)
+            self.openHistory()
+        }
+        actions.settings = { [weak self] in
+            guard let self else { return }
+            self.hud.showActionFeedback(for: .settings, outcome: .triggered)
+            self.openSettings()
+        }
         actions.close = { [weak self] in self?.hud.hide() }
         actions.rewrite = { [weak self] style in self?.chooseRewrite(style) }
         actions.cancelRewrite = { [weak self] in self?.rewrite.cancelStream() }
@@ -568,7 +707,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // stops the stream and forgets the versions, so a late answer can never
         // attach to words nobody can see.
         hud.onTranscriptEnded = { [weak self] in self?.rewrite.reset() }
-        hud.onHide = { [weak self] in self?.rewrite.reset() }
+        hud.onHide = { [weak self] in
+            guard let self else { return }
+            self.rewrite.reset()
+            if self.state == .idle {
+                self.stopPreviewEscapeWatch()
+            }
+        }
     }
 
     /// Keeps the versions and the selection the card is showing.
@@ -583,7 +728,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         history = updated
-        HistoryStore.saveEntries(history, limit: config.historyLimit)
+        HistoryStore.saveEntriesAsync(history, limit: config.historyLimit)
         Log.shared.info("history.rewrite.saved", [
             "versions": .int(snapshot.versions.count),
             "selected": .int(snapshot.selectedVersionID),
@@ -678,17 +823,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         archiveTasks[id] = task
     }
 
-    /// Waits for the archive's writes before the log's last line.
+    /// Closes every recording entry point and releases what the quit found.
     ///
-    /// A day file is replaced whole, so a write cut off by the process ending is
-    /// a write that did not happen. AppKit is asked to wait while the writes in
-    /// flight finish, and answered as soon as they have, or when the limit
-    /// ``Shutdown`` keeps runs out.
+    /// It is the gate half of ``applicationShouldTerminate``: the live loop and
+    /// the stop's task are taken back, the microphone is released without
+    /// waiting for the audio queue, and the card's owner is cleared. The disk
+    /// work of the quit stays with the termination request so this half can be
+    /// run on its own.
+    func beginQuit() {
+        guard !quitPending else { return }
+        quitPending = true
+        // The two owners of the card are taken back before anything is written
+        // or waited for. The live loop is the only writer of a partial and the
+        // stop's task the only writer of a transcript, and neither may publish
+        // over the card once the gate is closed.
+        stopLiveTranscription()
+        transcriptionTask?.cancel()
+        cancelPendingDelivery()
+        // What the quit found is released here, on this turn. A start that is
+        // still opening is taken back, a live take is claimed and its one drain
+        // left on the audio queue, and a take that is already draining only
+        // loses its delivery. Nothing in the call waits for the queue, so a
+        // route reconciliation running ahead of the drain cannot hold the quit.
+        recorder.shutDown()
+        recorder.invalidateStopDelivery()
+        cancelWatcher.stop()
+        stopOwner = nil
+    }
+
+    /// Closes the recording entry points, then waits for the archive's writes and
+    /// the audio queue's last stop before the log's last line.
+    ///
+    /// The gate and the recorder's release come first and touch nothing slow: a
+    /// take that is opening, running or draining is taken back on this turn, so
+    /// nothing starts, opens or publishes after the quit has begun. A day file is
+    /// replaced whole, so a write cut off by the process ending is a write that
+    /// did not happen. A microphone cut off by the process ending is released by
+    /// the system anyway, but joining the drain that was already queued is what
+    /// lets the quit finish it instead of leaving it behind the final log line.
+    /// AppKit is asked to wait while the work in flight finishes, and answered as
+    /// soon as it has, or when the limit ``Shutdown`` keeps runs out.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Stop answering hand-offs as soon as quitting starts. The lease itself
+        // stays held until `application.run()` returns.
+        SingleInstanceCoordinator.shared?.beginShutdown()
         // A second request while the first is still waiting changes nothing:
         // the drain that is running will answer, and it is already waiting for
         // everything registered.
         guard !archiveShuttingDown else { return .terminateLater }
+        // The gate comes first: no state is captured, and nothing waits, until
+        // every recording entry point knows the quit has begun.
+        beginQuit()
         archiveShuttingDown = true
         // The card's last versions are written here rather than in
         // `applicationWillTerminate`, so that write is one of the tasks the quit
@@ -698,21 +883,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await Shutdown.drain(
                 pending: { self.takePendingArchiveWrites() },
                 reply: { answer in
-                    NSApplication.shared.reply(toApplicationShouldTerminate: answer)
+                    Task { @MainActor in
+                        await HistoryStore.drain()
+                        NSApplication.shared.reply(toApplicationShouldTerminate: answer)
+                    }
                 }
             )
         }
         return .terminateLater
     }
 
-    /// The archive writes the quit has not waited for yet, handed over once.
+    /// The work the quit has not waited for yet, handed over once.
     ///
     /// Taking them out of the list is what tells a later pass of the drain they
     /// were waited for. A write registered while the drain runs is still in the
     /// list and is picked up by the next pass, which is why a request that
     /// arrives after the quit began is drained rather than dropped.
+    ///
+    /// The archive's writes are not the only work here: a stop that was still
+    /// waiting for the audio queue left one drain behind, and it is joined too,
+    /// because it releases the microphone. Only that drain is joined, and only
+    /// because of the microphone: the stop's delivery was taken back above
+    /// before the wait began.
     private func takePendingArchiveWrites() -> [Task<Void, Never>] {
-        let pending = Array(archiveTasks.values)
+        var pending = Array(archiveTasks.values)
+        if let cutoff = recorder.takePendingStopCutoff() {
+            pending.append(cutoff)
+        }
         archiveTasks = [:]
         return pending
     }
@@ -799,11 +996,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch action {
         case .toggleRecording:
             toggleRecording()
-        case .askAssistant:
-            // The spoken assistant is retired. The action stays in the enum so a
-            // menu built by an older state still parses, but it starts nothing:
-            // dictation is the only thing the keys do.
-            break
         case .pasteLast:
             pasteLastTranscript()
         case .copyLast:
@@ -849,11 +1041,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// after launch appears in the menu the next time it opens. The options
     /// carry the configured device even when Dot cannot offer it, so a refresh
     /// never changes the person's choice.
+    private func scheduleMenuRefresh() {
+        pendingMenuRefresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingMenuRefresh = nil
+            self.refreshMenu()
+        }
+        pendingMenuRefresh = work
+        DispatchQueue.main.async(execute: work)
+    }
+
     private func refreshMenu() {
+        #if DEBUG
+        menuRefreshCount += 1
+        #endif
         var state = MenuState()
         state.isRecording = self.state == .recording
         state.recordShortcut = MenuShortcuts.shortcut(for: config.hotkey)
-        state.assistantShortcut = MenuShortcuts.shortcut(for: config.assistantHotkey)
         state.pasteShortcut = MenuShortcuts.shortcut(for: config.pasteHotkey)
         state.history = history.map(\.text)
         state.microphones = MicrophoneDirectory.options(
@@ -873,14 +1078,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.autoPasteEnabled = config.autoPaste
         state.fastRecordEnabled = config.fastRecord
         state.launchAtLogin = LaunchAtLogin.isEnabled
-        // The item is drawn either way; a person who never set the assistant up
-        // sees it greyed rather than pressing a key that answers with a
-        // sentence.
-        let assistantRow = AssistantProviderCatalogue.row(for: config.assistant.chat.resolvedProviderID)
-        state.assistantUsable = AssistantAvailability.isUsable(
-            config: config.assistant,
-            hasKey: assistantRow.requiresKey ? CredentialStore.hasKey(for: assistantRow.id) : false
-        )
         statusItem.menuState = state
     }
 
@@ -888,39 +1085,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func toggleRecording() {
         switch state {
-        case .recording:
+        case .starting, .recording:
+            // The menu says "stop" while the microphone is opening, and it
+            // means the same thing as the key: the take is taken back.
             stopRecording()
         case .idle, .working:
             startRecording()
         }
     }
 
-    /// The hot key was pressed.
+    /// The record key was pressed.
     ///
     /// The press is answered in both modes: it starts a recording when there is
     /// none, and it stops one when there is. The mode only decides what a
     /// *release* means, which is ``recordKeyReleased()``'s question.
-    private func hotkeyPressed() {
-        Log.shared.info("hotkey.pressed", [
-            "hotkey": .string(config.hotkey.label),
-            "mode": .string(config.recordingMode.rawValue),
-        ])
-        keyWatcher.noteHotkeyFired()
-        // A dictation must not start on top of a question. The two keys write to
-        // the same microphone, and the answer would arrive in the middle of a
-        // second take.
-        if assistant.isTurnActive,
-           AssistantInteraction.action(for: .dictation, phase: assistantPhase) == .ignore {
-            Log.shared.info("hotkey.ignored", ["reason": .string("an assistant turn is running")])
-            return
+    private func recordPressed(from trigger: RecordTrigger) {
+        switch trigger {
+        case .keyboard:
+            Log.shared.info("hotkey.pressed", [
+                "hotkey": .string(config.hotkey.label),
+                "mode": .string(config.recordingMode.rawValue),
+            ])
+            keyWatcher.noteHotkeyFired()
+        case .mouse:
+            Log.shared.info("mouse.pressed", [
+                "button": .string(config.mouseTriggerButton.rawValue),
+            ])
         }
         switch RecordKeyInteraction.action(
             for: .press,
-            mode: config.recordingMode,
+            trigger: trigger,
+            configuredMode: config.recordingMode,
             phase: phase
         ) {
         case .start:
-            startRecording(fromHotkey: true)
+            if trigger == .keyboard {
+                startRecording(fromHotkey: true)
+            } else {
+                startedFromMouse = true
+                startRecording(fromHotkey: false)
+            }
         case .stop:
             // The press stops the take in both modes. In hold mode this is the
             // fallback for a release the keyboard state could not read; in
@@ -931,51 +1135,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Escape was released.
-    ///
-    /// The assistant's table answers first; anything it does not handle falls
-    /// through to the behaviour Escape has always had, which is dropping the
-    /// recording without transcribing it.
+    /// Escape was released: drop the recording without transcribing it.
     private func escapePressed() {
-        switch AssistantInteraction.action(for: .escape, phase: assistantPhase) {
-        case .cancelTurn:
-            assistant.cancelTurn()
-        case .stopSpeech:
-            assistant.stopSpeech()
-        case .decline:
-            assistant.declineConfirmation()
-        case .cancelCapture:
-            if capturePurpose == .assistant {
-                cancelAssistantCapture()
-            } else {
-                cancelRecording()
-            }
-        case .startCapture, .stopCapture, .ignore:
-            cancelRecording()
-        }
+        cancelRecording()
     }
 
-    private func cancelAssistantCapture() {
-        guard state == .recording else { return }
-        stopLiveTranscription()
-        ledger = nil
-        recorder.cancel()
-        capturePurpose = .dictation
-        state = .idle
-        refreshMenu()
-        hud.cancel()
-        hud.hide()
-        Log.shared.info("recording.cancelled", ["purpose": .string("assistant")])
-    }
-
-    /// The state the assistant's key is answered in.
+    /// Takes back a take whose microphone is still opening.
     ///
-    /// A take that is recording a question is the assistant's own capture, so it
-    /// reads as ``AssistantPhase/recording``. Every other state is whatever the
-    /// turn is doing; a dictation never reaches this table.
-    private var assistantPhase: AssistantPhase {
-        if state == .recording, capturePurpose == .assistant { return .recording }
-        return assistant.phase
+    /// There is no card to close and no audio to drop: the take never became a
+    /// recording, so the only trace it leaves is the line that says why it is
+    /// gone.
+    private func cancelStartingTake() {
+        cancelWatcher.stop()
+        recorder.cancel()
+        state = .idle
+        stopOwner = nil
+        Log.shared.info("recording.cancelled", [
+            "reason": .string("stopped before the microphone started"),
+        ])
     }
 
     /// The phase, for a log line.
@@ -986,10 +1163,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// an instruction, so a recording started by a press keeps running until
     /// the next press, and the watcher is left running for the two things it
     /// still owes: the secure-input report and the release of the fallback.
-    private func recordKeyReleased() {
+    private func recordReleased(from trigger: RecordTrigger) {
         guard RecordKeyInteraction.action(
             for: .release,
-            mode: config.recordingMode,
+            trigger: trigger,
+            configuredMode: config.recordingMode,
             phase: phase
         ) == .stop else { return }
         stopRecording()
@@ -997,22 +1175,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The state the record key is answered in.
     private var phase: RecordingPhase {
+        Self.phase(for: state)
+    }
+
+    /// How a state answers the record key.
+    ///
+    /// A take that is starting is answered as a recording: the microphone is
+    /// being opened for it, and the press or the release that ends it means the
+    /// person changed their mind, not that they want a second take.
+    nonisolated static func phase(for state: State) -> RecordingPhase {
         switch state {
         case .idle: .idle
-        case .recording: .recording
+        case .starting, .recording: .recording
         case .working: .working
         }
     }
 
-    private func startRecording(fromHotkey: Bool = false, purpose: CapturePurpose = .dictation) {
+    private func startRecording(fromHotkey: Bool = false) {
+        // A take opened while the quit is pending would be torn down by the quit
+        // a moment later, after asking the system for a microphone.
+        guard !quitPending else { return }
         guard state == .idle else { return }
         startedFromHotkey = fromHotkey
-        capturePurpose = purpose
+        // A press is an explicit retry after a denial for the service it chose,
+        // but not after a key that was already read: later takes use the cache.
+        let selectedID = config.provider
+        credentials.retryDenied(for: selectedID)
+        credentialPressID = selectedID
+        credentialPressSignature = providerSignature
+        resolveCredentialForFirstUse()
 
         // There is no point in recording when the transcript could never be
         // made.
         if let provider, !(providerIsAvailable(provider)) {
-            capturePurpose = .dictation
             hud.showMessage(
                 text: "\(selectedProviderName) is not available right now.",
                 action: nil
@@ -1020,33 +1215,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        guard requestMicrophoneAccessIfNeeded() else { return }
+        beginRecording()
+    }
+
+    /// Asks for the microphone when the system has not answered yet.
+    ///
+    /// It is the permission half of the press, kept apart from the credential
+    /// work so the answer's quit gate can be run on its own.
+    ///
+    /// - Returns: whether recording may begin now. A pending prompt answers on
+    ///   its own task, which asks the quit gate again when it lands.
+    func requestMicrophoneAccessIfNeeded() -> Bool {
+        switch microphoneAccess.status() {
         case .authorized:
-            break
+            return true
         case .notDetermined:
             Log.shared.info("microphone.requesting")
             Task { @MainActor in
-                let granted = await AVCaptureDevice.requestAccess(for: .audio)
+                let granted = await self.microphoneAccess.request()
                 Log.shared.info("microphone.answered", ["granted": .bool(granted)])
                 if granted {
                     self.beginRecording()
                 } else {
+                    // The answer can arrive after the quit began: a card about
+                    // a microphone Dot will not use must not be drawn then.
+                    guard !self.quitPending else { return }
                     self.showMicrophoneDenied()
                 }
             }
-            return
+            return false
         default:
             showMicrophoneDenied()
-            return
+            return false
         }
-        beginRecording()
     }
 
     private func beginRecording() {
+        // The microphone prompt can be answered after the quit began, and the
+        // answer arrives here rather than through the press.
+        guard !quitPending else { return }
         // The microphone prompt is answered on a path of its own, and the
         // person may press the shortcut again while it is up. The second
         // answer must not open a second recording over the first.
         guard state == .idle else { return }
+        cancelPendingDelivery()
         rewrite.reset()
         // In hold mode the press may already be over: the microphone prompt
         // takes long enough for a quick tap to end while it is up, and a
@@ -1058,218 +1271,265 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startedFromHotkey = false
             return
         }
-        startedFromHotkey = false
-        do {
-            try recorder.start(deviceUID: config.microphoneDeviceUID)
-        } catch RecorderError.permissionDenied {
-            showMicrophoneDenied()
-            return
-        } catch {
-            hud.showMessage(text: error.localizedDescription, action: nil)
-            Log.shared.error("recorder.start.failed", ["error": .string(error.localizedDescription)])
+        if startedFromMouse, !mouseTrigger.isPressActive {
+            Log.shared.info("recording.skipped", ["reason": .string("the mouse press was over")])
+            startedFromMouse = false
             return
         }
-        // The card only appears once the microphone really runs: a live-looking
-        // meter over a system dialog would be a lie. The device is resolved
-        // before the card exists, because the card seeds its meter from the
-        // calibration of the device that is recording. It is written directly
-        // rather than through ``applyCalibration(for:)``, which refuses to touch
-        // a take that is already running.
-        recordingDeviceUID = MicrophoneCatalog.recordingDeviceUID(
-            configured: config.microphoneDeviceUID
-        )
-        hud.setCalibration(
-            MicrophoneCalibrationBook.calibration(
-                for: recordingDeviceUID,
-                in: config.microphoneCalibration
-            )
-        )
-        state = .recording
+        startedFromHotkey = false
+        startedFromMouse = false
+        // The paste target is the app that was frontmost at the press. Opening
+        // the microphone takes as long as the device takes, and by the time the
+        // take ends a card of Dot's own may have been in front: asking now is
+        // asking the right question.
         let frontmost = NSWorkspace.shared.frontmostApplication
         frontmostAtPress = FrontmostApp(
             processIdentifier: frontmost?.processIdentifier,
             bundleIdentifier: frontmost?.bundleIdentifier
         )
         frontmostNameAtPress = frontmost?.localizedName
-        if capturePurpose == .assistant {
-            // A question is one short sentence: a live partial would be a second
-            // paid request that only repeats what the answer is about to use.
-            hud.showAssistantRecording(elapsed: "0:00")
-        } else {
-            hud.showRecording(elapsed: "0:00")
-            startLiveTranscription()
+        let pressedAt = CACurrentMediaTime()
+        pendingPreviewWorkItem?.cancel()
+        pendingPreviewWorkItem = nil
+        if let monitor = previewEscapeMonitor {
+            NSEvent.removeMonitor(monitor)
+            previewEscapeMonitor = nil
         }
+        state = .starting
+        cancelWatcher.watch(keyCode: Self.escapeKeyCode, reportsUnannouncedPresses: true)
+        recorder.start(deviceUID: config.microphoneDeviceUID) { [weak self] report in
+            guard let self else { return }
+            // The answer can arrive after the quit began, and a microphone that
+            // opened while the answer was in flight is one the quit could not
+            // take back. Nothing is published then, and a success that won the
+            // race is released here rather than left running until the process
+            // ends.
+            guard !self.quitPending else {
+                if case .success = report.result {
+                    self.recorder.shutDown()
+                }
+                return
+            }
+            // A start that a stop took back can still answer while the next take
+            // is opening: only the newest start's answer is the app's to act on.
+            guard report.generation == self.recorder.startGeneration else { return }
+            switch report.result {
+            case .success:
+                self.microphoneOpened(
+                    pressedAt: pressedAt,
+                    openedDeviceUID: report.openedDeviceUID
+                )
+            case .failure(.permissionDenied):
+                self.cancelWatcher.stop()
+                self.state = .idle
+                self.showMicrophoneDenied()
+            case .failure(.cancelled):
+                self.cancelWatcher.stop()
+                // A stop or an Escape took the take back while the engine was
+                // opening; that path has already said so in the log and set
+                // the state. Nothing is left here to undo.
+                break
+            case .failure(let error):
+                self.cancelWatcher.stop()
+                self.state = .idle
+                self.hud.showMessage(text: error.localizedDescription, action: nil)
+                Log.shared.error("recorder.start.failed", [
+                    "error": .string(error.localizedDescription),
+                ])
+            }
+        }
+    }
+
+    /// Opens the card for a take whose microphone is running.
+    ///
+    /// Everything here used to run on the press, after a synchronous start. It
+    /// runs in the start's completion now, so the press is answered as soon as
+    /// the audio queue has been handed the work.
+    ///
+    /// - Parameters:
+    ///   - pressedAt: when the record key was answered, for the timing line.
+    ///   - openedDeviceUID: the microphone the take actually opened, which is the
+    ///     device every calibration of this take belongs to.
+    private func microphoneOpened(pressedAt: CFTimeInterval, openedDeviceUID: String?) {
+        guard state == .starting else { return }
+        // The card only appears once the microphone really runs: a live-looking
+        // meter over a system dialog would be a lie. The device is the one the
+        // take opened, not the one the configuration asks for: a take that fell
+        // back to the system default input because the device list did not answer
+        // must not be calibrated as the configured microphone. It is written
+        // directly rather than through ``applyCalibration(for:)``, which refuses
+        // to touch a take that is already running.
+        recordingDeviceUID = openedDeviceUID
+        hud.setCalibration(
+            MicrophoneCalibrationBook.calibration(
+                for: openedDeviceUID,
+                in: config.microphoneCalibration
+            )
+        )
+        state = .recording
+        hud.showRecording(elapsed: "0:00")
+        startLiveTranscription()
         keyWatcher.watch(keyCode: config.hotkey.keyCode)
         refreshMenu()
         Log.shared.info("recording.started", [
-            "purpose": .string(capturePurpose == .assistant ? "assistant" : "dictation"),
+            "purpose": .string("dictation"),
         ])
+        // One line with the three numbers that say where a take's first
+        // instant went: the wait for the audio queue, the engine, and the whole
+        // of it up to the card being on screen.
+        if let timing = recorder.lastStartTiming {
+            Log.shared.info("recording.start.timing", [
+                "queue_wait": .int(timing.queueWaitMilliseconds),
+                "engine": .int(timing.engineMilliseconds),
+                "total": .int(Int(((CACurrentMediaTime() - pressedAt) * 1000).rounded())),
+            ])
+        }
     }
 
     private func stopRecording() {
-        guard state == .recording else { return }
-        let inFlightLiveTask = liveTask
-        liveTask = nil
-        let recording = recorder.stop()
-        state = .working
-
-        let samples = recording.sampleCount
-        let initialLedger = self.ledger
-            ?? TranscriptLedger(commitSeconds: maxSegmentSeconds(self.provider))
-
-        Log.shared.info("recording.stopped", [
-            "duration_s": .double(recording.duration),
-            "samples": .int(samples),
-            "peak_dbfs": .double(recording.peakDBFS),
-            "final_samples": .int(initialLedger.committedSamples),
-            "final_chunks": .int(initialLedger.committedText.count),
-        ])
-
-        // The only thing that sends nothing at all: not a single sample.
-        guard samples > 0 else {
-            inFlightLiveTask?.cancel()
-            self.ledger = nil
-            hud.showMessage(text: "Nothing was recorded.", action: nil)
-            finishWork()
+        // A take whose microphone is still opening has nothing to stop yet: the
+        // press takes it back before the card ever appears.
+        if state == .starting {
+            cancelStartingTake()
             return
         }
+        if state == .idle, hud.isPreviewing {
+            dismissSettingsPreview()
+            return
+        }
+        guard !quitPending else { return }
+        guard state == .recording else { return }
+        // The take is claimed before anything suspends. A route reconciliation
+        // that is already on the audio queue holds it for as long as the device
+        // takes to restart, and the card must not stay on recording for that:
+        // the claim releases the clock and the observer here, and queues the one
+        // drain behind whatever the queue was doing.
+        let elapsedAtStop = recorder.elapsed
+        guard let claim = recorder.claimStop() else { return }
+        recordingElapsed = elapsedAtStop
+        cancelWatcher.stop()
+        let inFlightLiveTask = liveTask
+        liveTask = nil
+        let ledgerSnapshot = self.ledger
+            ?? TranscriptLedger(commitSeconds: maxSegmentSeconds(self.provider))
+        let capturedBook = config.microphoneCalibration
 
-        learn(from: recording)
-        refreshMenu()
         // The guard reads the frontmost application when the words are ready,
         // not when the recording stops: the transcript can arrive seconds
-        // later, and what is frontmost then is what a paste would land in.
-
-        transcriptionTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            guard TranscriptionLifecycle.end(
-                isTerminating: self.isTerminating,
-                isCancelled: Task.isCancelled
-            ) == .deliver else {
-                self.abandonTranscription()
-                return
-            }
-
-            let initialLedger = self.ledger ?? initialLedger
-            let lastTranscribed = initialLedger.provisional?.endSample ?? initialLedger.committedSamples
-            let uncoveredCount = max(0, samples - lastTranscribed)
-
-            // VAD check: determine whether trailing audio after the last live request contains speech
-            let uncoveredHasSpeech: Bool = {
-                guard uncoveredCount > 0 else { return false }
-                let start = max(0, samples - uncoveredCount)
-                guard start < samples else { return false }
-                let hop = 256
-                let frames = uncoveredCount / hop
-                guard frames > 0 else { return false }
-                var maxRMS = 0.0
-                for f in 0..<frames {
-                    var sumSq = 0.0
-                    let fStart = start + f * hop
-                    for i in fStart..<(fStart + hop) {
-                        let s = Double(recording.samples[i]) / 32768.0
-                        sumSq += s * s
-                    }
-                    let rms = sqrt(sumSq / Double(hop))
-                    if rms > maxRMS { maxRMS = rms }
-                    if maxRMS > 0.015 { return true }
-                }
-                return false
-            }()
-
-            // Fast-Path: If trailing audio is release silence/room noise, await the cancelled
-            // live task for the same second a last partial gets and promote its transcript
-            // immediately. TaskCompletion.wait is bounded even when the request ignores
-            // cancellation, so a stuck upload cannot hold the stop open.
-            if !uncoveredHasSpeech, let activeTask = inFlightLiveTask {
-                _ = await TaskCompletion.wait(for: activeTask, upTo: Live.partialWait)
-                let currentLedger = self.ledger ?? initialLedger
-                let candidateText = currentLedger.displayText
-                if !candidateText.isEmpty {
-                    Log.shared.info("transcription.fastpath.reusedProvisional", [
-                        "samples": .int(samples),
-                        "characters": .int(candidateText.count),
-                    ])
-                    self.ledger = nil
-                    self.handleTranscript(candidateText)
-                    return
-                }
-                // The partial said nothing usable, so the tail below is the one
-                // that sends this audio. The live task must not commit a chunk
-                // the tail is about to send again, and it must not keep a
-                // connection open while the stop waits for its own.
-                activeTask.cancel()
-            } else if let activeTask = inFlightLiveTask {
-                // Speech continued right to the stop; cancel the obsolete live
-                // task immediately so the final tail request is dispatched
-                // without waiting for it.
-                activeTask.cancel()
-            }
-
-            let currentLedger = self.ledger ?? initialLedger
-            self.ledger = nil
-
-            let trailingTolerance = uncoveredHasSpeech ? WAVSpec.sampleRate / 4 : WAVSpec.sampleRate * 2
-            switch currentLedger.stopPlan(sampleCount: samples, trailingTolerance: trailingTolerance) {
-            case .alreadyFinal(let text):
-                Log.shared.info("transcription.reused", [
-                    "samples": .int(samples),
-                    "characters": .int(text.count),
+        // later, and what is frontmost then is where a paste lands.
+        stopOwner = claim
+        transcriptionTask = StopResponse.perform(StopHandoff(
+            hud: hud,
+            ledger: ledgerSnapshot,
+            liveTask: inFlightLiveTask,
+            capturedBook: capturedBook,
+            currentBook: { [weak self] in self?.config.microphoneCalibration ?? [:] },
+            isTerminating: { [weak self] in self?.isTerminating ?? true },
+            ownsCard: { [weak self] in
+                guard let self else { return false }
+                return Self.cardBelongsTo(claim, state: self.state, owner: self.stopOwner)
+            },
+            enterWorking: { [weak self] in self?.state = .working },
+            markMenuNotRecording: { [weak self] in
+                self?.statusItem.menuState.isRecording = false
+            },
+            clearLedger: { [weak self] in self?.ledger = nil },
+            finishEmpty: { [weak self] in
+                guard let self else { return }
+                self.ledger = nil
+                self.finishWork()
+            },
+            applyCalibration: { [weak self] book, entry in
+                guard let self else { return }
+                // ConfigStore.onWrite schedules the debounced save.
+                // applicationWillTerminate calls saveConfiguration before it
+                // cancels this task, so a queued write is flushed on the way out.
+                self.config.microphoneCalibration = book
+                Log.shared.info("microphone.calibration.learned", [
+                    "recordings": .int(entry.observedSamples),
+                    "floor_dbfs": .double(entry.noiseFloorDBFS),
+                    "peak_dbfs": .double(entry.peakDBFS),
+                    "speech_dbfs": entry.speechDBFS.map(LogValue.double) ?? .null,
                 ])
-                self.handleTranscript(text)
-            case .send(let range, let prefix):
-                let piece = Array(recording.samples[range])
+            },
+            observe: { samples, peak, device, book, at in
+                await Task.detached(priority: .userInitiated) {
+                    stopCalibrationLearning(
+                        samples: samples,
+                        peakDBFS: peak,
+                        deviceUID: device,
+                        book: book,
+                        at: at
+                    )
+                }.value
+            },
+            transcribe: { [weak self] piece, prefix in
+                guard let self else { return "" }
                 let segments = self.plannedSegments(for: piece)
                 Log.shared.info("transcription.tail", [
                     "samples": .int(piece.count),
                     "segments": .int(segments),
-                    "final_samples": .int(currentLedger.committedSamples),
+                    "final_samples": .int(ledgerSnapshot.committedSamples),
                 ])
-                self.hud.showTranscribing()
-                do {
-                    let transcript = try await self.transcribe(
-                        samples: piece,
-                        prefix: prefix,
-                        total: segments
-                    )
-                    self.handleTranscript(transcript)
-                } catch is CancellationError {
-                    // A genuine cancellation: the task stopped, so no result is
-                    // coming. The card must not keep saying "transcribing".
-                    self.abandonTranscription()
-                } catch {
-                    guard TranscriptionLifecycle.end(
-                        isTerminating: self.isTerminating,
-                        isCancelled: Task.isCancelled
-                    ) == .deliver else {
-                        self.abandonTranscription()
-                        return
-                    }
-                    // The tail failed, but the audio the live loop already
-                    // committed is transcribed and final. Losing it because the
-                    // last few seconds failed would throw away the recording.
-                    let fallback = currentLedger.displayText
-                    if !fallback.isEmpty {
-                        Log.shared.info("transcription.tail.fallbackToPrefix", [
-                            "characters": .int(fallback.count),
-                        ])
-                        self.handleTranscript(fallback)
-                    } else {
-                        self.handleFailure(error)
-                    }
+                return try await self.transcribe(samples: piece, prefix: prefix, total: segments)
+            },
+            drained: { [weak self] recording in
+                self?.recordingElapsed = recording.duration
+                // The take's numbers are final here, after the converter's tail
+                // is in, which is why the line waits for the queue.
+                Log.shared.info("recording.stopped", [
+                    "duration_s": .double(recording.duration),
+                    "samples": .int(recording.sampleCount),
+                    "peak_dbfs": .double(recording.peakDBFS),
+                    "final_samples": .int(ledgerSnapshot.committedSamples),
+                    "final_chunks": .int(ledgerSnapshot.committedText.count),
+                ])
+            },
+            deliver: { [weak self] text, source, samples in
+                guard let self else { return }
+                switch source {
+                case .complete:
+                    Log.shared.info("transcription.reused", [
+                        "samples": .int(samples),
+                        "characters": .int(text.count),
+                    ])
+                case .live:
+                    Log.shared.info("transcription.fastpath.reusedProvisional", [
+                        "samples": .int(samples),
+                        "characters": .int(text.count),
+                    ])
+                case .tail:
+                    break
+                case .fallback:
+                    Log.shared.info("transcription.tail.fallbackToPrefix", [
+                        "characters": .int(text.count),
+                    ])
                 }
-            }
-        }
+                self.handleTranscript(text)
+            },
+            abandon: { [weak self] in self?.abandonTranscription() },
+            fail: { [weak self] error in self?.handleFailure(error) }
+        ), claim: claim)
     }
 
     /// Drops the recording without sending it anywhere.
     private func cancelRecording() {
+        if state == .starting {
+            cancelStartingTake()
+            return
+        }
+        if state == .idle, hud.isPreviewing {
+            dismissSettingsPreview()
+            return
+        }
         guard state == .recording else { return }
+        cancelWatcher.stop()
         stopLiveTranscription()
+        cancelPendingDelivery()
         ledger = nil
         recorder.cancel()
-        capturePurpose = .dictation
         state = .idle
+        stopOwner = nil
         refreshMenu()
         hud.cancel()
         hud.showMessage(text: "Recording cancelled.", symbol: "xmark.circle")
@@ -1297,8 +1557,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// samples are never scaled, filtered or gated, so the WAV a provider
     /// receives is byte for byte the WAV it would have received before the
     /// calibration existed.
+    /// The device a finished take's calibration belongs to, if any.
+    ///
+    /// A take that ran on two devices has no single microphone to teach: its
+    /// floor and its peak are a mixture, so nothing is folded for it. A take
+    /// whose device was never named has nothing to file against. The decision is
+    /// made from the take alone, which is what keeps a stale `recordingDeviceUID`
+    /// out of the calibration book.
+    nonisolated static func calibrationTarget(for recording: Recorder.Recording) -> String? {
+        guard !recording.spannedDevices else { return nil }
+        return recording.deviceUID
+    }
+
+    /// Whether a claimed stop still owns the card it took.
+    ///
+    /// The card is owned only while the app is working and this stop is the one
+    /// that took it. A newer stop replaces the owner, so an answer that arrives
+    /// after it cannot finish, hide or paste over the newer card.
+    nonisolated static func cardBelongsTo(
+        _ claim: Recorder.StopClaim,
+        state: State,
+        owner: Recorder.StopClaim?
+    ) -> Bool {
+        guard case .working = state else { return false }
+        return owner === claim
+    }
+
     private func learn(from recording: Recorder.Recording) {
-        guard let device = recordingDeviceUID,
+        guard let device = Self.calibrationTarget(for: recording),
               let observation = MicrophoneCalibrationBook.observation(
                   samples: recording.samples,
                   peakDBFS: recording.peakDBFS
@@ -1318,6 +1604,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "recordings": .int(entry?.observedSamples ?? 0),
             "floor_dbfs": .double(entry?.noiseFloorDBFS ?? 0),
             "peak_dbfs": .double(entry?.peakDBFS ?? 0),
+            "speech_dbfs": entry?.speechDBFS.map(LogValue.double) ?? .null,
         ])
     }
 
@@ -1395,44 +1682,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? await Task.sleep(for: Live.initialDelay)
             var failures = 0
             while !Task.isCancelled {
-                guard let self, self.state == .recording, let currentLedger = self.ledger else { return }
+                guard let self, self.state == .recording, !self.quitPending,
+                      let currentLedger = self.ledger else { return }
                 let sampleCount = self.recorder.sampleCount
                 if sampleCount <= 0 {
                     try? await Task.sleep(for: Live.emptyDelay)
                     continue
                 }
                 let committed = currentLedger.committedSamples
-                let openSamples = sampleCount > committed
-                    ? self.recorder.samples(in: committed..<sampleCount)
-                    : []
-                guard let vadPlan = currentLedger.evaluateVAD(in: openSamples) else {
+                let prepared = await LiveTranscriptionAnalyzer.shared.prepare(
+                    ledger: currentLedger,
+                    sampleCount: sampleCount,
+                    store: self.recorder.takeStore,
+                    noiseFloorDBFS: self.silenceFloorDBFS
+                )
+                guard !Task.isCancelled, self.state == .recording, !self.quitPending else { return }
+                let afterWait = CFAbsoluteTimeGetCurrent()
+                guard prepared.plan != nil else {
                     try? await Task.sleep(for: Live.interval)
                     continue
                 }
-                let reqRange: Range<Int>
-                let isCommit: Bool
-                let commitUpTo: Int
-                switch vadPlan {
-                case .sendSegment(let segRange, let upTo):
-                    reqRange = segRange
-                    isCommit = true
-                    commitUpTo = upTo
-                case .sendProvisional(let provRange):
-                    reqRange = provRange
-                    isCommit = false
-                    commitUpTo = provRange.upperBound
-                }
-                guard let wav = self.uploadWAV(range: reqRange) else {
+                guard let request = prepared.request else {
                     try? await Task.sleep(for: Live.emptyDelay)
                     continue
                 }
+                let reqRange = request.range
+                let isCommit = request.isCommit
+                let commitUpTo = request.commitUpTo
+                let wav = request.wav
+                self.hud.recordLiveTranscriptionMainActor(
+                    ms: (CFAbsoluteTimeGetCurrent() - afterWait) * 1000
+                )
                 do {
                     let text = try await provider.transcribe(
                         wav: wav,
                         model: settings.model,
                         language: settings.language
                     )
-                    guard !Task.isCancelled, self.state == .recording else { return }
+                    // The quit is asked on this turn as well as at the top of
+                    // the loop: a partial that lands after the gate closed must
+                    // not reach the ledger or the card.
+                    guard !Task.isCancelled, self.state == .recording, !self.quitPending else { return }
+                    let textReceived = CFAbsoluteTimeGetCurrent()
                     failures = 0
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     if isCommit {
@@ -1446,8 +1737,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.ledger?.recordProvisional(range: reqRange, text: trimmed)
                     }
                     self.hud.showLiveText(self.ledger?.displayText ?? "")
+                    let afterCommit = CFAbsoluteTimeGetCurrent()
+                    self.hud.recordLiveTranscriptionMainActor(ms: (afterCommit - textReceived) * 1000)
                 } catch {
-                    guard !Task.isCancelled, self.state == .recording else { return }
+                    guard !Task.isCancelled, self.state == .recording, !self.quitPending else { return }
                     if Self.isIgnoredLiveError(error) {
                         failures = 0
                     } else {
@@ -1519,6 +1812,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   - prefix: the text that is already final.
     ///   - total: how many requests the tail needs, for the card's progress.
     private func transcribe(samples: [Int16], prefix: String, total: Int) async throws -> String {
+        let selectedID = config.provider
+        if CredentialFirstUse.takeNeedsRebuild(
+            providerAvailable: provider != nil,
+            providerID: selectedID,
+            cache: credentials,
+            providerBuiltWithoutKey: providerBuiltWithoutKey,
+            buildGeneration: providerBuildGeneration
+        ) {
+            // The press that opened the take may still be waiting on a prompt,
+            // or the prompt may have resolved while its rebuild callback was
+            // queued behind this stop. A key that appeared in Settings is a new
+            // answer even when the provider itself is still non-nil.
+            if provider != nil { credentialRebuildGate.forget(selectedID) }
+            if !ProviderPreset.canBuildWithoutKey(config), credentials.resolvedKey(for: selectedID) == nil {
+                await CredentialFirstUse.resolve(selectedID, cache: credentials)
+            }
+            try Task.checkCancellation()
+            applyFirstUseRebuild(
+                providerID: selectedID,
+                signature: credentialPressSignature ?? providerSignature
+            )
+        }
         guard let provider else {
             throw ProviderError.unavailable("There is no provider.")
         }
@@ -1612,6 +1927,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///
     /// - Parameter message: why the microphone stopped, from the recorder.
     private func failRecording(_ message: String) {
+        // A failed take publishes a recovery through the same task the quit
+        // cancels; a failure that arrives while the quit is pending publishes
+        // nothing.
+        guard !quitPending else { return }
         guard state == .recording else { return }
         rewrite.reset()
         // Keep the live task instead of dropping it. Its request was
@@ -1624,6 +1943,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The samples of the failed take are still in the recorder: stop()
         // drains them and clears its copy, exactly like the normal stop.
         let recording = recorder.stop()
+        cancelWatcher.stop()
         state = .working
         recordingElapsed = recording.duration
         refreshMenu()
@@ -1682,7 +2002,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcriptionTask = Task { @MainActor [weak self] in
             guard let self else { return }
             guard TranscriptionLifecycle.end(
-                isTerminating: self.isTerminating,
+                isTerminating: self.isTerminating || self.quitPending,
                 isCancelled: Task.isCancelled
             ) == .deliver else {
                 self.abandonTranscription()
@@ -1693,6 +2013,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // the tail does not overlap it at the provider. The bound is
                 // the same second the stop gives a last partial.
                 _ = await TaskCompletion.wait(for: inFlightLiveTask, upTo: Live.partialWait)
+            }
+            // The await above is the gap a quit can land in. The task may not
+            // have been cancelled yet when the gate closed, so the quit is
+            // asked again before anything reaches the ledger or the card.
+            guard !Task.isCancelled, !self.quitPending else {
+                self.abandonTranscription()
+                return
             }
             let currentLedger = self.ledger ?? initialLedger
             self.ledger = nil
@@ -1721,12 +2048,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         prefix: prefix,
                         total: segments
                     )
+                    // The upload is the second await. A quit that arrived while
+                    // it was on the wire owns the take: the answer is dropped
+                    // without showing a card or refreshing the menu.
+                    guard !Task.isCancelled, !self.quitPending else {
+                        self.abandonTranscription()
+                        return
+                    }
                     self.handleTranscript(transcript)
                 } catch is CancellationError {
                     self.abandonTranscription()
                 } catch {
                     guard TranscriptionLifecycle.end(
-                        isTerminating: self.isTerminating,
+                        isTerminating: self.isTerminating || self.quitPending,
                         isCancelled: Task.isCancelled
                     ) == .deliver else {
                         self.abandonTranscription()
@@ -1746,10 +2080,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    #if DEBUG
+    /// Runs the failed-take recovery path for a test.
+    ///
+    /// The recovery is private because no production caller may start it; the
+    /// test drives the same task through this seam to prove a quit that lands
+    /// while it is in flight changes nothing on the card or in the menu.
+    func recoverForTesting(
+        _ recording: Recorder.Recording,
+        ledger: TranscriptLedger,
+        failure: String,
+        liveTask: Task<Void, Never>?
+    ) {
+        recover(recording, ledger: ledger, failure: failure, liveTask: liveTask)
+    }
+
+    /// Waits for the recovery task a test started.
+    func waitForRecoveryForTesting() async {
+        await transcriptionTask?.value
+    }
+    #endif
+
     /// Reports a failed take whose captured audio could not be transcribed.
     private func failRecoveredTake(_ failure: String, error: Error) {
         guard TranscriptionLifecycle.end(
-            isTerminating: isTerminating,
+            isTerminating: isTerminating || quitPending,
             isCancelled: Task.isCancelled
         ) == .deliver else {
             abandonTranscription()
@@ -1777,25 +2132,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the app is quitting, or after its task was cancelled, is dropped.
         // Cancelling a task is not a delivery.
         guard TranscriptionLifecycle.end(
-            isTerminating: isTerminating,
+            isTerminating: isTerminating || quitPending,
             isCancelled: Task.isCancelled
         ) == .deliver else {
             abandonTranscription()
             return
         }
-        // A question is answered, not delivered. It keeps nothing: no history
-        // entry, no rewrite, and nothing on the clipboard until the answer is
-        // ready to go where the person was writing.
-        if capturePurpose == .assistant {
-            capturePurpose = .dictation
-            assistant.ask(
-                transcript,
-                frontmost: frontmostAtPress,
-                frontmostName: frontmostNameAtPress
-            )
-            finishWork()
-            return
-        }
+        cancelPendingDelivery()
         lastTranscript = transcript
         let deliveredAt = Date()
         history = HistoryStore.adding(
@@ -1804,7 +2147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             to: history,
             limit: config.historyLimit
         )
-        HistoryStore.saveEntries(history, limit: config.historyLimit)
+        HistoryStore.saveEntriesAsync(history, limit: config.historyLimit)
         // The date of this delivery, which is not always the date the history
         // holds for these words: a sentence dictated again keeps the first date
         // it was heard. The card is given the same instant, so its rewrites are
@@ -1813,79 +2156,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         archive(transcript, at: deliveredAt)
         refreshMenu()
 
-        let dispatched = dispatchTranscript(
-            transcript: transcript,
-            config: config,
-            atPress: frontmostAtPress,
-            atDelivery: { Paste.frontmostApp },
-            accessibilityGranted: { Paste.accessibilityGranted },
-            ownBundleIdentifier: Bundle.main.bundleIdentifier ?? "",
-            shouldCaptureAnchor: {
-                rewrite.offersRewrite(
-                    for: transcript,
-                    delivery: .pasted,
-                    configuration: config.assistant.rewrite
-                )
-            },
-            captureAnchor: { text in rewrite.captureAnchor(insertedText: text) },
-            pasteboard: .live { text, insertion in
-                self.restoreClipboard(text, after: insertion)
+        let atPress = frontmostAtPress
+        let frontmostName = frontmostNameAtPress
+        let configSnapshot = config
+        let elapsedText = HUDClock.string(for: recordingElapsed)
+        let shouldCapture = rewrite.offersRewrite(
+            for: transcript,
+            delivery: .pasted,
+            configuration: configSnapshot.assistant.rewrite
+        )
+        let ownBundleIdentifier = Bundle.main.bundleIdentifier ?? ""
+        deliveryGeneration &+= 1
+        let generation = deliveryGeneration
+
+        deliveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let dispatched = await dispatchTranscriptAsync(
+                transcript: transcript,
+                config: configSnapshot,
+                atPress: atPress,
+                atDelivery: { Paste.frontmostApp },
+                accessibilityGranted: { Paste.accessibilityGranted },
+                ownBundleIdentifier: ownBundleIdentifier,
+                shouldCaptureAnchor: { shouldCapture },
+                captureAnchor: { [weak self] text in
+                    guard let self else { return nil }
+                    return await self.rewrite.captureAnchorAsync(insertedText: text)
+                },
+                copy: { text in Paste.copy(text) },
+                pasteCommand: { await Paste.pasteCommandAsync() },
+                restore: { [weak self] text, insertion in
+                    self?.restoreClipboard(text, after: insertion)
+                }
+            )
+            guard self.deliveryGeneration == generation else { return }
+            self.deliveryTask = nil
+            guard TranscriptionLifecycle.end(
+                isTerminating: self.isTerminating || self.quitPending,
+                isCancelled: Task.isCancelled
+            ) == .deliver else {
+                self.abandonTranscription()
+                return
             }
-        )
-        let grammar = dispatched.grammar
-        let decision = dispatched.decision
-        let delivery = dispatched.delivery
-        rewriteAnchor = dispatched.anchor
-        switch decision {
-        case .paste:
-            break
-        case .copy(let reason):
-            if reason == .accessibilityMissing, !hasRequestedAccessibility {
-                hasRequestedAccessibility = true
-                Paste.requestAccessibility()
+
+            let grammar = dispatched.grammar
+            let decision = dispatched.decision
+            let delivery = dispatched.delivery
+            self.rewriteAnchor = dispatched.anchor
+            switch decision {
+            case .paste:
+                break
+            case .copy(let reason):
+                if reason == .accessibilityMissing, !self.hasRequestedAccessibility {
+                    self.hasRequestedAccessibility = true
+                    Paste.requestAccessibility()
+                }
+                self.logSkippedPaste(reason)
             }
-            logSkippedPaste(reason)
+            self.hud.showTranscript(
+                text: transcript,
+                delivery: delivery,
+                elapsed: elapsedText,
+                destination: decision == .paste ? frontmostName : nil,
+                grammar: grammar?.target,
+                grammarWasLong: grammar?.wasLong ?? false
+            )
+            if let grammar {
+                Log.shared.info("grammar.applied", [
+                    "target": .string(grammar.target.rawValue),
+                    "was_long": .bool(grammar.wasLong),
+                    "characters": .int(grammar.text.count),
+                ])
+            }
+            // The rewrite layer belongs to the card that was just shown. Its state
+            // changes come back through `rewrite.onChange`, so the card is the only
+            // one that knows what is on it. A sentence that was dictated before
+            // starts from the versions its entry already kept, so dictating the same
+            // words again cannot erase them; the next generation takes the id after
+            // the last saved one.
+            self.rewrite.begin(
+                text: transcript,
+                delivery: delivery,
+                destination: decision == .paste ? frontmostName : nil,
+                configuration: configSnapshot.assistant.rewrite,
+                anchor: self.rewriteAnchor,
+                saved: self.storedRewrite(for: transcript),
+                at: deliveredAt
+            )
+            self.rewriteAnchor = nil
+            if configSnapshot.logTranscripts {
+                Log.shared.info("transcript", ["text": .string(transcript)])
+            } else {
+                Log.shared.info("transcript.received", ["characters": .int(transcript.count)])
+            }
+            if self.rewrite.card != nil {
+                Log.shared.info("rewrite.offered", ["styles": .int(self.rewrite.card?.choices.count ?? 0)])
+            }
+            self.finishWork()
         }
-        hud.showTranscript(
-            text: transcript,
-            delivery: delivery,
-            elapsed: HUDClock.string(for: recordingElapsed),
-            destination: decision == .paste ? frontmostNameAtPress : nil,
-            grammar: grammar?.target,
-            grammarWasLong: grammar?.wasLong ?? false
-        )
-        if let grammar {
-            Log.shared.info("grammar.applied", [
-                "target": .string(grammar.target.rawValue),
-                "was_long": .bool(grammar.wasLong),
-                "characters": .int(grammar.text.count),
-            ])
-        }
-        // The rewrite layer belongs to the card that was just shown. Its state
-        // changes come back through `rewrite.onChange`, so the card is the only
-        // one that knows what is on it. A sentence that was dictated before
-        // starts from the versions its entry already kept, so dictating the same
-        // words again cannot erase them; the next generation takes the id after
-        // the last saved one.
-        rewrite.begin(
-            text: transcript,
-            delivery: delivery,
-            destination: decision == .paste ? frontmostNameAtPress : nil,
-            configuration: config.assistant.rewrite,
-            anchor: rewriteAnchor,
-            saved: storedRewrite(for: transcript),
-            at: deliveredAt
-        )
-        rewriteAnchor = nil
-        if config.logTranscripts {
-            Log.shared.info("transcript", ["text": .string(transcript)])
-        } else {
-            Log.shared.info("transcript.received", ["characters": .int(transcript.count)])
-        }
-        if rewrite.card != nil {
-            Log.shared.info("rewrite.offered", ["styles": .int(rewrite.card?.choices.count ?? 0)])
-        }
-        finishWork()
     }
 
     /// Records why the transcript was copied instead of pasted.
@@ -1916,7 +2284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleFailure(_ error: Error) {
         guard TranscriptionLifecycle.end(
-            isTerminating: isTerminating,
+            isTerminating: isTerminating || quitPending,
             isCancelled: Task.isCancelled
         ) == .deliver else {
             abandonTranscription()
@@ -1958,7 +2326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 "committed_characters": .int(committed.count),
             ])
         }
-        if isTerminating {
+        if isTerminating || quitPending {
             // The app hides the card on its way out; there is no menu left to
             // refresh, and device work during teardown would be wasted.
             ledger = nil
@@ -1971,12 +2339,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func finishWork() {
+        stopOwner = nil
         stopLiveTranscription()
         ledger = nil
-        // The purpose belongs to the take that just ended. Nothing reads it
-        // again until a shortcut sets it, and a stale one would misroute the
-        // next transcript.
-        capturePurpose = .dictation
         state = .idle
         refreshMenu()
     }
@@ -2030,10 +2395,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         lastTranscript = transcript
         Paste.copy(transcript)
-        if Paste.accessibilityGranted, Paste.pasteCommand() {
-            showRememberedTranscript(transcript, delivery: .pasted)
+        if Paste.accessibilityGranted {
+            Task { @MainActor in
+                let pasted = await Paste.pasteCommandAsync()
+                guard !isTerminating else { return }
+                showRememberedTranscript(transcript, delivery: pasted ? .pasted : .copied)
+                hud.showActionFeedback(for: .paste, outcome: pasted ? .pasted : .fallbackCopied)
+            }
         } else {
             showRememberedTranscript(transcript, delivery: .copied)
+            hud.showActionFeedback(for: .paste, outcome: .fallbackCopied)
         }
         Log.shared.info("transcript.pasted.again")
     }
@@ -2046,6 +2417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastTranscript = transcript
         Paste.copy(transcript)
         showRememberedTranscript(transcript, delivery: .copied)
+        hud.showActionFeedback(for: .copy, outcome: .copied)
         Log.shared.info("transcript.copied.again")
     }
 
@@ -2094,7 +2466,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // that was frontmost is being activated again: the keystroke has to
             // wait for it to be the one receiving keys.
             try? await Task.sleep(for: .milliseconds(140))
-            let delivery: HUDDelivery = Paste.pasteCommand() ? .pasted : .copied
+            let delivery: HUDDelivery = await Paste.pasteCommandAsync() ? .pasted : .copied
+            guard !isTerminating else { return }
             showRememberedTranscript(text, delivery: delivery)
             Log.shared.info("palette.inserted", [
                 "characters": .int(text.count),
@@ -2197,7 +2570,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         history = []
-        HistoryStore.saveEntries(history)
+        HistoryStore.saveEntriesAsync(history)
         lastTranscript = nil
         refreshMenu()
         // An open history window must not keep showing transcripts that no
@@ -2213,7 +2586,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Devices and language
 
     private func selectMicrophone(_ id: String?) {
-        guard state != .recording else {
+        if state == .recording || state == .starting {
             hud.showMessage(text: "The microphone cannot change during a recording.", symbol: "mic.slash")
             return
         }
@@ -2250,9 +2623,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Builds the provider the configuration selects.
     private func rebuildProvider() {
         providerSignature = ProviderSignature(provider: config.provider, providers: config.providers)
+        providerBuildGeneration = credentials.generation(for: config.provider)
+        providerBuiltWithoutKey = credentials.resolvedKey(for: config.provider) == nil
         refreshReadyCard()
         do {
-            provider = try ProviderRegistry.selectedProvider(config: config, credentials: credentials)
+            provider = try ProviderRegistry.selectedProvider(config: config, credentials: resolvedCredentialCache)
             Log.shared.info("provider.selected", ["provider": .string(provider?.id ?? "")])
         } catch {
             provider = nil
@@ -2279,28 +2654,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // A probe never competes with a recording or a transcription:
                 // it is a network round trip to every provider, and the user
                 // is waiting for words, not for a menu.
-                guard self.state == .idle else { return }
+                guard self.state == .idle, !self.hud.isVisible else { return }
                 self.refreshProviders()
             }
         }
     }
 
-    /// Resolves the keys once, off the main actor.
+    /// A cache view that only answers from keys already in memory.
     ///
-    /// A decrypting `SecItemCopyMatching` blocks for as long as the Keychain
-    /// takes — on a re-signed build this was measured at about fourteen
-    /// seconds — so the one read a session needs happens here, on a background
-    /// task, instead of inside a frame.
-    private func warmCredentials() {
+    /// Building a provider is synchronous and often happens on the main actor.
+    /// It must never be the call that reads the Keychain: the first read is made
+    /// by an explicit action, off the main actor and awaited to its answer.
+    private var resolvedCredentialCache: CredentialCache {
         let credentials = self.credentials
+        return CredentialCache(reader: { id in
+            guard let key = credentials.resolvedKey(for: id), !key.isEmpty else { return .missing }
+            return .key(key)
+        }, logsReads: false)
+    }
+
+    /// Reads the bundle on the first recording that needs this provider.
+    ///
+    /// Nothing at launch decrypts an item. The read runs off the main actor and
+    /// is awaited to its real answer: a SecurityAgent prompt can stay up longer
+    /// than any deadline, and the provider must be rebuilt when it is answered.
+    private func resolveCredentialForFirstUse() {
+        let id = config.provider
+        let signature = providerSignature
+        let needsRebuild = CredentialFirstUse.takeNeedsRebuild(
+            providerAvailable: provider != nil,
+            providerID: id,
+            cache: credentials,
+            providerBuiltWithoutKey: providerBuiltWithoutKey,
+            buildGeneration: providerBuildGeneration
+        )
+        guard needsRebuild else { return }
+        // The key can arrive in Settings while a provider built without it is
+        // still running. An old gate decision must not suppress that rebuild.
+        if provider != nil { credentialRebuildGate.forget(id) }
+        if ProviderPreset.canBuildWithoutKey(config) || credentials.resolvedKey(for: id) != nil {
+            applyFirstUseRebuild(providerID: id, signature: signature)
+            return
+        }
+        let credentials = self.credentials
+        guard !credentials.readFailed(id) else { return }
         Task.detached(priority: .userInitiated) { [weak self] in
-            credentials.warm(ProviderRegistry.builtInIDs)
-            await MainActor.run {
-                guard let self else { return }
-                self.rebuildProvider()
-                self.refreshProviders()
-                self.refreshReadyCard()
+            await CredentialFirstUse.resolve(id, cache: credentials) {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.applyFirstUseRebuild(providerID: id, signature: signature)
+                }
             }
+        }
+    }
+
+    /// The one main-actor decision shared by the press callback and a Stop.
+    private func applyFirstUseRebuild(providerID: String, signature: ProviderSignature?) {
+        guard credentialPressID == providerID, credentialPressSignature == signature else { return }
+        let ready = ProviderPreset.canBuildWithoutKey(config)
+            || (credentials.isResolved(providerID) && credentials.resolvedKey(for: providerID) != nil)
+        credentialRebuildGate.perform(
+            providerID: providerID,
+            selectedProviderID: config.provider,
+            signatureMatches: providerSignature == signature,
+            ready: ready,
+            generation: credentials.generation(for: providerID)
+        ) {
+            self.rebuildProvider()
+            self.refreshProviders()
+            self.refreshReadyCard()
         }
     }
 
@@ -2318,7 +2740,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// this from the main actor froze the launch, island and all.
     private func refreshProviders() {
         let current = config
-        let credentials = self.credentials
+        let resolved = resolvedCredentialCache
         Task.detached(priority: .userInitiated) { [weak self] in
             let entries = MenuBuilder.providerRows(config: current) { id in
                 CredentialStore.hasKey(for: id)
@@ -2326,7 +2748,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let available = await ProviderRegistry.availableProviders(
                 config: current,
-                credentials: credentials
+                credentials: resolved
             )
 
             var map: [String: Bool] = [:]
@@ -2372,34 +2794,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prompt.explanation = "The key for \(name) is kept in the Keychain, never in the configuration file."
         prompt.completion = { [weak self] secret in
             guard let self, let secret else { return }
-            do {
-                try CredentialStore.write(secret, providerID: providerID)
-                // The key is verified by reading it back. The read goes through
-                // the session cache, so the verification is also the one read
-                // the rest of the session will use.
-                credentials.invalidate(providerID)
-                let readBack = credentials.key(for: providerID)
-                guard readBack == secret else {
-                    throw ProviderError.invalidResponse("the Keychain did not give the key back")
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+                    try await CredentialStore.write(trimmed, providerID: providerID)
+                    self.credentials.invalidate(providerID)
+                    self.credentials.store(trimmed, for: providerID)
+                    AssistantStoredKeysCache.invalidate()
+                    // Defense in depth: if the key ever reached a log line by
+                    // mistake, the logger would write stars instead.
+                    Log.shared.registerSecret(secret)
+                    Log.shared.info("credential.stored", ["provider": .string(providerID)])
+                    self.rebuildProvider()
+                    self.refreshProviders()
+                    self.hud.showMessage(
+                        text: "Key saved. Using \(self.selectedProviderName).",
+                        symbol: "key"
+                    )
+                } catch {
+                    Log.shared.error("credential.failed", ["provider": .string(providerID)])
+                    self.hud.showMessage(text: error.localizedDescription, action: nil)
                 }
-                // Defense in depth: if the key ever reached a log line by
-                // mistake, the logger would write stars instead.
-                Log.shared.registerSecret(secret)
-                Log.shared.info("credential.stored", ["provider": .string(providerID)])
-                // The key belongs to the service the user chose, so nothing is
-                // inferred from it and no endpoint is rewritten. The provider
-                // is rebuilt even when the configuration did not change: the
-                // instance built before the save does not carry the new key
-                // yet.
-                self.rebuildProvider()
-                self.refreshProviders()
-                self.hud.showMessage(
-                    text: "Key saved. Using \(self.selectedProviderName).",
-                    symbol: "key"
-                )
-            } catch {
-                Log.shared.error("credential.failed", ["provider": .string(providerID)])
-                self.hud.showMessage(text: error.localizedDescription, action: nil)
             }
         }
         secretPrompt = prompt
@@ -2419,7 +2835,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   - preset: the row the user picked.
     ///   - secret: the key, empty when the row needs none.
     /// - Returns: what the view shows.
-    private func connect(_ preset: ProviderPreset, key secret: String) -> ProviderConnectionResult {
+    private func connect(_ preset: ProviderPreset, key secret: String) async -> ProviderConnectionResult {
         let key = secret.trimmingCharacters(in: .whitespacesAndNewlines)
         if preset.key == .none {
             preset.apply(to: &config)
@@ -2434,14 +2850,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .failure("Paste a key first.", providerName: preset.name)
         }
         do {
-            try CredentialStore.write(key, providerID: preset.providerID)
+            try await CredentialStore.write(key, providerID: preset.providerID)
             credentials.invalidate(preset.providerID)
-            guard credentials.key(for: preset.providerID) == key else {
-                return .failure(
-                    "The Keychain did not give the key back.",
-                    providerName: preset.name
-                )
-            }
+            credentials.store(key, for: preset.providerID)
+            AssistantStoredKeysCache.invalidate()
             // Defense in depth: if the key ever reached a log line by mistake,
             // the logger writes stars instead.
             Log.shared.registerSecret(key)
@@ -2513,7 +2925,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else {
                     return .failure("Dot is not running.", providerName: preset.name)
                 }
-                return self.connect(preset, key: key)
+                return await self.connect(preset, key: key)
             },
             onFinish: { [weak self] in
                 self?.markWelcomeSeen()
@@ -2578,6 +2990,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Settings
 
+    private func dismissSettingsPreview() {
+        pendingPreviewWorkItem?.cancel()
+        pendingPreviewWorkItem = nil
+        stopPreviewEscapeWatch()
+        hud.dismissPreview()
+    }
+
+    private func startPreviewEscapeWatch() {
+        cancelWatcher.watch(keyCode: Self.escapeKeyCode, reportsUnannouncedPresses: true)
+        guard previewEscapeMonitor == nil else { return }
+        previewEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  event.keyCode == Self.escapeKeyCode,
+                  self.state == .idle,
+                  self.hud.isPreviewing else {
+                return event
+            }
+            self.dismissSettingsPreview()
+            return nil
+        }
+    }
+
+    private func stopPreviewEscapeWatch() {
+        if let monitor = previewEscapeMonitor {
+            NSEvent.removeMonitor(monitor)
+            previewEscapeMonitor = nil
+        }
+        if state == .idle {
+            cancelWatcher.stop()
+        }
+    }
+
     private func openSettings(tab: Int = 0) {
         let currentProviders = providers
         settingsController.show(
@@ -2590,11 +3034,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.hud.dwell = self.config.hudDwellSeconds
                 self.hud.visualizer = self.config.hudVisualizer
                 self.hud.material = self.config.hudMaterial
+                self.applyMotionPreference()
                 // A shorter history takes effect now rather than on the next
                 // dictation: the window is open on the list being shortened.
                 if self.history.count > self.config.historyLimit {
                     self.history = Array(self.history.prefix(self.config.historyLimit))
-                    HistoryStore.saveEntries(self.history, limit: self.config.historyLimit)
+                    HistoryStore.saveEntriesAsync(self.history, limit: self.config.historyLimit)
                     self.refreshMenu()
                 }
                 // The mode is read again on every press and release, so a switch
@@ -2606,30 +3051,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         "mode": .string(self.config.recordingMode.rawValue),
                     ])
                 }
-                self.applyCalibration(for: MicrophoneCatalog.recordingDeviceUID(
-                    configured: self.config.microphoneDeviceUID
-                ))
-                // Asking for a material or visualizer is asking to see it. Without
-                // this the tile only moves its own selection ring and the island,
-                // which is not on screen, is unchanged in every way a person can see.
+                if self.appliedMouseButton != self.config.mouseTriggerButton {
+                    self.applyMouseTrigger()
+                }
+                if self.appliedMicrophoneUID != self.config.microphoneDeviceUID {
+                    self.appliedMicrophoneUID = self.config.microphoneDeviceUID
+                    self.applyCalibration(for: MicrophoneCatalog.recordingDeviceUID(
+                        configured: self.config.microphoneDeviceUID
+                    ))
+                }
+                // Asking for a material or visualizer is asking to see it; defer by
+                // one runloop turn so the Settings click completes before HUD creation.
                 if self.config.hudMaterial != self.previewedMaterial {
-                    self.previewedMaterial = self.config.hudMaterial
-                    self.hud.previewMaterial(self.config.hudMaterial)
+                    let targetMaterial = self.config.hudMaterial
+                    self.previewedMaterial = targetMaterial
+                    self.pendingPreviewWorkItem?.cancel()
+                    let work = DispatchWorkItem { [weak self] in
+                        guard let self,
+                              self.state == .idle,
+                              self.settingsController.isVisible,
+                              self.config.hudMaterial == targetMaterial else { return }
+                        self.hud.previewMaterial(targetMaterial)
+                        self.startPreviewEscapeWatch()
+                    }
+                    self.pendingPreviewWorkItem = work
+                    DispatchQueue.main.async(execute: work)
                 }
                 if self.config.hudVisualizer != self.previewedVisualizer {
-                    self.previewedVisualizer = self.config.hudVisualizer
-                    if self.state == .idle {
-                        self.hud.previewVisualizer(self.config.hudVisualizer)
+                    let targetVisualizer = self.config.hudVisualizer
+                    self.previewedVisualizer = targetVisualizer
+                    self.pendingPreviewWorkItem?.cancel()
+                    let work = DispatchWorkItem { [weak self] in
+                        guard let self,
+                              self.state == .idle,
+                              self.settingsController.isVisible,
+                              self.config.hudVisualizer == targetVisualizer else { return }
+                        self.hud.previewVisualizer(targetVisualizer)
+                        self.startPreviewEscapeWatch()
                     }
+                    self.pendingPreviewWorkItem = work
+                    DispatchQueue.main.async(execute: work)
                 }
                 self.applyAppearance()
-                self.refreshMenu()
-                // One line, no audio and no transcript: a settings change that
-                // ever costs real time shows up in the log as a number instead
-                // of as a feeling.
-                let milliseconds = (CACurrentMediaTime() - started) * 1000
-                if milliseconds > 40 {
-                    Log.shared.warn("settings.slow", ["ms": .double(milliseconds)])
+                let nextMenuSignature = MenuConfigSignature(self.config)
+                if nextMenuSignature != self.appliedMenuSignature {
+                    self.appliedMenuSignature = nextMenuSignature
+                    self.scheduleMenuRefresh()
                 }
                 // Only a change the provider is built from justifies rebuilding
                 // it. A colour, a dwell or a microphone does not, and rebuilding
@@ -2638,18 +3105,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     provider: self.config.provider,
                     providers: self.config.providers
                 )
-                guard signature != self.providerSignature else { return }
-                self.rebuildProvider()
-                self.refreshProviders()
+                let providerRebuilt = signature != self.providerSignature
+                if providerRebuilt {
+                    self.rebuildProvider()
+                    self.refreshProviders()
+                }
+                // One line, no audio and no transcript: a settings change that
+                // ever costs real time shows up in the log as a number instead
+                // of as a feeling. The clock stops after the provider work,
+                // because a change that rebuilds it is the slow one and a
+                // measurement that ends before it is the wrong number.
+                let milliseconds = (CACurrentMediaTime() - started) * 1000
+                if milliseconds > 40 {
+                    Log.shared.warn("settings.slow", [
+                        "ms": .double(milliseconds),
+                        "provider_rebuilt": .bool(providerRebuilt),
+                    ])
+                }
             },
             onSetAPIKey: { [weak self] secret, providerID in
                 guard let self else { return "Dot is not running." }
                 do {
-                    try CredentialStore.write(secret, providerID: providerID)
+                    let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+                    try await CredentialStore.write(trimmed, providerID: providerID)
                     credentials.invalidate(providerID)
-                    guard credentials.key(for: providerID) == secret else {
-                        return "The Keychain did not give the key back."
-                    }
+                    credentials.store(trimmed, for: providerID)
+                    AssistantStoredKeysCache.invalidate()
                     Log.shared.registerSecret(secret)
                     // The endpoint may be rewritten by the view from the same
                     // key; rebuilding here makes the new key usable even when
@@ -2664,8 +3145,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onDeleteAPIKey: { [weak self] providerID in
                 guard let self else { return "Dot is not running." }
                 do {
-                    try CredentialStore.delete(providerID: providerID)
+                    try await CredentialStore.delete(providerID: providerID)
                     self.credentials.invalidate(providerID)
+                    AssistantStoredKeysCache.invalidate()
                     self.rebuildProvider()
                     self.refreshProviders()
                     return nil
@@ -2677,9 +3159,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return "Dot is not running." }
                 do {
                     for preset in ProviderPreset.all {
-                        try CredentialStore.delete(providerID: preset.providerID)
+                        try await CredentialStore.delete(providerID: preset.providerID)
                     }
                     self.credentials.invalidateAll()
+                    AssistantStoredKeysCache.invalidate()
                     self.rebuildProvider()
                     self.refreshProviders()
                     return nil
@@ -2696,11 +3179,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onChangePaletteShortcut: { [weak self] in
                 self?.choosePaletteShortcut()
             },
-            onChangeAssistantShortcut: { [weak self] in
-                self?.chooseAssistantShortcut()
-            },
             onOpenWelcome: { [weak self] in
                 self?.openWelcome()
+            },
+            onClose: { [weak self] in
+                self?.dismissSettingsPreview()
             }
         )
     }
@@ -2745,6 +3228,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Shortcuts
 
+    private func applyMotionPreference() {
+        hud.reducesMotionPreference = config.reduceMotion
+        DotMotion.reducesMotionOverride = config.reduceMotion ? true : nil
+    }
+
+    private func applyMouseTrigger() {
+        // A tap that cannot be built yet (no Accessibility) retries on its own.
+        appliedMouseButton = config.mouseTriggerButton
+        mouseTrigger.start(button: config.mouseTriggerButton)
+    }
+
     private func registerHotkeys() {
         hotkeys?.uninstall()
         let manager = GlobalHotkeyManager { [weak self] identifier in
@@ -2753,7 +3247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch identifier {
                 case GlobalHotkeyManager.recordIdentifier,
                      GlobalHotkeyManager.aliasIdentifier:
-                    self.hotkeyPressed()
+                    self.recordPressed(from: .keyboard)
                 case GlobalHotkeyManager.pasteIdentifier:
                     self.pasteLastTranscript()
                 case GlobalHotkeyManager.paletteIdentifier:
@@ -2781,19 +3275,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             Log.shared.error("hotkey.register.failed", ["hotkey": .string(config.pasteHotkey.label)])
         }
-        // The assistant's saved shortcut is deliberately not registered: the
-        // product has no spoken assistant, and a key that is bound but answers
-        // nothing would only take the combination from another app. The hotkey
-        // itself stays in the configuration file, so a person's choice is not
-        // destroyed by this build.
-        if config.assistantHotkey == config.hotkey
-            || config.assistantHotkey == config.pasteHotkey
-            || config.assistantHotkey == config.paletteHotkey {
-            Log.shared.info("hotkey.assistant.retired", [
-                "hotkey": .string(config.assistantHotkey.label),
-                "reason": .string("collides with an active shortcut"),
-            ])
-        }
         if manager.register(config.paletteHotkey, identifier: GlobalHotkeyManager.paletteIdentifier) {
             Log.shared.info("hotkey.registered", ["hotkey": .string(config.paletteHotkey.label), "role": .string("palette")])
         } else {
@@ -2816,14 +3297,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case record
         case paste
         case palette
-        case assistant
 
         var title: String {
             switch self {
             case .record: "Set Record Shortcut"
             case .paste: "Set Paste Shortcut"
             case .palette: "Set Palette Shortcut"
-            case .assistant: "Set Assistant Shortcut"
             }
         }
 
@@ -2832,7 +3311,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .record: "record"
             case .paste: "paste"
             case .palette: "palette"
-            case .assistant: "assistant"
             }
         }
 
@@ -2841,7 +3319,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .record: "Shortcut"
             case .paste: "Paste shortcut"
             case .palette: "Palette shortcut"
-            case .assistant: "Assistant shortcut"
             }
         }
     }
@@ -2858,15 +3335,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         chooseShortcut(for: .palette)
     }
 
-    /// Opens the recorder for the assistant's shortcut.
-    func chooseAssistantShortcut() {
-        chooseShortcut(for: .assistant)
-    }
-
-    /// Opens the shortcut recorder for one of the two global shortcuts.
+    /// Opens the shortcut recorder for one of the global shortcuts.
     ///
-    /// The other shortcut is refused while one is typed, so the record and
-    /// paste shortcuts can never end up on the same combination.
+    /// The other shortcuts are refused while one is typed, so shortcuts can
+    /// never end up on the same combination.
     private func chooseShortcut(for role: ShortcutRole) {
         guard shortcutRecorder == nil else { return }
         // Dot's own shortcuts must not answer while a new one is typed.
@@ -2884,7 +3356,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .record: self.config.hotkey = hotkey
                 case .paste: self.config.pasteHotkey = hotkey
                 case .palette: self.config.paletteHotkey = hotkey
-                case .assistant: self.config.assistantHotkey = hotkey
                 }
                 self.saveConfiguration()
                 self.registerHotkeys()
@@ -3012,16 +3483,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func saveConfiguration() {
-        // A queued save is superseded: this one writes the current values.
+        // A queued save is superseded: flush background writes before writing final quit state.
         pendingSave?.cancel()
         pendingSave = nil
-        // The tool log asks off the main actor whether it may write argument
-        // values, so the answer is mirrored where it can read it.
-        logArguments.set(config.logTranscripts)
-        do {
-            try config.save()
-        } catch {
-            Log.shared.error("config.save.failed", ["error": .string(error.localizedDescription)])
+        let snapshot = config
+        configSaveQueue.sync {
+            do {
+                try snapshot.save()
+            } catch {
+                Log.shared.error("config.save.failed", ["error": .string(error.localizedDescription)])
+            }
+        }
+    }
+
+    private func saveConfigurationAsync() {
+        let snapshot = config
+        configSaveQueue.async {
+            do {
+                try snapshot.save()
+            } catch {
+                Task { @MainActor in
+                    Log.shared.error("config.save.failed", ["error": .string(error.localizedDescription)])
+                }
+            }
         }
     }
 
@@ -3030,13 +3514,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A text field writes its value on every keystroke. Saving on each one
     /// touched the disk dozens of times for one word, so a settings field
     /// waited on the file it was editing. Everything that changes behaviour
-    /// rather than text still saves immediately.
+    /// rather than text still saves off the main thread.
     private func scheduleConfigurationSave() {
         pendingSave?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingSave = nil
-            self.saveConfiguration()
+            self.saveConfigurationAsync()
         }
         pendingSave = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)

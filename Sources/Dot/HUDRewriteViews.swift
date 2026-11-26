@@ -43,12 +43,13 @@ extension HUDView {
                         draftBody(card)
                             .font(HUDTheme.transcriptFont)
                             .lineSpacing(HUDTheme.transcriptLineSpacing)
-                            .foregroundStyle(HUDTheme.ink)
+                            .hudInk(.primary)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, HUDTheme.padding)
                             .padding(.vertical, HUDTheme.verticalPadding)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(DotScrollViewConfigurator(surface: "hud"))
                             // A body that has no words yet is drawn at nothing, so
                             // the first line of a rewrite does not sit on the
                             // surface as a stray mark before the stream fills it.
@@ -59,7 +60,6 @@ extension HUDView {
                             )
                     }
                     .scrollIndicators(.never)
-                    .scrollBounceBehavior(.basedOnSize)
                     .defaultScrollAnchor(.top)
                     .accessibilityLabel(Text(card.selectedVersion.accessibilityLabel))
                     .accessibilityValue(Text(versionPosition(card)))
@@ -90,17 +90,15 @@ extension HUDView {
     @ViewBuilder
     func draftBody(_ card: RewriteCard) -> some View {
         let text = card.visibleBodyText
-        let runs = RewriteDraftRamp.runs(
+        FrameRewriteDraftBody(
+            source: frameSource,
+            text: text,
             chunks: card.draftChunks,
-            length: text.count,
-            time: model.time,
-            reduceMotion: reduceMotion
+            reduceMotion: reduceMotion,
+            content: { text, runs in
+                AnyView(runs.isEmpty ? Text(text) : HUDView.rampedText(text, runs: runs, usesSystemInk: usesSystemInk))
+            }
         )
-        if runs.isEmpty {
-            Text(text)
-        } else {
-            rampedText(text, runs: runs)
-        }
     }
 
     /// One paragraph, with each arriving run drawn at its own strength.
@@ -112,8 +110,13 @@ extension HUDView {
     /// - Parameters:
     ///   - text: the whole draft.
     ///   - runs: the character ranges that are still arriving, in ascending order.
+    ///   - usesSystemInk: whether the arriving words take the semantic primary ink.
     /// - Returns: the paragraph in pieces.
-    private func rampedText(_ text: String, runs: [RewriteDraftRamp.Run]) -> Text {
+    static func rampedText(
+        _ text: String,
+        runs: [RewriteDraftRamp.Run],
+        usesSystemInk: Bool
+    ) -> Text {
         var composed = Text("")
         var cursor = text.startIndex
         for run in runs {
@@ -124,7 +127,9 @@ extension HUDView {
                 composed = composed + Text(String(text[cursor ..< lower]))
             }
             composed = composed + Text(String(text[lower ..< upper]))
-                .foregroundStyle(HUDTheme.ink.opacity(run.opacity))
+                .foregroundStyle(usesSystemInk
+                    ? AnyShapeStyle(.primary.opacity(run.opacity))
+                    : AnyShapeStyle(HUDTheme.ink.opacity(run.opacity)))
             cursor = upper
         }
         if cursor < text.endIndex {
@@ -150,7 +155,7 @@ extension HUDView {
             if let note = card.note {
                 Text(note)
                     .font(DotType.font(HUDRewriteLayout.noteFontSize, .regular))
-                    .foregroundStyle(HUDTheme.ink2)
+                    .hudInk(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -161,7 +166,7 @@ extension HUDView {
             if let blocked {
                 Text(blocked)
                     .font(DotType.font(HUDRewriteLayout.noteFontSize, .medium))
-                    .foregroundStyle(HUDTheme.live)
+                    .foregroundStyle(HUDTheme.warning)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, HUDTheme.padding)
@@ -199,14 +204,63 @@ extension HUDView {
     /// The pinned original, the scrollable style chips and the arrows, in one
     /// row, left-aligned with the body text.
     func chipRow(_ card: RewriteCard) -> some View {
+        FrameRewriteChipRow(
+            source: frameSource,
+            card: card,
+            reduceMotion: reduceMotion,
+            ending: model.rewriteEnding,
+            actions: actions
+        )
+    }
+
+    /// How many lines the section under the body draws.
+    func noteLineCount(_ card: RewriteCard) -> Int {
+        var lines = card.note == nil ? 0 : 1
+        if case .blocked = card.phase { lines += 1 }
+        return lines
+    }
+}
+
+/// The arriving body of a rewrite, driven by the frame clock.
+@MainActor
+private struct FrameRewriteDraftBody: View {
+    let source: HUDFrameSource
+    let text: String
+    let chunks: [RewriteDraftChunk]
+    let reduceMotion: Bool
+    let content: (String, [RewriteDraftRamp.Run]) -> AnyView
+
+    var body: some View {
+        let time = chunks.isEmpty ? 0 : source.rewriteTime
+        let runs = RewriteDraftRamp.runs(
+            chunks: chunks,
+            length: text.count,
+            time: time,
+            reduceMotion: reduceMotion
+        )
+        content(text, runs)
+    }
+}
+
+/// The style row, driven by the frame clock for its arc and fade.
+@MainActor
+private struct FrameRewriteChipRow: View {
+    let source: HUDFrameSource
+    let card: RewriteCard
+    let reduceMotion: Bool
+    let ending: RewriteEnding?
+    let actions: HUDActions
+
+    var body: some View {
+        let time = (card.isStreaming || ending != nil) ? source.rewriteTime : 0
         RewriteChipRow(
             choices: card.choices,
             activeStyleID: card.activeStyleID,
             isStreaming: card.isStreaming,
             reduceMotion: reduceMotion,
-            time: model.time,
-            endedStyleID: model.rewriteEnding?.styleID,
-            endedAt: model.rewriteEnding?.at,
+            time: time,
+            endedStyleID: ending?.styleID,
+            endedAt: ending?.at,
             versions: card.versions,
             selectedVersionID: card.selectedVersionID,
             onOriginal: { actions.selectOriginal?() },
@@ -225,13 +279,6 @@ extension HUDView {
                 ? { actions.rerunRewrite?() }
                 : nil
         )
-    }
-
-    /// How many lines the section under the body draws.
-    func noteLineCount(_ card: RewriteCard) -> Int {
-        var lines = card.note == nil ? 0 : 1
-        if case .blocked = card.phase { lines += 1 }
-        return lines
     }
 }
 
@@ -278,10 +325,12 @@ struct RewriteChip: View {
     /// arriving is the card's amber at full strength: the arc carries the
     /// movement, so the label is the one steady thing that names the work, and a
     /// label that also pulsed would be two movements saying one thing.
-    private var titleColor: Color {
-        if isSelected { return Color.black.opacity(0.86) }
-        if isRunning { return HUDTheme.live }
-        return HUDTheme.ink2
+    @Environment(\.hudUsesSystemInk) private var usesSystemInk
+
+    private var titleStyle: AnyShapeStyle {
+        if isSelected { return AnyShapeStyle(Color.black.opacity(0.86)) }
+        if isRunning { return AnyShapeStyle(HUDTheme.recording) }
+        return usesSystemInk ? AnyShapeStyle(.secondary) : AnyShapeStyle(HUDTheme.ink2)
     }
 
     /// Whether this chip is the one the service is answering.
@@ -338,7 +387,7 @@ struct RewriteChip: View {
         Button(action: perform) {
             Text(title)
                 .font(DotType.font(HUDRewriteLayout.chipFontSize, .medium))
-                .foregroundStyle(titleColor)
+                .foregroundStyle(titleStyle)
                 .padding(.horizontal, HUDRewriteLayout.chipHPadding)
                 .frame(height: HUDRewriteLayout.chipHeight)
                 .background(Capsule(style: .circular).fill(fill))
@@ -352,7 +401,7 @@ struct RewriteChip: View {
                             glowOpacity: isSelected
                                 ? HUDRewriteActivity.glowOpacityOnPill
                                 : HUDRewriteActivity.glowOpacity,
-                            tint: isSelected ? HUDTheme.arcOnPill : HUDTheme.live
+                            tint: isSelected ? HUDTheme.arcOnPill : HUDTheme.recording
                         )
                     }
                 }
@@ -420,7 +469,7 @@ struct RewriteArcRing<S: InsettableShape>: View {
     /// The card's amber is the running colour on its own surface. On the
     /// selected chip's cream pill the same amber is a light-on-light ring at
     /// about 1.5:1, so that chip draws the darker ``HUDTheme/arcOnPill``.
-    var tint: Color = HUDTheme.live
+    var tint: Color = HUDTheme.recording
 
     /// The gradient's stops, from the model's own falloff.
     private var stops: [Gradient.Stop] {
@@ -492,19 +541,21 @@ struct RewriteArcRing<S: InsettableShape>: View {
 struct RewriteCheckBadge: View {
     let warning: String?
 
+    @Environment(\.hudUsesSystemInk) private var usesSystemInk
+
     private var isQuiet: Bool { warning == nil }
 
     var body: some View {
         HStack(spacing: 5) {
             Circle()
-                .fill(isQuiet ? HUDTheme.ink2 : HUDTheme.live)
+                .hudInk(.secondary, when: isQuiet, otherwise: HUDTheme.warning)
                 .frame(
                     width: HUDRewriteLayout.badgeDotSize,
                     height: HUDRewriteLayout.badgeDotSize
                 )
             Text(isQuiet ? "Checked" : "Review")
                 .font(DotType.font(HUDRewriteLayout.chipFontSize, .medium))
-                .foregroundStyle(isQuiet ? HUDTheme.ink2 : HUDTheme.live)
+                .hudInk(.secondary, when: isQuiet, otherwise: HUDTheme.warning)
                 .lineLimit(1)
         }
         .padding(.horizontal, 8)
@@ -528,13 +579,14 @@ struct RewriteCapsuleButton: View {
     let perform: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.hudUsesSystemInk) private var usesSystemInk
     @State private var hovering = false
 
     var body: some View {
         Button(action: perform) {
             Text(title)
                 .font(DotType.font(HUDRewriteLayout.chipFontSize, .medium))
-                .foregroundStyle(isPrimary ? Color.black.opacity(0.86) : HUDTheme.ink)
+                .hudInk(.primary, when: !isPrimary, otherwise: Color.black.opacity(0.86))
                 .lineLimit(1)
                 .padding(.horizontal, HUDRewriteLayout.actionHPadding)
                 .frame(height: HUDRewriteLayout.actionHeight)
@@ -844,9 +896,9 @@ struct RewriteChipRow: View {
                     }
                     // Room for the last chip to scroll clear of the fade.
                     .padding(.trailing, HUDRewriteLayout.chipOverflowWidth)
+                    .background(DotScrollViewConfigurator(surface: "hud"))
                 }
                 .scrollIndicators(.never)
-                .scrollBounceBehavior(.basedOnSize)
                 .background(
                     GeometryReader { geometry in
                         Color.clear.preference(
@@ -973,13 +1025,14 @@ struct RewriteArrowButton: View {
     let reduceMotion: Bool
     let perform: () -> Void
 
+    @Environment(\.hudUsesSystemInk) private var usesSystemInk
     @State private var hovering = false
 
     var body: some View {
         Button(action: perform) {
             Image(systemName: symbol)
                 .font(DotType.font(9.5, .semibold))
-                .foregroundStyle(isEnabled ? HUDTheme.ink2 : HUDTheme.ink3.opacity(0.55))
+                .hudInk(isEnabled ? .secondary : .tertiary, opacity: isEnabled ? 1 : 0.55)
                 .frame(
                     width: HUDRewriteLayout.versionArrowWidth,
                     height: HUDRewriteLayout.chipHeight
@@ -1011,7 +1064,7 @@ struct RewriteRerunButton: View {
         Button(action: perform) {
             Image(systemName: "arrow.clockwise")
                 .font(DotType.font(9.5, .semibold))
-                .foregroundStyle(HUDTheme.ink2)
+                .hudInk(.secondary)
                 .frame(
                     width: HUDRewriteLayout.versionArrowWidth,
                     height: HUDRewriteLayout.chipHeight
@@ -1152,7 +1205,7 @@ private struct ChipOverflowMark: View {
     var body: some View {
         Image(systemName: "arrow.right")
             .font(DotType.font(8.5, .semibold))
-            .foregroundStyle(HUDTheme.ink3)
+            .hudInk(.tertiary)
             .frame(
                 width: RewriteChipRow.overflowMarkWidth,
                 height: RewriteChipRow.overflowMarkWidth

@@ -1826,7 +1826,7 @@ final class HaloMotionTests: XCTestCase {
                         ceiling: frame.ceiling,
                         reveal: 1,
                         material: material,
-                        glassLift: HUDTheme.visualizerGlassLift
+                        glassLift: 0
                     )
                     .frame(width: Self.canvas.width, height: Self.canvas.height)
                     print("STYLE \(visualizer) \(material) t\(moment) \(try frameHash(view, size: Self.canvas))")
@@ -2919,7 +2919,7 @@ extension HaloMotionTests {
             ceiling: snapshot.ceiling,
             reveal: 1,
             material: .glass,
-            glassLift: HUDTheme.visualizerGlassLift,
+            glassLift: 0,
             glassRingLift: ringLift ?? HUDWaveform.Halo.glassRingLift,
             glassRingInkGain: ringGain ?? HUDWaveform.Halo.glassRingInkGain
         )

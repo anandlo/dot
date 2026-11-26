@@ -17,7 +17,7 @@ import Foundation
 public final class VoiceMeter {
     /// How many samples of history the waveform keeps, at the sample rate.
     ///
-    /// 180 samples at 60 Hz is three seconds of audio.
+    /// 300 samples at 60 Hz is five seconds of audio.
     public static let historyLength = Waveform.historyLength
     /// How many samples a second the history is written at.
     public static let sampleRate = Waveform.sampleRate
@@ -87,6 +87,50 @@ public final class VoiceMeter {
     /// take rather than a bar of any take.
     public var ceiling: Double { max(peak, Self.minimumCeiling) }
 
+    /// How far loud speech is taken to sit below the loudest sample, in
+    /// decibels, for an entry learned before Dot measured speech directly.
+    /// Speech carries a crest factor of 12 to 20 dB; the low end is used.
+    nonisolated public static let speechCrestDB: Double = 12
+    /// The window position the speech reference is held inside.
+    ///
+    /// The lower bound keeps a room with almost no headroom from lighting the
+    /// top of a style on noise; the upper bound keeps one shouted take from
+    /// putting the top out of reach of ordinary speech.
+    nonisolated public static let speechTopRange: ClosedRange<Double> = 0.30 ... 0.70
+    /// The speech reference of a microphone Dot has not heard yet. On the
+    /// shipped window it is about `-26 dBFS`, ordinary speech close to a
+    /// laptop microphone.
+    nonisolated public static let defaultSpeechTop: Double = 0.45
+
+    /// This speaker's loud speech, in dBFS: the device's learned speech level,
+    /// the loudest sample less ``speechCrestDB`` for an older entry, or
+    /// ``defaultSpeechTop`` of the shipped window for a device Dot has not heard.
+    public var speechReferenceDBFS: Double {
+        if let calibration = calibration?.clamped, calibration.isUsable {
+            let reference = calibration.speechDBFS ?? (calibration.peakDBFS - Self.speechCrestDB)
+            if reference.isFinite { return reference }
+        }
+        let fixed = LevelScale.fixedWindow
+        return fixed.bottomDBFS + Self.defaultSpeechTop * (fixed.topDBFS - fixed.bottomDBFS)
+    }
+
+    /// Where this speaker's loud speech sits in the window the meter is drawing
+    /// on now, as a linear decibel position from `0` to `1`.
+    ///
+    /// It shares the window of the newest sample, so a voice at the reference
+    /// reads the same as the room lifts the bottom, until the reference falls
+    /// to the bottom of ``speechTopRange``. Below that, speech that close to
+    /// the room is drawn cooler on purpose, so noise never runs white-hot. Each sample
+    /// keeps the value it was written with (``copyOrderedSpeechTops(into:)``),
+    /// so a room that moves mid-take never rescales what is already drawn.
+    public var speechTop: Double {
+        let live = self.window
+        let span = live.topDBFS - live.bottomDBFS
+        guard span > 0 else { return Self.defaultSpeechTop }
+        let position = (speechReferenceDBFS - live.bottomDBFS) / span
+        return min(max(position, Self.speechTopRange.lowerBound), Self.speechTopRange.upperBound)
+    }
+
     /// The lowest the adaptive ceiling may fall, from `0` to `1`.
     public static let minimumCeiling: Double = 0.45
     /// Where inside the current sample the history is, from `0` to `1`.
@@ -125,6 +169,8 @@ public final class VoiceMeter {
     public private(set) var writtenSamples = 0
     /// The history of the envelope, oldest first.
     private var history: [Double]
+    /// ``speechTop`` as it was when each sample of the history was written.
+    private var speechTops: [Double]
     /// Where the next sample goes in the history.
     private var historyIndex = 0
     /// The time since the last sample of the history, in sample periods.
@@ -142,6 +188,7 @@ public final class VoiceMeter {
     /// Creates a meter.
     public init() {
         history = Array(repeating: 0, count: Self.historyLength)
+        speechTops = Array(repeating: Self.defaultSpeechTop, count: Self.historyLength)
     }
 
     /// The level of the voice, from `0` to `1`.
@@ -256,17 +303,22 @@ public final class VoiceMeter {
         floorDBFS = min(max(next, LevelScale.silenceDBFS), Self.floorCeilingDBFS)
     }
 
+    private static let sampleBoundaryEpsilon = 1e-9
+
     /// Writes the history at a fixed rate, whatever the display does.
     private func advanceHistory(by dt: Double) {
         clock += dt * Self.sampleRate
-        while clock >= 1 {
-            clock -= 1
+        let top = speechTop
+        while clock + Self.sampleBoundaryEpsilon >= 1 {
+            clock = max(0, clock - 1)
             history[historyIndex] = shape
+            speechTops[historyIndex] = top
             historyIndex = (historyIndex + 1) % Self.historyLength
             writtenSamples += 1
         }
         scrollPhase = clock
-        phase = min(max(clock - clock.rounded(.down), 0), 1)
+        let wrapped = clock - clock.rounded(.down)
+        phase = min(max(wrapped, 0), 1 - Self.sampleBoundaryEpsilon)
     }
 
     /// The history, oldest first.
@@ -286,19 +338,31 @@ public final class VoiceMeter {
     /// - Parameter buffer: the buffer to fill. It is resized to
     ///   ``historyLength`` and left in the caller's hands.
     public func copyOrderedHistory(into buffer: inout [Double]) {
+        copyOrdered(history, into: &buffer)
+    }
+
+    /// Copies ``speechTop`` as it was at each sample of the history, oldest
+    /// first, into a buffer the caller owns.
+    public func copyOrderedSpeechTops(into buffer: inout [Double]) {
+        copyOrdered(speechTops, into: &buffer)
+    }
+
+    private func copyOrdered(_ ring: [Double], into buffer: inout [Double]) {
         if buffer.count != Self.historyLength {
             buffer = [Double](repeating: 0, count: Self.historyLength)
         }
         guard historyIndex != 0 else {
-            buffer = history
+            for index in 0..<Self.historyLength {
+                buffer[index] = ring[index]
+            }
             return
         }
         let tail = Self.historyLength - historyIndex
         for index in 0..<tail {
-            buffer[index] = history[historyIndex + index]
+            buffer[index] = ring[historyIndex + index]
         }
         for index in 0..<historyIndex {
-            buffer[tail + index] = history[index]
+            buffer[tail + index] = ring[index]
         }
     }
 
@@ -345,6 +409,7 @@ public final class VoiceMeter {
         previousDBFS = nil
         steadySeconds = 0
         history = Array(repeating: 0, count: Self.historyLength)
+        speechTops = Array(repeating: Self.defaultSpeechTop, count: Self.historyLength)
         historyIndex = 0
     }
 }

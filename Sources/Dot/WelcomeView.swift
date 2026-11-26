@@ -349,7 +349,6 @@ struct WelcomeView: View {
                 DotKeycap(text: shortcutLabel)
             }
             .buttonStyle(DotPressStyle())
-            .help("Change shortcut")
             .accessibilityLabel("Shortcut \(shortcutLabel). Change.")
         }
     }

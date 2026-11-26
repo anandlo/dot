@@ -1,3 +1,4 @@
+import Network
 import XCTest
 
 @testable import DotCore
@@ -70,5 +71,78 @@ final class AssistantSSEDecoderTests: XCTestCase {
         XCTAssertEqual(try decoder.consume(line: ""), SSEEvent(name: "first", data: "one"))
         _ = try decoder.consume(line: "data: two")
         XCTAssertEqual(try decoder.consume(line: ""), SSEEvent(name: nil, data: "two"))
+    }
+
+    func testChunkedEventStreamDecodesSplitUTF8AcrossChunks() async throws {
+        let message = "こんにちは 𐍈 café"
+        let sseBytes = Array("data: \(message)\r\n\r\n".utf8)
+        let splitPoint = 12 // inside the multi-byte UTF-8 sequence
+        let firstChunk = Data(sseBytes[..<splitPoint])
+        let secondChunk = Data(sseBytes[splitPoint...])
+
+        let listener = try NWListener(using: .tcp, on: .any)
+        let queue = DispatchQueue(label: "dot.sse.chunked.test")
+        let ready = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { state in
+            if case .ready = state { ready.signal() }
+        }
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: queue)
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { _, _, _, _ in
+                let head = Data("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n".utf8)
+                connection.send(content: head + firstChunk, completion: .contentProcessed { _ in
+                    queue.asyncAfter(deadline: .now() + 0.03) {
+                        connection.send(content: secondChunk, isComplete: true, completion: .contentProcessed { _ in
+                            connection.cancel()
+                        })
+                    }
+                })
+            }
+        }
+        listener.start(queue: queue)
+        defer { listener.cancel() }
+        XCTAssertEqual(ready.wait(timeout: .now() + 5), .success)
+        let port = Int(listener.port?.rawValue ?? 0)
+
+        let session = OpenAICompatibleProvider.makeSession()
+        let request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/stream")!)
+        var events: [SSEEvent] = []
+        for try await event in HTTPTransport.eventStream(request, session: session) {
+            events.append(event)
+        }
+        XCTAssertEqual(events, [SSEEvent(name: nil, data: message)])
+    }
+
+    func testChunkedEventStreamEnforcesMaximumLineBytes() async throws {
+        let oversizedLine = "data: " + String(repeating: "x", count: 128) + "\n\n"
+        let listener = try NWListener(using: .tcp, on: .any)
+        let queue = DispatchQueue(label: "dot.sse.limit.test")
+        let ready = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { state in
+            if case .ready = state { ready.signal() }
+        }
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: queue)
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { _, _, _, _ in
+                let head = Data("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n".utf8)
+                connection.send(content: head + Data(oversizedLine.utf8), isComplete: true, completion: .contentProcessed { _ in
+                    connection.cancel()
+                })
+            }
+        }
+        listener.start(queue: queue)
+        defer { listener.cancel() }
+        XCTAssertEqual(ready.wait(timeout: .now() + 5), .success)
+        let port = Int(listener.port?.rawValue ?? 0)
+
+        let session = OpenAICompatibleProvider.makeSession()
+        let request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/stream")!)
+        let limits = AssistantStreamLimits(maximumLineBytes: 64)
+        do {
+            for try await _ in HTTPTransport.eventStream(request, session: session, limits: limits) {}
+            XCTFail("oversized SSE line was accepted")
+        } catch ProviderError.invalidResponse(let detail) {
+            XCTAssertEqual(detail, ProviderErrorText.oversizedAnswer)
+        }
     }
 }

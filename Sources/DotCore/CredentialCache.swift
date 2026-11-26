@@ -42,7 +42,7 @@ public final class CredentialCache: @unchecked Sendable {
     public typealias Reader = @Sendable (String) -> Outcome
 
     /// The cache the app uses.
-    public static let shared = CredentialCache()
+    public static let shared = CredentialCache(bundle: .shared)
 
     /// A cache that never reads anything and holds no key.
     ///
@@ -80,6 +80,12 @@ public final class CredentialCache: @unchecked Sendable {
     private var resolving: Set<String> = []
     /// The keys that were found.
     private var values: [String: String] = [:]
+    /// The one read running for each provider, shared by every async caller.
+    private let flights = FlightBook()
+    /// Incremented whenever a caller discards answers.
+    private var globalEpoch: UInt64 = 0
+    /// Registered when a read starts, so an invalidation can always identify it.
+    private var generations: [String: UInt64] = [:]
     private var reads = 0
     private var durations: [String: Double] = [:]
     private let reader: Reader
@@ -87,17 +93,25 @@ public final class CredentialCache: @unchecked Sendable {
     /// has nothing to report about it.
     private let logsReads: Bool
 
+    /// The store behind the default reader.
+    private let bundle: CredentialBundleStore?
+
     /// Creates a cache.
     ///
-    /// - Parameter reader: the decrypting read. Injected so a test can count
-    ///   the reads without a Keychain, and so the app has exactly one place
-    ///   that touches one.
+    /// - Parameters:
+    ///   - reader: the decrypting read. Injected so a test can count the reads
+    ///     without a Keychain, and so the app has exactly one place that
+    ///     touches one.
+    ///   - logsReads: whether outcomes are written to the log.
+    ///   - bundle: the store whose refusal an explicit action may clear.
     public init(
         reader: @escaping Reader = { CredentialCache.resolve(providerID: $0) },
-        logsReads: Bool = true
+        logsReads: Bool = true,
+        bundle: CredentialBundleStore? = nil
     ) {
         self.reader = reader
         self.logsReads = logsReads
+        self.bundle = bundle
     }
 
     /// The key of a provider.
@@ -124,10 +138,22 @@ public final class CredentialCache: @unchecked Sendable {
             return known
         }
         resolving.insert(providerID)
+        let generation = currentGenerationLocked(for: providerID)
         lock.unlock()
+        return performRead(providerID, generation: generation)
+    }
 
+    private func performRead(_ providerID: String, generation: UInt64) -> String? {
         let started = ProcessInfo.processInfo.systemUptime
-        let outcome = reader(providerID)
+        return finish(reader(providerID), for: providerID, started: started, generation: generation)
+    }
+
+    private func finish(
+        _ outcome: Outcome,
+        for providerID: String,
+        started: Double,
+        generation: UInt64
+    ) -> String? {
         let milliseconds = (ProcessInfo.processInfo.systemUptime - started) * 1000
         let key: String?
         switch outcome {
@@ -138,16 +164,27 @@ public final class CredentialCache: @unchecked Sendable {
         }
         // A read that failed is not an answer: it must not be remembered, or a
         // locked Keychain would leave the app keyless until it is restarted.
+        let committed: Bool
         if case .failed = outcome {
             lock.lock()
-            resolving.remove(providerID)
-            failures.insert(providerID)
-            reads += 1
-            durations[providerID] = milliseconds
+            committed = isCurrentGenerationLocked(generation, for: providerID)
+            if committed {
+                resolving.remove(providerID)
+                failures.insert(providerID)
+                reads += 1
+                durations[providerID] = milliseconds
+            }
             lock.unlock()
         } else {
-            remember(key, for: providerID, milliseconds: milliseconds, countsAsRead: true)
+            committed = remember(
+                key,
+                for: providerID,
+                milliseconds: milliseconds,
+                countsAsRead: true,
+                generation: generation
+            )
         }
+        guard committed else { return nil }
         if logsReads {
             Log.shared.info("credential.read", [
                 "provider": .string(providerID),
@@ -187,6 +224,10 @@ public final class CredentialCache: @unchecked Sendable {
                 return .key(key)
             }
         } catch {
+            // An undecodable bundle is a failed read even when the attribute
+            // probe says there is no key: the bytes are still there and must
+            // never be replaced. Calling that "missing" would cache a definite
+            // answer for a read that never happened.
             return .failed(error.localizedDescription)
         }
         guard hasKey(providerID) else { return .missing }
@@ -234,7 +275,21 @@ public final class CredentialCache: @unchecked Sendable {
     ///   - key: the key, or `nil` for "this provider has none".
     ///   - providerID: the provider id.
     public func store(_ key: String?, for providerID: String) {
-        remember(key, for: providerID, milliseconds: 0, countsAsRead: false)
+        lock.lock()
+        // One counter for every answer change. A per-provider count can repeat
+        // after an invalidation, and a repeated generation makes the rebuild
+        // gate mistake a fresh answer for one it already handled.
+        globalEpoch += 1
+        let generation = globalEpoch
+        generations[providerID] = generation
+        lock.unlock()
+        _ = remember(
+            key,
+            for: providerID,
+            milliseconds: 0,
+            countsAsRead: false,
+            generation: generation
+        )
         if let key, !key.isEmpty {
             Log.shared.registerSecret(key)
         }
@@ -248,21 +303,128 @@ public final class CredentialCache: @unchecked Sendable {
     /// - Parameter providerID: the provider id.
     public func invalidate(_ providerID: String) {
         lock.lock()
+        globalEpoch += 1
+        generations[providerID] = globalEpoch
+        resolving.remove(providerID)
         resolved.remove(providerID)
         failures.remove(providerID)
         values.removeValue(forKey: providerID)
         durations.removeValue(forKey: providerID)
+        flights.removeAll(for: providerID)
         lock.unlock()
+        bundle?.invalidateFlights(for: providerID)
+        bundle?.allowRetry()
+    }
+
+    /// The generation of the current answer for a provider.
+    public func generation(for providerID: String) -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentGenerationLocked(for: providerID)
+    }
+
+    /// Whether a key read is running for a provider.
+    public func isReadInFlight(_ providerID: String) -> Bool {
+        lock.lock()
+        let local = flights.contains(providerID)
+        lock.unlock()
+        return local || (bundle?.isKeyReadInFlight(providerID) == true)
+    }
+
+    /// A read's admission snapshot, taken under one lock so an invalidation
+    /// cannot slip between the cached-key check and the generation check.
+    private func admission(for providerID: String) -> (known: Bool, key: String?, generation: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        let generation = currentGenerationLocked(for: providerID)
+        return (resolved.contains(providerID), values[providerID], generation)
+    }
+
+    private func currentGenerationLocked(for providerID: String) -> UInt64 {
+        if let generation = generations[providerID] { return generation }
+        let generation = globalEpoch
+        generations[providerID] = generation
+        return generation
+    }
+
+    private func isCurrentGenerationLocked(_ generation: UInt64, for providerID: String) -> Bool {
+        (generations[providerID] ?? globalEpoch) == generation
+    }
+
+    /// Resolves a key off the caller's actor and waits for the answer.
+    ///
+    /// A SecurityAgent prompt can stay up longer than any deadline. Callers
+    /// therefore wait for the real answer. Callers that arrive while a read is
+    /// running await the same task instead of starting a second decryption.
+    public func resolved(for providerID: String) async -> String? {
+        let admission = self.admission(for: providerID)
+        if admission.known { return admission.key }
+        let generation = admission.generation
+
+        if let bundle {
+            // The cache's flight table deduplicates concurrent async callers so
+            // finish(...) runs and logs once per resolution generation.
+            let flight = flights.task(for: providerID, generation: generation) { [self] in
+                let started = ProcessInfo.processInfo.systemUptime
+                let outcome: Outcome
+                do {
+                    if let key = try bundle.key(for: providerID), !key.isEmpty {
+                        outcome = .key(key)
+                    } else {
+                        outcome = bundle.hasKey(for: providerID)
+                            ? .failed("The Keychain holds the key but refused to read it.")
+                            : .missing
+                    }
+                } catch {
+                    // An unreadable bundle is never a "no key" answer. The store
+                    // leaves its data untouched and records the read as failed.
+                    outcome = .failed(error.localizedDescription)
+                }
+                return finish(outcome, for: providerID, started: started, generation: generation)
+            }
+            let key = await flight.task.value
+            flights.remove(id: flight.id, for: providerID)
+            return self.generation(for: providerID) == generation ? key : nil
+        }
+
+        let flight = flights.task(for: providerID, generation: generation) { [self] in
+            performRead(providerID, generation: generation)
+        }
+        let key = await flight.task.value
+        flights.remove(id: flight.id, for: providerID)
+        // The commit already checked the generation; a stale task must also
+        // hand its caller no answer.
+        return self.generation(for: providerID) == generation ? key : nil
+    }
+
+    /// Lets an explicit action try a read the person denied.
+    ///
+    /// Nothing is forgotten: keys already in memory stay there, and a provider
+    /// whose read failed is still unresolved. Only the refusal is cleared.
+    public func retryDenied(for providerID: String? = nil) {
+        lock.lock()
+        if let providerID {
+            failures.remove(providerID)
+        } else {
+            failures.removeAll()
+        }
+        lock.unlock()
+        bundle?.allowRetry()
     }
 
     /// Forgets every answer.
     public func invalidateAll() {
         lock.lock()
+        globalEpoch += 1
+        generations.removeAll()
+        resolving.removeAll()
         resolved.removeAll()
         failures.removeAll()
         values.removeAll()
         durations.removeAll()
+        flights.removeAll()
         lock.unlock()
+        bundle?.reset()
     }
 
     /// Resolves every provider the given ids name, once.
@@ -307,9 +469,12 @@ public final class CredentialCache: @unchecked Sendable {
         _ key: String?,
         for providerID: String,
         milliseconds: Double,
-        countsAsRead: Bool
-    ) {
+        countsAsRead: Bool,
+        generation: UInt64
+    ) -> Bool {
         lock.lock()
+        defer { lock.unlock() }
+        guard isCurrentGenerationLocked(generation, for: providerID) else { return false }
         resolving.remove(providerID)
         failures.remove(providerID)
         resolved.insert(providerID)
@@ -320,6 +485,162 @@ public final class CredentialCache: @unchecked Sendable {
         }
         if countsAsRead { reads += 1 }
         durations[providerID] = milliseconds
+        return true
+    }
+}
+/// The shared reads, kept apart from the cache lock so an async caller can
+/// consult them without using a non-async lock in an async context.
+private final class FlightBook: @unchecked Sendable {
+    private struct Entry {
+        let id: UUID
+        let generation: UInt64
+        let task: Task<String?, Never>
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+
+    func task(
+        for providerID: String,
+        generation: UInt64,
+        create: @escaping @Sendable () -> String?
+    ) -> (id: UUID, task: Task<String?, Never>) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let entry = entries[providerID], entry.generation == generation {
+            return (entry.id, entry.task)
+        }
+        let id = UUID()
+        let task = Task.detached(priority: .userInitiated, operation: create)
+        entries[providerID] = Entry(id: id, generation: generation, task: task)
+        return (id, task)
+    }
+
+    func contains(_ providerID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries[providerID] != nil
+    }
+
+    func remove(id: UUID, for providerID: String) {
+        lock.lock()
+        if entries[providerID]?.id == id {
+            entries.removeValue(forKey: providerID)
+        }
         lock.unlock()
+    }
+
+    func removeAll(for providerID: String) {
+        lock.lock()
+        entries.removeValue(forKey: providerID)
+        lock.unlock()
+    }
+
+    func removeAll() {
+        lock.lock()
+        entries.removeAll()
+        lock.unlock()
+    }
+}
+
+/// Decides which of several main-actor callers rebuilds a provider after a key
+/// was resolved.
+///
+/// A press callback and the Stop that interrupts it can both arrive after the
+/// same resolution. Only the first one for a provider and cache generation may
+/// rebuild; an obsolete selected provider or signature rebuilds nothing.
+@MainActor
+public final class CredentialRebuildGate {
+    private var handled: [String: UInt64] = [:]
+
+    /// Creates a gate.
+    public init() {}
+
+    /// Runs `rebuild` when this is the current, ready answer for this provider.
+    ///
+    /// - Returns: whether this caller performed the rebuild.
+    @discardableResult
+    public func perform(
+        providerID: String,
+        selectedProviderID: String,
+        signatureMatches: Bool,
+        ready: Bool,
+        generation: UInt64,
+        rebuild: () -> Void
+    ) -> Bool {
+        guard providerID == selectedProviderID, signatureMatches, ready else { return false }
+        guard handled[providerID] != generation else { return false }
+        handled[providerID] = generation
+        rebuild()
+        return true
+    }
+
+    /// Forgets the decision for one provider, so a new answer can rebuild it.
+    public func forget(_ providerID: String) {
+        handled.removeValue(forKey: providerID)
+    }
+
+    /// Forgets which generations have already been handled.
+    public func reset() {
+        handled.removeAll()
+    }
+}
+
+/// The one read a first use makes.
+///
+/// The launch of a self-signed build must not decrypt a Keychain item: each
+/// stale item carries its own SecurityAgent prompt. The read is deferred until
+/// a person actually asks for a key, runs off that person's actor and is awaited
+/// to its real answer. No deadline turns a slow prompt into "no key".
+public enum CredentialFirstUse {
+    /// Resolves one provider's key and reports when the answer is in.
+    ///
+    /// - Parameters:
+    ///   - providerID: the provider id.
+    ///   - cache: the session cache shared by every caller.
+    ///   - onResolved: called after the answer is cached, or immediately for a
+    ///     provider that has no key.
+    /// - Returns: whether the provider can be built: a keyless provider is
+    ///   ready without a credential read.
+    @discardableResult
+    public static func resolve(
+        _ providerID: String,
+        cache: CredentialCache = .shared,
+        onResolved: @Sendable @escaping () async -> Void = {}
+    ) async -> Bool {
+        guard ProviderPreset.requiresKey(for: providerID) else {
+            await onResolved()
+            return true
+        }
+        let found = await cache.resolved(for: providerID) != nil
+        await onResolved()
+        return found
+    }
+
+    /// Whether a stop has to rebuild a provider before it can finish the take.
+    ///
+    /// A missing provider is reason enough: the first-use callback may be queued
+    /// behind this very stop, and a resolved cache does not mean the provider was
+    /// rebuilt yet. An existing provider is stale when a key appeared after it
+    /// was built, or when the cache advanced to a newer answer.
+    ///
+    /// - Parameters:
+    ///   - providerAvailable: whether a provider instance exists already.
+    ///   - providerID: the provider id.
+    ///   - cache: the shared session cache.
+    ///   - providerBuiltWithoutKey: whether that instance was built before any
+    ///     key for this provider was resolved.
+    ///   - buildGeneration: the cache generation the instance was built against.
+    public static func takeNeedsRebuild(
+        providerAvailable: Bool,
+        providerID: String,
+        cache: CredentialCache,
+        providerBuiltWithoutKey: Bool = false,
+        buildGeneration: UInt64? = nil
+    ) -> Bool {
+        guard providerAvailable else { return true }
+        if providerBuiltWithoutKey, cache.resolvedKey(for: providerID) != nil { return true }
+        if let buildGeneration, buildGeneration != cache.generation(for: providerID) { return true }
+        return false
     }
 }

@@ -37,6 +37,21 @@ final class ProductVersionTests: XCTestCase {
         )
     }
 
+    /// The readable form of a SemVer version, as the About page and the update
+    /// messages show it.
+    func testTheDisplayNameReadsAPrereleaseAsWords() {
+        XCTAssertEqual(ProductVersion.displayName("4.5.6-beta.1"), "4.5.6 Beta 1")
+        XCTAssertEqual(ProductVersion.displayName("4.5.6-beta"), "4.5.6 Beta")
+        XCTAssertEqual(ProductVersion.displayName("1.0.0-rc.2"), "1.0.0 RC 2")
+        XCTAssertEqual(ProductVersion.displayName("1.0.0-rc1"), "1.0.0 RC 1")
+        XCTAssertEqual(ProductVersion.displayName("2.0.0-alpha.3.1"), "2.0.0 Alpha 3 1")
+        XCTAssertEqual(ProductVersion.displayName("1.2.3"), "1.2.3")
+        XCTAssertEqual(ProductVersion.displayName("1.2.3+build.7"), "1.2.3")
+        XCTAssertEqual(ProductVersion.displayName("1.2.3-beta.1+sha.abc"), "1.2.3 Beta 1")
+        XCTAssertEqual(ProductVersion.displayName(ProductVersion.unknown), ProductVersion.unknown)
+        XCTAssertEqual(ProductVersion.displayName("1.0.0-"), "1.0.0-")
+    }
+
     /// No Swift source and no script may spell the version out: a copy would
     /// stop moving the day the file changes.
     func testTheVersionIsWrittenDownOnlyInTheVersionFile() throws {

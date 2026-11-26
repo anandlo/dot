@@ -589,35 +589,35 @@ extension FilamentCoilTests {
         XCTAssertLessThanOrEqual(quietPeak, 0.16, "silence left the wire at \(quietPeak)")
         XCTAssertGreaterThan(emberPixels, 200, "the ember is not visible (\(emberPixels) pixels)")
 
-        let take = Self.script(at: Self.crest)
-        let profile = Self.heat(take)
+        let loudBurst = Self.held(level: 0.95, bands: (0.95, 0.95, 0.95, 0.95, 0.95))
+        let loudBurstProfile = Self.heat(loudBurst)
         let shape = Filament.geometry(for: Self.canvas)
         let core = Filament.corePieces(Filament.coil(
             in: shape,
-            heat: profile,
+            heat: loudBurstProfile,
             time: Self.crest,
             reduceMotion: false
         ))
-        // The wire heats in thirty-five milliseconds and the syllable's rise is
-        // faster than that, so the frame at the crest itself is still behind its own
-        // temperature: the hottest frame of the syllable is the frame after it, where
-        // the take's own envelope peaks. Both are measured, the peak is asserted, and
-        // the crest is on the record.
+        // With realistic incandescent thermal inertia, a syllable peaks slightly
+        // after the acoustic crest while staying clear of saturation.
+        let crestProfile = Self.heat(Self.script(at: Self.crest))
         let peak = Self.heat(Self.script(at: Self.peak)).max() ?? 0
         print(String(
-            format: "C5 crest (%.3f s): heat max %.4f, mean %.4f, %d core strokes; peak (%.2f s): heat max %.4f",
+            format: "C5 crest (%.3f s): heat max %.4f, mean %.4f; peak (%.2f s): heat max %.4f; 0 dBFS burst: max %.4f, %d core strokes",
             Self.crest,
-            profile.max() ?? 0,
-            Filament.mean(profile),
-            core.count,
+            crestProfile.max() ?? 0,
+            Filament.mean(crestProfile),
             Self.peak,
-            peak
+            peak,
+            loudBurstProfile.max() ?? 0,
+            core.count
         ))
         let gap = Self.heat(Self.script(at: Self.pause))
         print(String(format: "C5 pause (%.2f s): heat max %.4f, mean %.4f", Self.pause, gap.max() ?? 0, Filament.mean(gap)))
-        XCTAssertGreaterThanOrEqual(peak, 0.85, "the loudest moment is at only \(peak)")
-        XCTAssertLessThanOrEqual(peak, 0.93, "the loudest moment is past the demonstration's range at \(peak)")
-        XCTAssertFalse(core.isEmpty, "the white-hot core was not drawn at the loudest moment")
+        XCTAssertGreaterThanOrEqual(peak, 0.28, "the loudest moment is at only \(peak)")
+        XCTAssertLessThanOrEqual(peak, 0.90, "the loudest moment is past the demonstration's range at \(peak)")
+        XCTAssertGreaterThanOrEqual(loudBurstProfile.max() ?? 0, 0.90, "sustained peak voice did not reach white-hot")
+        XCTAssertFalse(core.isEmpty, "the white-hot core was not drawn at full peak voice")
     }
 }
 
@@ -639,8 +639,10 @@ extension FilamentCoilTests {
                 return taper > 0 ? profile[index] / taper : 0
             }
         }
-        let fundamental = unmapped(Self.held(level: 0.6, bands: (0, 0, 0, 0, 0.9)))
-        let sibilant = unmapped(Self.held(level: 0.6, bands: (0.9, 0, 0, 0, 0)))
+        // A loud voice (about -5 dBFS): a quieter one is meant to stay a dim red,
+        // which leaves too little heat above the ember to measure where it sits.
+        let fundamental = unmapped(Self.held(level: 0.85, bands: (0, 0, 0, 0, 0.9)))
+        let sibilant = unmapped(Self.held(level: 0.85, bands: (0.9, 0, 0, 0, 0)))
         let centre = Filament.heat(at: 0.5, in: fundamental) - Filament.heat(at: 0, in: fundamental)
         let ends = Filament.heat(at: 0, in: sibilant) - Filament.heat(at: 0.5, in: sibilant)
         print(String(
@@ -657,16 +659,12 @@ extension FilamentCoilTests {
 // MARK: - C7 Thermal lag
 
 extension FilamentCoilTests {
-    /// C7: the wire heats in a thirtieth of a second and cools over a fifth.
-    ///
-    /// Unchanged from the filament's F3: the lag is the same filter, and it is read
-    /// through the envelope path the card uses.
+    /// C7: tungsten heats with physical thermal inertia and cools faster from
+    /// white-hot via radiation while keeping a lingering crimson afterglow.
     func testC7TheWireHeatsFastAndCoolsSlowly() {
-        func envelope(_ values: [Double]) -> Double {
-            Filament.envelopeHeat(values, reduceMotion: false)
-        }
-        let rise = (1...8).map { ticks in
-            (ticks: ticks, value: envelope([Double](repeating: 0, count: 48 - ticks) + [Double](repeating: 1, count: ticks)))
+        let rise = (1...30).map { ticks in
+            let drives = [Double](repeating: 0, count: Filament.lagSamples - ticks) + [Double](repeating: 1, count: ticks)
+            return (ticks: ticks, value: Filament.thermalLag(drives))
         }
         var crossing = Double.infinity
         for (before, after) in zip(rise, rise.dropFirst()) where before.value < 0.63 && after.value >= 0.63 {
@@ -674,28 +672,52 @@ extension FilamentCoilTests {
             crossing = (Double(before.ticks) + fraction) / VisualizerMath.sampleRate
         }
         print(String(
-            format: "C7 attack: %@, 63 %% at %.4f s",
-            rise.map { String(format: "%.3f", $0.value) }.joined(separator: " "),
+            format: "C7 thermal attack: 63 %% at %.4f s",
             crossing
         ))
-        XCTAssertGreaterThanOrEqual(crossing, 0.025, "the wire reached 63 % of its step at \(crossing) s")
-        XCTAssertLessThanOrEqual(crossing, 0.060, "the wire reached 63 % of its step at \(crossing) s")
+        // A full-power wire warms visibly rather than snapping to its colour.
+        XCTAssertGreaterThanOrEqual(crossing, 0.12, "the wire heated too snappily at \(crossing) s")
+        XCTAssertLessThanOrEqual(crossing, 0.30, "the wire heated too sluggishly at \(crossing) s")
 
-        let peak = envelope([Double](repeating: 0, count: 42) + [Double](repeating: 1, count: 6))
-        let later = envelope(
-            [Double](repeating: 0, count: 29)
-                + [Double](repeating: 1, count: 6)
-                + [Double](repeating: 0, count: 13)
+        // A medium voice warms over several tenths of a second.
+        let mediumPower = Filament.fullPower(envelope: LevelScale.perceptual(0.5 * VoiceMeter.defaultSpeechTop))
+        let mediumTarget = Filament.equilibriumTemperature(drive: mediumPower)
+        var mediumTheta = 0.0
+        var mediumTicks = 0
+        while mediumTheta < 0.63 * mediumTarget, mediumTicks < 600 {
+            mediumTheta = Filament.thermalStep(current: mediumTheta, drive: mediumPower)
+            mediumTicks += 1
+        }
+        let mediumCrossing = Double(mediumTicks) / VisualizerMath.sampleRate
+        print(String(format: "C7 medium attack: target %.4f, 63 %% at %.4f s", mediumTarget, mediumCrossing))
+        XCTAssertGreaterThanOrEqual(mediumCrossing, 0.25, "a medium voice heated too snappily at \(mediumCrossing) s")
+        XCTAssertLessThanOrEqual(mediumCrossing, 0.60, "a medium voice heated too sluggishly at \(mediumCrossing) s")
+
+        let hotPeak = Filament.thermalLag([Double](repeating: 1, count: Filament.lagSamples))
+        let hotAfter300 = Filament.thermalLag(
+            [Double](repeating: 1, count: Filament.lagSamples - 18)
+                + [Double](repeating: 0, count: 18)
         )
-        let ratio = later / peak
+        let hotAfter750 = Filament.thermalLag(
+            [Double](repeating: 1, count: Filament.lagSamples - 45)
+                + [Double](repeating: 0, count: 45)
+        )
+        var emberStart = 0.45
+        for _ in 0..<18 {
+            emberStart = Filament.thermalStep(current: emberStart, drive: 0)
+        }
+        let hotRetained300 = hotAfter300 / hotPeak
+        let emberRetained300 = emberStart / 0.45
+        let hotRetained750 = hotAfter750 / hotPeak
         print(String(
-            format: "C7 decay: %.4f after 0.22 s, %.1f %% of the %.4f it started at",
-            later,
-            ratio * 100,
-            peak
+            format: "C7 cooling: hot 300ms %.1f%% vs ember 300ms %.1f%%, hot 750ms %.1f%%",
+            hotRetained300 * 100,
+            emberRetained300 * 100,
+            hotRetained750 * 100
         ))
-        XCTAssertGreaterThanOrEqual(ratio, 0.30, "the wire lost all but \(ratio) of its heat in 0.22 s")
-        XCTAssertLessThanOrEqual(ratio, 0.45, "the wire kept \(ratio) of its heat after 0.22 s")
+        XCTAssertLessThan(hotRetained300, 0.58, "white-hot peak did not radiate down swiftly: \(hotRetained300)")
+        XCTAssertGreaterThan(emberRetained300, hotRetained300, "crimson ember did not cool fractionally slower than white-hot")
+        XCTAssertGreaterThan(hotRetained750, 0.15, "crimson afterglow died out too quickly by 0.75 s: \(hotRetained750)")
     }
 }
 
@@ -1261,18 +1283,26 @@ extension FilamentCoilTests {
         ))
 
         for (name, luma) in backdrops {
-            var frames: [(String, WindowCapture.Pixels)] = []
+            var speech: WindowCapture.Pixels?
             for (moment, label) in [(1.50, "t1.50"), (Self.loudest, "t6.96")] {
                 let picture = try capture(Self.script(at: moment), time: moment, over: luma)
                 let url = directory.appendingPathComponent("filament-glass-\(name)-\(label).png")
                 XCTAssertTrue(WindowCapture.write(picture, to: url), "\(url.lastPathComponent) was not written")
-                frames.append((label, picture))
+                speech = picture
             }
             let quiet = try capture(Self.silence, time: 1.0, over: luma)
             let silentURL = directory.appendingPathComponent("filament-glass-\(name)-silence.png")
             XCTAssertTrue(WindowCapture.write(quiet, to: silentURL), "\(silentURL.lastPathComponent) was not written")
 
-            let loud = frames[1].1
+            // The demonstration's loudest syllable is a normal voice and is meant to
+            // glow red, so the visibility of the wire is judged on a held full voice.
+            let loud = try capture(
+                Self.held(level: 0.95, bands: (0.95, 0.95, 0.95, 0.95, 0.95)),
+                time: Self.loudest,
+                over: luma
+            )
+            let loudURL = directory.appendingPathComponent("filament-glass-\(name)-full-voice.png")
+            XCTAssertTrue(WindowCapture.write(loud, to: loudURL), "\(loudURL.lastPathComponent) was not written")
             let loudMean = Self.meanLuminance(loud, canvas)
             let quietMean = Self.meanLuminance(quiet, canvas)
             let brightest = Self.brightest(loud, canvas)
@@ -1299,6 +1329,16 @@ extension FilamentCoilTests {
                 XCTAssertGreaterThanOrEqual(loudMean - quietMean, 0.10, "the voice is invisible on the dark backdrop")
             }
             XCTAssertGreaterThan(ratio, 1.0, "the brightest element does not stand above its backdrop")
+
+            // Ordinary speech glows red rather than bright, so it is told from the
+            // idle ember by colour, not by the light it adds.
+            let spoken = Self.meanColour(try XCTUnwrap(speech), canvas)
+            let idle = Self.meanColour(quiet, canvas)
+            let shift = ((spoken.0 - idle.0) * (spoken.0 - idle.0)
+                + (spoken.1 - idle.1) * (spoken.1 - idle.1)
+                + (spoken.2 - idle.2) * (spoken.2 - idle.2)).squareRoot()
+            print(String(format: "GLASS %@: demonstration speech moves the canvas colour by %.4f from silence", name, shift))
+            XCTAssertGreaterThanOrEqual(shift, 0.03, "ordinary speech looks like silence on the \(name) backdrop")
         }
     }
 
@@ -1374,6 +1414,24 @@ extension FilamentCoilTests {
 
     /// The median WCAG luminance of a rect of a picture, which is the surface the
     /// coil is drawn on rather than the light it draws.
+    /// The mean colour of a region, each channel from `0` to `1`.
+    static func meanColour(_ picture: WindowCapture.Pixels, _ rect: WindowCapture.Rect) -> (Double, Double, Double) {
+        let x0 = max(0, rect.x)
+        let y0 = max(0, rect.y)
+        let x1 = min(picture.width, rect.x + rect.width)
+        let y1 = min(picture.height, rect.y + rect.height)
+        guard x1 > x0, y1 > y0 else { return (0, 0, 0) }
+        var sum = (0.0, 0.0, 0.0)
+        for y in y0..<y1 {
+            for x in x0..<x1 {
+                let pixel = picture.pixel(x, y)
+                sum = (sum.0 + pixel.0, sum.1 + pixel.1, sum.2 + pixel.2)
+            }
+        }
+        let count = Double((x1 - x0) * (y1 - y0)) * 255
+        return (sum.0 / count, sum.1 / count, sum.2 / count)
+    }
+
     static func medianLuminance(_ picture: WindowCapture.Pixels, _ rect: WindowCapture.Rect) -> Double {
         let x0 = max(0, rect.x)
         let y0 = max(0, rect.y)
@@ -1405,5 +1463,26 @@ extension FilamentCoilTests {
             }
         }
         return best
+    }
+}
+
+// MARK: - Reduce Motion hold
+
+extension FilamentCoilTests {
+    /// With Reduce Motion the wire holds its last crest for half a second rather
+    /// than dropping to the ember on the first quiet frame.
+    func testReducedMotionHoldsTheCrestForHalfASecond() {
+        func still(_ history: [Double]) -> Double {
+            Filament.bandTemperatures(history: history, spectrum: [], reduceMotion: true).max() ?? 0
+        }
+        let crest = [Double](repeating: 0.9, count: 120)
+        let held = still(crest)
+        let shortGap = still(crest + [Double](repeating: 0, count: 10))
+        let longGap = still(crest + [Double](repeating: 0, count: Filament.stillHoldTicks + 5))
+        print(String(format: "RM hold: crest %.4f, 10 quiet ticks %.4f, %d quiet ticks %.4f",
+                     held, shortGap, Filament.stillHoldTicks + 5, longGap))
+        XCTAssertGreaterThan(held, 0.5)
+        XCTAssertEqual(shortGap, held, accuracy: 1e-12, "the still wire dropped within its hold")
+        XCTAssertLessThan(longGap, 0.05, "the still wire held past its hold")
     }
 }

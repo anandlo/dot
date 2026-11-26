@@ -9,8 +9,8 @@
 #
 # There is deliberately no `quarantine` stanza and no `postflight`: Homebrew
 # calls `quarantine()` on every cask download and offers no way to skip it, so a
-# stanza here would either do nothing or be rejected in review. Dot is ad-hoc
-# signed and not notarized, so the first launch goes through
+# stanza here would either do nothing or be rejected in review. Dot is self-signed
+# and not notarized, so the first launch goes through
 # System Settings → Privacy & Security → Open Anyway. That is documented in
 # README.md, which is the only supported route.
 cask "dot" do
@@ -19,7 +19,7 @@ cask "dot" do
 
   url "https://github.com/anandlo/dot/releases/download/v#{version}/Dot-#{version}-arm64.dmg"
   name "Dot"
-  desc "Push-to-talk voice dictation"
+  desc "Speech-to-text dictation at the cursor in any app"
   homepage "https://dot.anandlo.com/"
 
   depends_on arch: :arm64

@@ -564,13 +564,194 @@ enum UIPreview {
             }
         }
 
+        try renderAboutMarkSamples(to: directory)
         try renderAssistantSettings(to: directory, providers: providers)
+    }
+
+    /// Renders settled mark states from one mounted host, then two control
+    /// fills. No synthetic system pointer is moved.
+    ///
+    /// The target phases all run through one `AboutPage` and one `NSHostingView`.
+    /// They are settled state captures, not interpolated spring frames. The
+    /// renderer has no way to pulse the live spring without a real pointer, so
+    /// the log says `state-settled` and does not claim return animation proof.
+    static func renderAboutMarkSamples(to directory: URL) throws {
+        let size = CGSize(width: 565, height: 600)
+        var lines: [String] = []
+        let phases: [(name: String, point: CGPoint?)] = [
+            ("about-mark-rest", nil),
+            ("about-mark-engaged", CGPoint(x: 100, y: 20)),
+            ("about-mark-retarget", CGPoint(x: 500, y: 28)),
+            ("about-mark-exit-settled", nil),
+            ("about-mark-return-settled", nil),
+        ]
+
+        for phase in phases {
+            let box = AboutMarkSampleBox()
+            let input = AboutMotionInput(pointer: phase.point)
+            let hosting = NSHostingView(
+                rootView: AboutPage(
+                    version: "1.0",
+                    build: "1",
+                    previewUpdate: .upToDate,
+                    onLayout: { box.frames = $0.frames },
+                    previewMotion: input
+                )
+                .frame(width: size.width, height: size.height)
+                .environment(\.colorScheme, .light)
+                .environment(\.displayScale, 2)
+            )
+            hosting.frame = NSRect(origin: .zero, size: size)
+            hosting.appearance = NSAppearance(named: .aqua)
+            settleMotionHost(hosting)
+            let bitmap = try hostedBitmap(hosting, size: size)
+            try write(bitmap, to: directory.appendingPathComponent("\(phase.name).png"))
+
+            let plate = box.frames["plate"] ?? .zero
+            let disc = box.frames["disc"] ?? .zero
+            let actual = renderedDiscFrame(in: bitmap) ?? disc
+            let region = box.frames["markRegion"] ?? .zero
+            let pointerText = phase.point.map { "\($0.x) \($0.y)" } ?? "none"
+            let patchPoint = phase.point ?? CGPoint(x: 300, y: 68)
+            let patch = pixel(patchPoint, in: bitmap)
+            let far = pixel(CGPoint(x: 300, y: 68), in: bitmap)
+            lines.append(
+                "\(phase.name) kind=state-settled pointer \(pointerText) "
+                    + "plate \(plate.origin.x) \(plate.origin.y) \(plate.size.width) \(plate.size.height) "
+                    + "disc \(disc.origin.x) \(disc.origin.y) \(disc.size.width) \(disc.size.height) "
+                    + "actual \(actual.origin.x) \(actual.origin.y) \(actual.size.width) \(actual.size.height) "
+                    + "region \(region.origin.x) \(region.origin.y) \(region.size.width) \(region.size.height) "
+                    + "patch \(patch.0) \(patch.1) \(patch.2) "
+                    + "far \(far.0) \(far.1) \(far.2)"
+            )
+        }
+
+        for state in [
+            (name: "about-control-rest", update: AboutUpdateState.upToDate, highlighted: false),
+            (name: "about-control-enabled-highlight", update: AboutUpdateState.upToDate, highlighted: true),
+            (name: "about-control-disabled-highlight", update: AboutUpdateState.checking, highlighted: true),
+        ] {
+            let controlBox = AboutMarkSampleBox()
+            let controlPage = AboutPage(
+                version: "1.0",
+                build: "1",
+                previewUpdate: state.update,
+                onLayout: { controlBox.frames = $0.frames },
+                previewControlHighlighted: state.highlighted
+            )
+            try writeHosted(
+                controlPage.frame(width: size.width, height: size.height),
+                size: size,
+                scheme: .light,
+                to: directory.appendingPathComponent("\(state.name).png")
+            )
+            let control = controlBox.frames["control"] ?? .zero
+            let bitmap = try bitmap(at: directory.appendingPathComponent("\(state.name).png"))
+            let sample = CGPoint(x: control.minX + 8, y: control.midY)
+            let fill = pixel(sample, in: bitmap)
+            lines.append(
+                "\(state.name) kind=control-state "
+                    + "control \(control.origin.x) \(control.origin.y) "
+                    + "\(control.size.width) \(control.size.height) "
+                    + "fill \(fill.0) \(fill.1) \(fill.2)"
+            )
+        }
+
+        try lines.joined(separator: "\n").appending("\n").write(
+            to: directory.appendingPathComponent("about-mark-frames.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private static func hostedBitmap(
+        _ hosting: NSHostingView<some View>,
+        size: CGSize
+    ) throws -> NSBitmapImageRep {
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width) * 2,
+            pixelsHigh: Int(size.height) * 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { throw RenderError.couldNotRender }
+        bitmap.size = size
+        hosting.cacheDisplay(in: NSRect(origin: .zero, size: size), to: bitmap)
+        return bitmap
+    }
+
+    private static func bitmap(at url: URL) throws -> NSBitmapImageRep {
+        let data = try Data(contentsOf: url)
+        guard let bitmap = NSBitmapImageRep(data: data) else { throw RenderError.couldNotRender }
+        return bitmap
+    }
+
+    private static func write(_ bitmap: NSBitmapImageRep, to url: URL) throws {
+        guard let data = bitmap.representation(using: .png, properties: [:]) else {
+            throw RenderError.couldNotEncode
+        }
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// Finds the disc in the rendered pixels instead of trusting the layout
+    /// frame. Offscreen hosting does not drive the live spring presentation,
+    /// so the drawn disc can remain at its printed position while the target
+    /// frame moves. This returns the frame the pixels actually show.
+    private static func renderedDiscFrame(in bitmap: NSBitmapImageRep) -> CGRect? {
+        let resolved = NSColor(AboutDialInk.disc).usingColorSpace(.sRGB) ?? NSColor.white
+        let ink = (
+            Int((resolved.redComponent * 255).rounded()),
+            Int((resolved.greenComponent * 255).rounded()),
+            Int((resolved.blueComponent * 255).rounded())
+        )
+        var minX = Int.max
+        var minY = Int.max
+        var maxX = Int.min
+        var maxY = Int.min
+        let xLimit = min(1_159, bitmap.pixelsWide - 1)
+        let yLimit = min(139, bitmap.pixelsHigh - 1)
+        for y in 0...yLimit {
+            for x in 980...xLimit {
+                let sample = pixel(CGPoint(x: Double(x) / 2, y: Double(y) / 2), in: bitmap)
+                guard abs(sample.0 - ink.0) <= 4,
+                      abs(sample.1 - ink.1) <= 4,
+                      abs(sample.2 - ink.2) <= 4
+                else { continue }
+                minX = min(minX, x)
+                minY = min(minY, y)
+                maxX = max(maxX, x)
+                maxY = max(maxY, y)
+            }
+        }
+        guard minX != Int.max else { return nil }
+        return CGRect(
+            x: Double(minX) / 2,
+            y: Double(minY) / 2,
+            width: Double(maxX - minX + 1) / 2,
+            height: Double(maxY - minY + 1) / 2
+        )
+    }
+
+    private static func pixel(_ point: CGPoint, in bitmap: NSBitmapImageRep) -> (Int, Int, Int) {
+        let x = Int((point.x * 2).rounded())
+        let y = Int((point.y * 2).rounded())
+        guard let colour = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return (0, 0, 0) }
+        return (
+            Int((colour.redComponent * 255).rounded()),
+            Int((colour.greenComponent * 255).rounded()),
+            Int((colour.blueComponent * 255).rounded())
+        )
     }
 
     /// Renders the General page before any take has taught the microphone.
     ///
-    /// The calibration row is present with no profile, so its explanation is
-    /// discoverable and the empty subtitle is part of the reviewed surface.
+    /// The calibration row is present with no profile, so its Reset control
+    /// is disabled and its tooltip says nothing was learned yet.
     static func renderSettingsWithoutProfile(to directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let providers = MenuBuilder.providerRows(config: .default) { _ in false }
@@ -615,8 +796,6 @@ enum UIPreview {
             _ name: String,
             tab: Int,
             keys: Set<String>,
-            voices: [VoiceDescriptor]? = nil,
-            connectors: [ConnectorSummary]? = nil,
             connection: AssistantConnectionState? = nil,
             models: [DiscoveredModel]? = nil,
             style: AssistantPage.StyleSelection? = nil,
@@ -638,8 +817,6 @@ enum UIPreview {
                             assistantConnection: connection,
                             assistantDiscoveredModels: models,
                             assistantStyleSelection: style,
-                            voices: voices,
-                            connectors: connectors,
                             height: size.height
                         )
                     },
@@ -897,50 +1074,6 @@ enum UIPreview {
         // window no longer has.
     }
 
-    /// Connector rows with a mixture of permission states, built from the
-    /// shipped connectors so the names, the symbols and the tools are the real
-    /// ones and only the permissions are sample.
-    private static func sampleConnectorSummaries() -> [ConnectorSummary] {
-        let states: [ConnectorID: ConnectorPermissionStatus] = [
-            .reminders: .granted,
-            .calendar: .notDetermined,
-            .contacts: .granted,
-            .notes: .denied,
-            .files: .granted,
-            .mail: .notDetermined,
-            .messages: .denied,
-            .apps: .granted,
-            .shortcuts: .restricted,
-            .music: .granted,
-            .spotify: .notDetermined,
-            .system: .granted,
-        ]
-        let settings = ConnectorSettings.default
-        return ConnectorCatalog.make().map { connector in
-            ConnectorSummary(
-                id: connector.id,
-                displayName: connector.displayName,
-                symbol: connector.symbol,
-                detail: connector.detail,
-                isEnabled: settings.isEnabled(connector.id),
-                permission: ConnectorPermission(
-                    status: states[connector.id] ?? .granted,
-                    service: connector.displayName,
-                    settingsURL: ConnectorPermission.Pane.automation.url
-                ),
-                tools: connector.tools().map { tool in
-                    ConnectorSummary.ToolSummary(
-                        name: tool.name,
-                        title: tool.title,
-                        detail: tool.description,
-                        risk: tool.risk,
-                        policy: ToolPolicy.derived(from: tool.risk)
-                    )
-                }
-            )
-        }
-    }
-
     private static func settingsPreview(
         config: DotConfig,
         providers: [MenuProvider],
@@ -953,8 +1086,6 @@ enum UIPreview {
         assistantConnection: AssistantConnectionState? = nil,
         assistantDiscoveredModels: [DiscoveredModel]? = nil,
         assistantStyleSelection: AssistantPage.StyleSelection? = nil,
-        voices: [VoiceDescriptor]? = nil,
-        connectors: [ConnectorSummary]? = nil,
         credential: SpeechCredentialStatus? = nil,
         height: CGFloat? = nil
     ) -> some View {
@@ -970,8 +1101,6 @@ enum UIPreview {
             assistantConnection: assistantConnection,
             assistantDiscoveredModels: assistantDiscoveredModels,
             assistantStyleSelection: assistantStyleSelection,
-            voices: voices,
-            connectors: connectors,
             credential: credential,
             height: height
         )
@@ -994,8 +1123,6 @@ enum UIPreview {
         let assistantConnection: AssistantConnectionState?
         let assistantDiscoveredModels: [DiscoveredModel]?
         let assistantStyleSelection: AssistantPage.StyleSelection?
-        let voices: [VoiceDescriptor]?
-        let connectors: [ConnectorSummary]?
         let credential: SpeechCredentialStatus?
         let height: CGFloat?
 
@@ -1011,8 +1138,6 @@ enum UIPreview {
             assistantConnection: AssistantConnectionState?,
             assistantDiscoveredModels: [DiscoveredModel]?,
             assistantStyleSelection: AssistantPage.StyleSelection?,
-            voices: [VoiceDescriptor]?,
-            connectors: [ConnectorSummary]?,
             credential: SpeechCredentialStatus?,
             height: CGFloat?
         ) {
@@ -1027,8 +1152,6 @@ enum UIPreview {
             self.assistantConnection = assistantConnection
             self.assistantDiscoveredModels = assistantDiscoveredModels
             self.assistantStyleSelection = assistantStyleSelection
-            self.voices = voices
-            self.connectors = connectors
             self.credential = credential
             self.height = height
         }
@@ -1056,8 +1179,6 @@ enum UIPreview {
             .environment(\.assistantConnectionPreview, assistantConnection)
             .environment(\.assistantDiscoveredModelsPreview, assistantDiscoveredModels)
             .environment(\.assistantStyleSelectionPreview, assistantStyleSelection)
-            .environment(\.settingsVoiceOptions, voices)
-            .environment(\.settingsConnectorSummaries, connectors)
         }
     }
 
@@ -1329,11 +1450,653 @@ enum UIPreview {
         try data.write(to: url, options: .atomic)
     }
 
+
+    // MARK: - About motion study
+
+    /// The argument that renders the About motion study and exits.
+    static let motionArgument = "--render-about-motion"
+
+    /// The directory the motion study was asked for, if any.
+    static func requestedMotionDirectory(
+        arguments: [String] = CommandLine.arguments
+    ) -> URL? {
+        if let index = arguments.firstIndex(of: motionArgument), index + 1 < arguments.count {
+            return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+        }
+        return nil
+    }
+
+    /// One sampled frame of a contact sheet.
+    private struct MotionSample {
+        let label: String
+        let input: AboutMotionInput
+        let update: AboutUpdateState
+    }
+
+    /// Renders the matrix: a settled frame and its layout, four contact sheets,
+    /// a real-speed clip with and without reduced motion, and a clip of the
+    /// interruptions.
+    ///
+    /// Every frame is one offscreen host injected with a sampled input, never a
+    /// live spring and never a sleep. The hosts are the page alone in a scroll
+    /// view at 565 points wide, which is the width and the geometry the real
+    /// settings window gives it.
+    static func renderAboutMotionStudy(to directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try writeMotionSettled(to: directory)
+        try writeMotionEntranceSheet(to: directory)
+        try writeMotionPointerSheet(to: directory)
+        try writeMotionUpdateSheet(to: directory)
+        try writeMotionRowsSheet(to: directory)
+        try writeMotionClip(reduceMotion: false, interrupt: false, to: directory)
+        try writeMotionClip(reduceMotion: true, interrupt: false, to: directory)
+        try writeMotionClip(reduceMotion: false, interrupt: true, to: directory)
+    }
+
+    /// The settled frame and the layout frames it was measured at.
+    private static func writeMotionSettled(to directory: URL) throws {
+        let size = CGSize(width: 565, height: 600)
+        var frames: [String: CGRect] = [:]
+        try autoreleasepool {
+            let hosting = motionHost(
+                input: AboutMotionInput(),
+                update: .idle,
+                size: size,
+                onLayout: { frames = $0.frames }
+            )
+            let bitmap = try hostedBitmap(hosting, size: size)
+            try write(
+                bitmap,
+                to: directory.appendingPathComponent("about-settled-matrix.png")
+            )
+        }
+        let lines = frames.keys.sorted().map { key -> String in
+            let frame = frames[key] ?? .zero
+            return String(
+                format: "%@ %.2f %.2f %.2f %.2f",
+                key,
+                frame.origin.x,
+                frame.origin.y,
+                frame.size.width,
+                frame.size.height
+            )
+        }
+        try lines.joined(separator: "\n").appending("\n").write(
+            to: directory.appendingPathComponent("layout-frames-after-matrix.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private static func writeMotionEntranceSheet(to directory: URL) throws {
+        let labels = ["0 ms", "83 ms", "167 ms", "283 ms", "467 ms", "633 ms", "settled"]
+        let elapsed: [Double?] = [0, 83, 167, 283, 467, 633, nil]
+        let samples = zip(labels, elapsed).map { pair in
+            MotionSample(
+                label: pair.0,
+                input: AboutMotionInput(entranceElapsed: pair.1),
+                update: .idle
+            )
+        }
+        try writeMotionSheet(
+            title: "matrix",
+            samples: samples,
+            frameSize: CGSize(width: 565, height: 260),
+            to: directory.appendingPathComponent("matrix-entrance.png")
+        )
+    }
+
+    private static func writeMotionPointerSheet(to directory: URL) throws {
+        let points: [(String, CGPoint?)] = [
+            ("no pointer", nil),
+            ("40, 40", CGPoint(x: 40, y: 40)),
+            ("282, 36", CGPoint(x: 282, y: 36)),
+            ("475, 30", CGPoint(x: 475, y: 30)),
+            ("525, 90", CGPoint(x: 525, y: 90)),
+        ]
+        let samples = points.map { pair in
+            MotionSample(
+                label: pair.0,
+                input: AboutMotionInput(pointer: pair.1),
+                update: .idle
+            )
+        }
+        try writeMotionSheet(
+            title: "matrix",
+            samples: samples,
+            frameSize: CGSize(width: 565, height: 260),
+            to: directory.appendingPathComponent("matrix-pointer.png")
+        )
+    }
+
+    private static func writeMotionUpdateSheet(to directory: URL) throws {
+        let checking: [Double] = [0, 140, 280, 420, 560, 800]
+        var samples = checking.map { elapsed in
+            MotionSample(
+                label: "checking \(Int(elapsed))",
+                input: AboutMotionInput(update: .checking(elapsed: elapsed)),
+                update: .checking
+            )
+        }
+        samples.append(
+            MotionSample(
+                label: "upToDate 100",
+                input: AboutMotionInput(
+                    update: .upToDate(elapsed: 100, frontsElapsed: nil)
+                ),
+                update: .upToDate
+            )
+        )
+        samples.append(
+            MotionSample(
+                label: "upToDate 400",
+                input: AboutMotionInput(
+                    update: .upToDate(elapsed: 400, frontsElapsed: nil)
+                ),
+                update: .upToDate
+            )
+        )
+        samples.append(
+            MotionSample(
+                label: "available 400",
+                input: AboutMotionInput(
+                    update: .available(elapsed: 400, frontsElapsed: nil)
+                ),
+                update: .available(version: "9.9.0", page: nil)
+            )
+        )
+        samples.append(
+            MotionSample(
+                label: "unreachable 60",
+                input: AboutMotionInput(
+                    // A front 60 ms old is still beside the disc, clear of the
+                    // control and status knockouts, so the half-faded fronts
+                    // are visible in the frame.
+                    update: .unreachable(elapsed: 60, frontsElapsed: 60)
+                ),
+                update: .unreachable
+            )
+        )
+        try writeMotionSheet(
+            title: "matrix",
+            samples: samples,
+            frameSize: CGSize(width: 565, height: 260),
+            to: directory.appendingPathComponent("matrix-update.png")
+        )
+    }
+
+    private static func writeMotionRowsSheet(to directory: URL) throws {
+        let rows: [Int] = [0, 1, 2, 3, 4, 5, 6]
+        var samples = rows.map { row in
+            MotionSample(
+                label: "row \(row)",
+                input: AboutMotionInput(engagedRow: row),
+                update: .idle
+            )
+        }
+        samples.append(
+            MotionSample(
+                label: "focus update",
+                input: AboutMotionInput(focusedControl: .update),
+                update: .idle
+            )
+        )
+        samples.append(
+            MotionSample(
+                label: "focus copy",
+                input: AboutMotionInput(focusedControl: .copy),
+                update: .idle
+            )
+        )
+        try writeMotionSheet(
+            title: "matrix",
+            samples: samples,
+            frameSize: CGSize(width: 565, height: 600),
+            to: directory.appendingPathComponent("matrix-rows.png")
+        )
+    }
+
+    /// Renders the samples at full size and lays them out three to a row with a
+    /// label under each.
+    ///
+    /// The frames are drawn at the bitmap's own pixels, so a contact sheet is
+    /// read at 100 percent rather than half size.
+    private static func writeMotionSheet(
+        title: String,
+        samples: [MotionSample],
+        frameSize: CGSize,
+        to url: URL
+    ) throws {
+        let framePixels = CGSize(width: frameSize.width * 2, height: frameSize.height * 2)
+        var frames: [(label: String, image: NSImage)] = []
+        for sample in samples {
+            let image = try autoreleasepool { () -> NSImage in
+                let hosting = motionHost(
+                    input: sample.input,
+                    update: sample.update,
+                    size: frameSize
+                )
+                let bitmap = try hostedBitmap(hosting, size: frameSize)
+                let image = NSImage(size: frameSize)
+                image.addRepresentation(bitmap)
+                return image
+            }
+            frames.append((sample.label, image))
+        }
+
+        let columns = min(3, frames.count)
+        let rows = (frames.count + columns - 1) / max(columns, 1)
+        let margin: CGFloat = 24
+        let gap: CGFloat = 20
+        let rowGap: CGFloat = 18
+        let titleHeight: CGFloat = 56
+        let labelHeight: CGFloat = 28
+        let width = margin * 2
+            + CGFloat(columns) * framePixels.width
+            + CGFloat(max(columns - 1, 0)) * gap
+        let height = margin * 2
+            + titleHeight
+            + CGFloat(rows) * (framePixels.height + labelHeight)
+            + CGFloat(max(rows - 1, 0)) * rowGap
+        guard let sheet = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(width),
+            pixelsHigh: Int(height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let context = NSGraphicsContext(bitmapImageRep: sheet) else {
+            throw RenderError.couldNotRender
+        }
+        sheet.size = CGSize(width: width, height: height)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.imageInterpolation = .high
+        NSColor.white.setFill()
+        NSBezierPath(rect: CGRect(x: 0, y: 0, width: width, height: height)).fill()
+        NSString(string: title).draw(
+            at: NSPoint(x: margin, y: height - margin - 34),
+            withAttributes: [
+                .font: DotType.nsFont(30, .semibold),
+                .foregroundColor: NSColor.black,
+            ]
+        )
+        let contentTop = height - margin - titleHeight
+        for (index, frame) in frames.enumerated() {
+            let row = index / columns
+            let column = index % columns
+            let x = margin + CGFloat(column) * (framePixels.width + gap)
+            let rowTop = contentTop
+                - CGFloat(row) * (framePixels.height + labelHeight + rowGap)
+            let rect = CGRect(
+                x: x,
+                y: rowTop - framePixels.height,
+                width: framePixels.width,
+                height: framePixels.height
+            )
+            frame.image.draw(
+                in: rect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1
+            )
+            NSColor(white: 0.78, alpha: 1).setStroke()
+            NSBezierPath(rect: rect).stroke()
+            NSString(string: frame.label).draw(
+                at: NSPoint(x: x, y: rowTop - framePixels.height - labelHeight + 6),
+                withAttributes: [
+                    .font: DotType.nsFont(17, .regular),
+                    .foregroundColor: NSColor(white: 0.22, alpha: 1),
+                ]
+            )
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        guard let data = sheet.representation(using: .png, properties: [:]) else {
+            throw RenderError.couldNotEncode
+        }
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// The clip's clock and springs, stepped once per frame.
+    ///
+    /// A clip has no SwiftUI animation session, so the pointer spring is
+    /// integrated here. Everything else is the model's own elapsed time: the
+    /// entrance, the pointer exit fade, the row fill and dot fades, the
+    /// checking fronts and the result that arrives mid-front.
+    private struct MatrixClipDriver {
+        let reduceMotion: Bool
+        let interrupt: Bool
+        var time: Double = 0
+        var clock = AboutMotionClock()
+        var engagedRow: Int?
+        var engagedAt: Double?
+        var releasedRow: Int?
+        var releasedAt: Double?
+        private var started = false
+
+        init(reduceMotion: Bool, interrupt: Bool) {
+            self.reduceMotion = reduceMotion
+            self.interrupt = interrupt
+        }
+
+        static let plateCentre = CGPoint(x: 282.5, y: 59)
+        static let pointerEntry = CGPoint(x: 12, y: 58)
+        static let pointerNearDisc = CGPoint(x: 500, y: 30)
+
+        mutating func advance(to time: Double) {
+            self.time = time
+            if !started {
+                clock.entranceStartedAt = 0
+                started = true
+            }
+            clock.reduceMotion = reduceMotion
+            if interrupt {
+                advanceInterrupt(to: time)
+            } else {
+                advanceNormal(to: time)
+            }
+        }
+
+        /// The sampled frame, including the row engagement the clip drives by
+        /// hand. The content groups and the matrix read the clock; the rows
+        /// use this input because their engagement is not an event on the
+        /// store.
+        var contentInput: AboutMotionInput {
+            var input = clock.input(at: time)
+            input.engagedRow = engagedRow
+            input.engagedElapsed = engagedAt.map { time - $0 }
+            input.releasedRow = releasedRow
+            input.releasedElapsed = releasedAt.map { time - $0 }
+            input.reduceMotion = reduceMotion
+            return input
+        }
+
+        private static func lerp(_ from: CGPoint, _ to: CGPoint, _ progress: Double) -> CGPoint {
+            let p = AboutEasing.clamp(progress)
+            return CGPoint(
+                x: from.x + (to.x - from.x) * p,
+                y: from.y + (to.y - from.y) * p
+            )
+        }
+
+        private mutating func advanceNormal(to time: Double) {
+            if time >= 2500 {
+                if let pointer = clock.pointer, pointer.amplitudeTo > 0 {
+                    clock.pointer?.exit(at: time)
+                }
+            } else if time >= 1300 {
+                let target: CGPoint
+                if time < 1900 {
+                    target = Self.lerp(
+                        Self.pointerEntry,
+                        Self.pointerNearDisc,
+                        (time - 1300) / 600
+                    )
+                } else {
+                    target = Self.lerp(
+                        Self.pointerNearDisc,
+                        Self.plateCentre,
+                        (time - 1900) / 600
+                    )
+                }
+                follow(target, at: time)
+            }
+
+            if time >= 2800, time < 4000 {
+                setRow(min(4, Int((time - 2800) / 240)), at: time)
+            } else if time >= 4000 {
+                setRow(nil, at: time)
+            }
+
+            if time >= 5800 {
+                clock.update = .upToDate(at: 5800, frontsElapsed: 1400)
+            } else if time >= 4400 {
+                clock.update = .checking(startedAt: 4400)
+            }
+        }
+
+        private mutating func advanceInterrupt(to time: Double) {
+            if time >= 200 {
+                clock.entranceStartedAt = nil
+            }
+            if time >= 1250 {
+                if let pointer = clock.pointer, pointer.amplitudeTo > 0 {
+                    clock.pointer?.exit(at: time)
+                }
+            } else if time >= 1130 {
+                let target = Self.lerp(
+                    CGPoint(x: 120, y: 60),
+                    CGPoint(x: 200, y: 40),
+                    (time - 1130) / 120
+                )
+                follow(target, at: time)
+            } else if time >= 1050 {
+                if let pointer = clock.pointer, pointer.amplitudeTo > 0 {
+                    clock.pointer?.exit(at: time)
+                }
+            } else if time >= 950 {
+                follow(
+                    Self.lerp(
+                        CGPoint(x: 140, y: 50),
+                        CGPoint(x: 480, y: 30),
+                        (time - 950) / 100
+                    ),
+                    at: time
+                )
+            } else if time >= 800 {
+                follow(
+                    Self.lerp(
+                        CGPoint(x: 80, y: 30),
+                        CGPoint(x: 140, y: 50),
+                        (time - 800) / 150
+                    ),
+                    at: time
+                )
+            }
+
+            if time >= 2050 {
+                clock.update = .unreachable(at: 2050, frontsElapsed: 250)
+            } else if time >= 1800 {
+                clock.update = .checking(startedAt: 1800)
+            }
+        }
+
+        /// A move retargets the live pointer timeline from its presented
+        /// position; a fresh entry starts there at full strength.
+        private mutating func follow(_ target: CGPoint, at time: Double) {
+            if clock.pointer == nil {
+                clock.pointer = AboutPointerTimeline(point: target, at: time)
+            } else {
+                clock.pointer?.retarget(to: target, at: time)
+            }
+        }
+
+        private mutating func setRow(_ row: Int?, at time: Double) {
+            guard row != engagedRow else { return }
+            if let previous = engagedRow {
+                releasedRow = previous
+                releasedAt = time
+            }
+            engagedRow = row
+            engagedAt = row == nil ? nil : time
+        }
+
+        var updateState: AboutUpdateState {
+            if interrupt {
+                if time >= 1800, time < 2050 { return .checking }
+                if time >= 2050 { return .unreachable }
+                return .idle
+            }
+            if time >= 4400, time < 5800 { return .checking }
+            if time >= 5800 { return .upToDate }
+            return .idle
+        }
+    }
+
+    /// Writes 420 frames at 60 frames per second, encodes them with H.264 and
+    /// deletes the frames.
+    private static func writeMotionClip(
+        reduceMotion: Bool,
+        interrupt: Bool,
+        to directory: URL
+    ) throws {
+        let name = interrupt
+            ? "matrix-clip-interrupt"
+            : (reduceMotion ? "matrix-clip-reduced" : "matrix-clip")
+        // Each invocation gets its own scratch directory. The renderer never
+        // removes a predictable path in the caller's directory: only the
+        // directory it just created is deleted.
+        let frameDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dot-about-motion-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: frameDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: frameDirectory) }
+
+        let size = CGSize(width: 565, height: 380)
+        let frameCount = interrupt ? 180 : 420
+        var driver = MatrixClipDriver(reduceMotion: reduceMotion, interrupt: interrupt)
+        for frame in 0..<frameCount {
+            let time = Double(frame) / 60.0 * 1000.0
+            driver.advance(to: time)
+            let url = frameDirectory.appendingPathComponent(
+                String(format: "frame-%04d.png", frame)
+            )
+            try autoreleasepool {
+                let hosting = motionHost(
+                    input: driver.contentInput,
+                    update: driver.updateState,
+                    clock: driver.clock,
+                    frameTime: time,
+                    size: size
+                )
+                let bitmap = try hostedBitmap(hosting, size: size)
+                try write(bitmap, to: url)
+            }
+        }
+
+        let output = directory.appendingPathComponent("\(name).mp4")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
+        process.arguments = [
+            "-y",
+            "-loglevel", "error",
+            "-framerate", "60",
+            "-i", frameDirectory.appendingPathComponent("frame-%04d.png").path,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-crf", "18",
+            "-preset", "medium",
+            output.path,
+        ]
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let message = String(data: data, encoding: .utf8) ?? "unknown encoder error"
+            throw RenderError.encoderFailed(message)
+        }
+    }
+
+    /// Measures the whole matrix leaf for consecutive clip frames.
+    ///
+    /// The timer wraps the leaf's Canvas closure: lattice evaluation, the
+    /// pointer patch, the checking fronts, the packet and the disc, followed
+    /// by their drawing. Layout and PNG encoding are outside it.
+    static func measureMatrixDraw(frames: Int) throws -> [Double] {
+        var driver = MatrixClipDriver(reduceMotion: false, interrupt: false)
+        var durations: [Double] = []
+        let size = CGSize(width: 565, height: 380)
+        for frame in 0..<frames {
+            let time = Double(frame) / 60.0 * 1000.0
+            driver.advance(to: time)
+            var sample: Double?
+            try autoreleasepool {
+                let hosting = motionHost(
+                    input: driver.contentInput,
+                    update: driver.updateState,
+                    clock: driver.clock,
+                    frameTime: time,
+                    size: size,
+                    onCanvasDraw: { sample = $0 }
+                )
+                _ = try hostedBitmap(hosting, size: size)
+            }
+            if let sample { durations.append(sample) }
+        }
+        return durations
+    }
+
+    /// One offscreen host for a sampled frame.
+    ///
+    /// The scroll view gives the page the same 565 points of width and the same
+    /// content geometry the settings window gives it. The host is never placed
+    /// in a window and never ordered front.
+    private static func motionHost(
+        input: AboutMotionInput?,
+        update: AboutUpdateState,
+        clock: AboutMotionClock? = nil,
+        frameTime: Double? = nil,
+        size: CGSize,
+        onLayout: ((AboutLayoutSnapshot) -> Void)? = nil,
+        onCanvasDraw: ((Double) -> Void)? = nil
+    ) -> NSHostingView<AnyView> {
+        let page = AboutPage(
+            version: "1.0",
+            build: "1",
+            previewUpdate: update,
+            onLayout: onLayout,
+            previewMotion: input,
+            previewClock: clock,
+            previewTime: frameTime,
+            onCanvasDraw: onCanvasDraw
+        )
+        let root = AnyView(
+            ScrollView(.vertical) {
+                page.frame(width: size.width)
+            }
+            .frame(width: size.width, height: size.height)
+            .background(DotTheme.paper)
+            .environment(\.colorScheme, .dark)
+            .environment(\.displayScale, 2)
+        )
+        let hosting = NSHostingView(rootView: root)
+        hosting.frame = NSRect(origin: .zero, size: size)
+        hosting.appearance = NSAppearance(named: .darkAqua)
+        settleMotionHost(hosting)
+        return hosting
+    }
+
+    /// Pumps the layout until the page's preference readers have reported.
+    ///
+    /// The four knockout frames arrive through a preference after the first
+    /// pass. Nothing here waits for an animation: the injected input is static,
+    /// so the passes only carry a frame from one SwiftUI layout generation to
+    /// the next.
+    private static func settleMotionHost(_ hosting: NSView) {
+        hosting.layoutSubtreeIfNeeded()
+        for _ in 0..<3 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.004))
+            hosting.layoutSubtreeIfNeeded()
+        }
+    }
+
     /// The render could not be made.
     enum RenderError: Error {
         case couldNotRender
         case couldNotEncode
+        case encoderFailed(String)
     }
+}
+
+/// The frame reader for one offscreen mark sample.
+@MainActor
+private final class AboutMarkSampleBox {
+    var frames: [String: CGRect] = [:]
 }
 
 /// The window chrome that only a preview needs: rounded corners, an edge and

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// One event a server sent on a `text/event-stream` response.
 public struct SSEEvent: Sendable, Equatable {
@@ -185,103 +186,240 @@ extension HTTPTransport {
         limits: AssistantStreamLimits = .default
     ) -> AsyncThrowingStream<SSEEvent, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    try await pump(request, session: session, limits: limits, into: continuation)
-                    continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish()
-                } catch let error as URLError where error.code == .cancelled {
-                    // A cancelled request is the caller's decision, not a
-                    // service failure, so it is not reported as one.
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: transportError(error))
-                }
+            let delegate = StreamDataDelegate(limits: limits, continuation: continuation)
+            let task = session.dataTask(with: request)
+            task.delegate = delegate
+            delegate.attach(task: task)
+            continuation.onTermination = { _ in
+                delegate.cancelByConsumer()
             }
-            continuation.onTermination = { _ in task.cancel() }
+            task.resume()
         }
     }
 
-    /// Reads one response and yields its events.
-    private static func pump(
-        _ request: URLRequest,
-        session: URLSession,
-        limits: AssistantStreamLimits,
-        into continuation: AsyncThrowingStream<SSEEvent, Error>.Continuation
-    ) async throws {
-        let response: URLResponse
-        let bytes: URLSession.AsyncBytes
-        do {
-            (bytes, response) = try await session.bytes(for: request)
-        } catch let error as URLError {
-            throw ProviderError.transport(error.localizedDescription)
-        }
-        guard let http = response as? HTTPURLResponse else {
-            throw ProviderError.invalidResponse("no HTTP status")
-        }
-        // Whatever ends the read, the connection is released here: a thrown
-        // error, an oversized answer or a normal end all leave the same way.
-        defer { bytes.task.cancel() }
-        guard (200..<300).contains(http.statusCode) else {
-            let message = await failureMessage(in: bytes, limit: limits.maximumErrorBytes)
-            throw ProviderError.rejected(status: http.statusCode, message: message)
+    private final class StreamDataDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        private struct State {
+            var task: URLSessionDataTask?
+            var statusCode: Int?
+            var decoder: SSEDecoder
+            var lineBuffer: [UInt8] = []
+            var errorBuffer = Data()
+            var totalBytes = 0
+            var finished = false
+            var cancelledByConsumer = false
+
+            init(limits: AssistantStreamLimits) {
+                self.decoder = SSEDecoder(limits: limits)
+                self.lineBuffer.reserveCapacity(256)
+            }
         }
 
-        var decoder = SSEDecoder(limits: limits)
-        var line: [UInt8] = []
-        line.reserveCapacity(256)
-        var total = 0
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            total += 1
-            guard total <= limits.maximumTotalBytes else {
-                throw ProviderError.invalidResponse(ProviderErrorText.oversizedAnswer)
+        private let limits: AssistantStreamLimits
+        private let continuation: AsyncThrowingStream<SSEEvent, Error>.Continuation
+        private let state: OSAllocatedUnfairLock<State>
+
+        init(
+            limits: AssistantStreamLimits,
+            continuation: AsyncThrowingStream<SSEEvent, Error>.Continuation
+        ) {
+            self.limits = limits
+            self.continuation = continuation
+            self.state = OSAllocatedUnfairLock(initialState: State(limits: limits))
+        }
+
+        func attach(task: URLSessionDataTask) {
+            let shouldCancel = state.withLock { current -> Bool in
+                current.task = task
+                return current.cancelledByConsumer || current.finished
             }
-            if byte == 0x0A {
-                if line.last == 0x0D { line.removeLast() }
-                let text = String(decoding: line, as: UTF8.self)
-                line.removeAll(keepingCapacity: true)
-                if let event = try decoder.consume(line: text) {
+            if shouldCancel {
+                task.cancel()
+            }
+        }
+
+        func cancelByConsumer() {
+            let task = state.withLock { current -> URLSessionDataTask? in
+                current.cancelledByConsumer = true
+                let activeTask = current.task
+                current.task = nil
+                guard !current.finished else { return nil }
+                current.finished = true
+                return activeTask
+            }
+            task?.cancel()
+        }
+
+        func urlSession(
+            _ session: URLSession,
+            dataTask: URLSessionDataTask,
+            didReceive response: URLResponse,
+            completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+        ) {
+            guard let http = response as? HTTPURLResponse else {
+                let finish = state.withLock { current -> Bool in
+                    current.task = nil
+                    guard !current.finished else { return false }
+                    current.finished = true
+                    return true
+                }
+                completionHandler(.cancel)
+                if finish {
+                    continuation.finish(throwing: ProviderError.invalidResponse("no HTTP status"))
+                }
+                return
+            }
+
+            state.withLock { current in
+                guard !current.finished else { return }
+                current.statusCode = http.statusCode
+                if !(200..<300).contains(http.statusCode) {
+                    current.errorBuffer.reserveCapacity(min(limits.maximumErrorBytes, 4096))
+                }
+            }
+            completionHandler(.allow)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+            enum ChunkOutcome {
+                case events([SSEEvent])
+                case fail(Error)
+                case finishRejected(status: Int, message: String?)
+                case ignored
+            }
+
+            let limits = self.limits
+            let outcome = state.withLock { current -> ChunkOutcome in
+                guard !current.finished, !current.cancelledByConsumer else { return .ignored }
+                guard let statusCode = current.statusCode else { return .ignored }
+
+                if !(200..<300).contains(statusCode) {
+                    let remaining = limits.maximumErrorBytes - current.errorBuffer.count
+                    if remaining > 0 {
+                        current.errorBuffer.append(contentsOf: chunk.prefix(remaining))
+                    }
+                    if current.errorBuffer.count >= limits.maximumErrorBytes {
+                        current.finished = true
+                        current.task = nil
+                        let message = AssistantWireError.message(in: current.errorBuffer)
+                        return .finishRejected(status: statusCode, message: message)
+                    }
+                    return .events([])
+                }
+
+                var events: [SSEEvent] = []
+                do {
+                    for byte in chunk {
+                        current.totalBytes += 1
+                        guard current.totalBytes <= limits.maximumTotalBytes else {
+                            current.finished = true
+                            current.task = nil
+                            return .fail(ProviderError.invalidResponse(ProviderErrorText.oversizedAnswer))
+                        }
+                        if byte == 0x0A {
+                            if current.lineBuffer.last == 0x0D {
+                                current.lineBuffer.removeLast()
+                            }
+                            let text = String(decoding: current.lineBuffer, as: UTF8.self)
+                            current.lineBuffer.removeAll(keepingCapacity: true)
+                            if let event = try current.decoder.consume(line: text) {
+                                events.append(event)
+                            }
+                        } else {
+                            current.lineBuffer.append(byte)
+                            guard current.lineBuffer.count <= limits.maximumLineBytes else {
+                                current.finished = true
+                                current.task = nil
+                                return .fail(ProviderError.invalidResponse(ProviderErrorText.oversizedAnswer))
+                            }
+                        }
+                    }
+                    return .events(events)
+                } catch {
+                    current.finished = true
+                    current.task = nil
+                    return .fail(HTTPTransport.transportError(error))
+                }
+            }
+
+            switch outcome {
+            case .events(let events):
+                for event in events {
                     continuation.yield(event)
                 }
-            } else {
-                line.append(byte)
-                guard line.count <= limits.maximumLineBytes else {
-                    throw ProviderError.invalidResponse(ProviderErrorText.oversizedAnswer)
+            case .fail(let error):
+                dataTask.cancel()
+                continuation.finish(throwing: error)
+            case .finishRejected(let status, let message):
+                dataTask.cancel()
+                continuation.finish(throwing: ProviderError.rejected(status: status, message: message))
+            case .ignored:
+                break
+            }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            enum Completion {
+                case finishClean([SSEEvent])
+                case finishError(Error)
+                case finishRejected(status: Int, message: String?)
+                case finishCancelled
+                case alreadyDone
+            }
+
+            let completion = state.withLock { current -> Completion in
+                current.task = nil
+                guard !current.finished else { return .alreadyDone }
+                current.finished = true
+                if current.cancelledByConsumer {
+                    return .finishCancelled
+                }
+                if let statusCode = current.statusCode, !(200..<300).contains(statusCode) {
+                    let message = AssistantWireError.message(in: current.errorBuffer)
+                    return .finishRejected(status: statusCode, message: message)
+                }
+                if let error {
+                    if let urlError = error as? URLError, urlError.code == .cancelled {
+                        return .finishCancelled
+                    }
+                    return .finishError(HTTPTransport.transportError(error))
+                }
+
+                var events: [SSEEvent] = []
+                do {
+                    if !current.lineBuffer.isEmpty {
+                        if current.lineBuffer.last == 0x0D {
+                            current.lineBuffer.removeLast()
+                        }
+                        let text = String(decoding: current.lineBuffer, as: UTF8.self)
+                        if let event = try current.decoder.consume(line: text) {
+                            events.append(event)
+                        }
+                    }
+                    if let event = current.decoder.flush() {
+                        events.append(event)
+                    }
+                    return .finishClean(events)
+                } catch {
+                    return .finishError(HTTPTransport.transportError(error))
                 }
             }
-        }
-        if !line.isEmpty {
-            if line.last == 0x0D { line.removeLast() }
-            if let event = try decoder.consume(line: String(decoding: line, as: UTF8.self)) {
-                continuation.yield(event)
-            }
-        }
-        if let event = decoder.flush() {
-            continuation.yield(event)
-        }
-    }
 
-    /// The message at the head of a failed answer.
-    ///
-    /// Only the head is read: the answer can be a page of markup, and the
-    /// status code is the fact even when the body says nothing useful.
-    private static func failureMessage(
-        in bytes: URLSession.AsyncBytes,
-        limit: Int
-    ) async -> String? {
-        var data = Data()
-        data.reserveCapacity(min(limit, 4096))
-        do {
-            for try await byte in bytes {
-                data.append(byte)
-                if data.count >= limit { break }
+            switch completion {
+            case .finishClean(let events):
+                for event in events {
+                    continuation.yield(event)
+                }
+                continuation.finish()
+            case .finishError(let error):
+                continuation.finish(throwing: error)
+            case .finishRejected(let status, let message):
+                continuation.finish(throwing: ProviderError.rejected(status: status, message: message))
+            case .finishCancelled:
+                continuation.finish()
+            case .alreadyDone:
+                break
             }
-        } catch {
-            return nil
         }
-        return AssistantWireError.message(in: data)
     }
 
     /// Maps any thrown error to the shape the card and the log show.

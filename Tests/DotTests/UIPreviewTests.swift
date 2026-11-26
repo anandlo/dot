@@ -20,6 +20,12 @@ final class UIPreviewTests: XCTestCase {
     override func setUp() {
         super.setUp()
         FontFixture.register()
+        DotMotion.reducesMotionOverride = false
+    }
+
+    override func tearDown() {
+        DotMotion.reducesMotionOverride = nil
+        super.tearDown()
     }
 
     func testWelcomeAndAboutRenderToPNGs() throws {
@@ -261,6 +267,157 @@ final class UIPreviewTests: XCTestCase {
             "the update control's outline has less than 3 to one against the plate"
         )
 
+        // The matrix samples are settled states from one mounted host each.
+        // The disc never moves; the patch is read at the pointer and away from
+        // it, and the tracking region is the whole plate.
+        let frameText = try String(
+            contentsOf: directory.appendingPathComponent("about-mark-frames.txt"),
+            encoding: .utf8
+        )
+        var frameRows: [String: [String]] = [:]
+        for row in frameText.split(separator: "\n") {
+            let parts = row.split(separator: " ").map(String.init)
+            if parts.count >= 2 { frameRows[parts[0]] = parts }
+        }
+        func values(_ name: String, after label: String, count: Int) throws -> [Double] {
+            guard let parts = frameRows[name] else {
+                XCTFail("\(name) was not logged")
+                return []
+            }
+            guard let at = parts.firstIndex(of: label) else {
+                XCTFail("\(name) has no \(label) sample")
+                return []
+            }
+            let found = parts[(at + 1)...].prefix(count).compactMap(Double.init)
+            guard found.count == count else {
+                XCTFail("\(name) \(label) logged \(found.count) values, not \(count)")
+                return []
+            }
+            return found
+        }
+        func pixels(_ name: String, after label: String) throws -> (Int, Int, Int) {
+            let v = try values(name, after: label, count: 3)
+            return (Int(v[0]), Int(v[1]), Int(v[2]))
+        }
+        func bitmapPixel(_ point: CGPoint, in bitmap: NSBitmapImageRep) -> (Int, Int, Int) {
+            bitmap.rawPixel(
+                x: Int((point.x * 2).rounded()),
+                y: Int((point.y * 2).rounded())
+            )
+        }
+        func pointer(_ name: String) -> CGPoint? {
+            guard let parts = frameRows[name],
+                  let at = parts.firstIndex(of: "pointer"),
+                  parts.count > at + 1
+            else { return nil }
+            let token = parts[at + 1]
+            if token == "none" { return nil }
+            guard parts.count > at + 2,
+                  let x = Double(token),
+                  let y = Double(parts[at + 2])
+            else { return nil }
+            return CGPoint(x: x, y: y)
+        }
+        let markNames = [
+            "about-mark-rest",
+            "about-mark-engaged",
+            "about-mark-retarget",
+            "about-mark-exit-settled",
+            "about-mark-return-settled",
+        ]
+        var discFrames: [String: [Double]] = [:]
+        var actualFrames: [String: [Double]] = [:]
+        for name in markNames {
+            XCTAssertEqual(frameRows[name]?[1], "kind=state-settled", "\(name) is not a settled state")
+            let plate = try values(name, after: "plate", count: 4)
+            let disc = try values(name, after: "disc", count: 4)
+            let actual = try values(name, after: "actual", count: 4)
+            let region = try values(name, after: "region", count: 4)
+            discFrames[name] = disc
+            actualFrames[name] = actual
+            XCTAssertEqual(region[0], plate[0], accuracy: 0.1, "\(name) tracking origin x")
+            XCTAssertEqual(region[1], plate[1], accuracy: 0.1, "\(name) tracking origin y")
+            XCTAssertEqual(region[2], plate[2], accuracy: 0.1, "\(name) tracking width")
+            XCTAssertEqual(region[3], plate[3], accuracy: 0.1, "\(name) tracking height")
+
+            let patch = try pixels(name, after: "patch")
+            let far = try pixels(name, after: "far")
+            if pointer(name) == nil {
+                XCTAssertLessThan(patch.0, 60, "\(name) drew a patch with no pointer")
+            } else {
+                XCTAssertGreaterThan(patch.0, 90, "\(name) patch centre is not lit")
+                XCTAssertGreaterThan(patch.1, 80, "\(name) patch centre is not lit")
+                XCTAssertLessThan(far.0, 60, "\(name) patch reaches the far point")
+            }
+
+            let bitmap = try bitmap(in: directory.appendingPathComponent("\(name).png"))
+            let centre = bitmapPixel(
+                CGPoint(x: actual[0] + actual[2] / 2, y: actual[1] + actual[3] / 2),
+                in: bitmap
+            )
+            XCTAssertEqual(centre.0, discInk.0, accuracy: 5, "\(name) disc centre pixel")
+            XCTAssertEqual(centre.1, discInk.1, accuracy: 5, "\(name) disc centre pixel")
+            XCTAssertEqual(centre.2, discInk.2, accuracy: 5, "\(name) disc centre pixel")
+            let inner = bitmapPixel(
+                CGPoint(
+                    x: actual[0] + actual[2] / 2 - 8,
+                    y: actual[1] + actual[3] / 2
+                ),
+                in: bitmap
+            )
+            XCTAssertEqual(inner.0, discInk.0, accuracy: 5, "\(name) inner disc pixel")
+            XCTAssertEqual(inner.1, discInk.1, accuracy: 5, "\(name) inner disc pixel")
+            XCTAssertEqual(inner.2, discInk.2, accuracy: 5, "\(name) inner disc pixel")
+            let outside = bitmapPixel(
+                CGPoint(x: actual[0] - 4, y: actual[1] + actual[3] / 2),
+                in: bitmap
+            )
+            XCTAssertLessThan(
+                outside.0,
+                200,
+                "\(name) the disc did not clip the matrix just outside it"
+            )
+            if pointer(name) == nil {
+                XCTAssertEqual(outside.0, plateInk.0, accuracy: 3, "\(name) pixel outside the disc")
+                XCTAssertEqual(outside.1, plateInk.1, accuracy: 3, "\(name) pixel outside the disc")
+                XCTAssertEqual(outside.2, plateInk.2, accuracy: 3, "\(name) pixel outside the disc")
+            }
+        }
+        if let rest = discFrames["about-mark-rest"] {
+            for name in markNames.dropFirst() {
+                guard let frame = discFrames[name] else { continue }
+                XCTAssertEqual(frame[0], rest[0], accuracy: 0.6, "\(name) layout disc x")
+                XCTAssertEqual(frame[1], rest[1], accuracy: 0.6, "\(name) layout disc y")
+            }
+        }
+        if let rest = actualFrames["about-mark-rest"] {
+            for name in markNames.dropFirst() {
+                guard let frame = actualFrames[name] else { continue }
+                XCTAssertEqual(frame[0], rest[0], accuracy: 1.0, "\(name) rendered disc x")
+                XCTAssertEqual(frame[1], rest[1], accuracy: 1.0, "\(name) rendered disc y")
+            }
+        }
+        let restFill = try pixels("about-control-rest", after: "fill")
+        let enabledFill = try pixels("about-control-enabled-highlight", after: "fill")
+        let disabledFill = try pixels("about-control-disabled-highlight", after: "fill")
+        XCTAssertEqual(disabledFill.0, restFill.0, accuracy: 2, "disabled control took the highlight")
+        XCTAssertEqual(disabledFill.1, restFill.1, accuracy: 2, "disabled control took the highlight")
+        XCTAssertEqual(disabledFill.2, restFill.2, accuracy: 2, "disabled control took the highlight")
+        XCTAssertGreaterThanOrEqual(enabledFill.0 - restFill.0, 5, "enabled highlight was not visible")
+        XCTAssertGreaterThanOrEqual(enabledFill.1 - restFill.1, 5, "enabled highlight was not visible")
+        for name in markNames + [
+            "about-control-rest",
+            "about-control-enabled-highlight",
+            "about-control-disabled-highlight",
+        ] {
+            let url = directory.appendingPathComponent("\(name).png")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "\(name) was not written")
+            let data = try Data(contentsOf: url)
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data), "\(name) is not a PNG")
+            XCTAssertEqual(bitmap.pixelsWide, 1_130, "\(name) width")
+            XCTAssertEqual(bitmap.pixelsHigh, 1_200, "\(name) height")
+        }
+
         for suffix in ["", "-dark"] {
             let current = try Data(
                 contentsOf: directory.appendingPathComponent("settings-about-state-current\(suffix).png")
@@ -376,6 +533,76 @@ final class UIPreviewTests: XCTestCase {
             500,
             "the card with every style removed drew neither its message nor the restore row"
         )
+    }
+
+    /// The dark About plate is the only place the mark may draw. Its circle
+    /// continues past the plate on the top and right, so an overlay applied
+    /// after the clip would leave disc ink outside the plate. The plate frame
+    /// is measured from the full dark render itself, and the same disc-ink
+    /// tolerance used by the existing render assertions is applied to three
+    /// points: above, right and still inside.
+    func testTheDarkAboutPlateClipsTheDiscToItsOwnFrame() throws {
+        guard let value = DotMigration.environment("RENDER_UI_DIR"),
+              !value.isEmpty
+        else {
+            throw XCTSkip("Set DOT_RENDER_UI_DIR to check the dark About plate.")
+        }
+        let directory = URL(fileURLWithPath: value, isDirectory: true)
+        let bitmap = try bitmap(in: directory.appendingPathComponent("settings-about-dark.png"))
+        let plateInk = srgb(AboutDialInk.plate)
+        let discInk = srgb(AboutDialInk.disc)
+
+        func isPlate(_ sample: (Int, Int, Int)) -> Bool {
+            abs(sample.0 - plateInk.0) <= 2
+                && abs(sample.1 - plateInk.1) <= 2
+                && abs(sample.2 - plateInk.2) <= 2
+        }
+        var minX = 0
+        var maxX = 0
+        for y in stride(from: 200, through: 400, by: 4) {
+            let row = (400..<1_640).filter { isPlate(bitmap.rawPixel(x: $0, y: y)) }
+            guard row.count > 900, let first = row.first, let last = row.last else { continue }
+            if last - first > maxX - minX {
+                minX = first
+                maxX = last
+            }
+        }
+        XCTAssertGreaterThan(maxX - minX, 1_000, "the dark plate row was not found in the render")
+        var minY = 0
+        var maxY = 0
+        for columnX in stride(from: minX + 40, through: maxX - 40, by: 20) {
+            let column = (120..<480).filter { isPlate(bitmap.rawPixel(x: columnX, y: $0)) }
+            guard let first = column.first, let last = column.last else { continue }
+            if last - first > maxY - minY {
+                minY = first
+                maxY = last
+            }
+        }
+        XCTAssertGreaterThan(maxY - minY, 200, "the dark plate column was not found in the render")
+        let plate = CGRect(
+            x: Double(minX) / 2,
+            y: Double(minY) / 2,
+            width: Double(maxX - minX + 1) / 2,
+            height: Double(maxY - minY + 1) / 2
+        )
+        XCTAssertGreaterThan(plate.width, 550, "the measured plate is too narrow")
+
+        let centreX = plate.maxX - 25.5
+        let centreY = plate.minY + 25.5
+        let above = CGPoint(x: centreX, y: plate.minY - 4)
+        let right = CGPoint(x: plate.maxX + 4, y: centreY)
+        let interior = CGPoint(x: plate.maxX - 12, y: plate.minY + 18)
+        func isDisc(_ sample: (Int, Int, Int)) -> Bool {
+            abs(sample.0 - discInk.0) <= 5
+                && abs(sample.1 - discInk.1) <= 5
+                && abs(sample.2 - discInk.2) <= 5
+        }
+        func pixel(at point: CGPoint) -> (Int, Int, Int) {
+            bitmap.rawPixel(x: Int((point.x * 2).rounded()), y: Int((point.y * 2).rounded()))
+        }
+        XCTAssertFalse(isDisc(pixel(at: above)), "the dark disc drew above the clipped plate")
+        XCTAssertFalse(isDisc(pixel(at: right)), "the dark disc drew right of the clipped plate")
+        XCTAssertTrue(isDisc(pixel(at: interior)), "the dark disc is missing inside the plate")
     }
 
     func testSettingsWithoutProfileRenderToPNGs() throws {

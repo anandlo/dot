@@ -40,9 +40,9 @@ final class RewriteConfigurationTests: XCTestCase {
     }
 
     func testAFileWithoutTheBlockKeepsTheDefaults() throws {
-        let config = try load(#"{"provider": "deepgram", "assistant": {"delivery": "speak"}}"#)
+        let config = try load(#"{"provider": "deepgram", "assistant": {"chat": {"provider": "anthropic"}}}"#)
         XCTAssertEqual(config.assistant.rewrite, RewriteConfiguration.default)
-        XCTAssertEqual(config.assistant.delivery, .speak, "the rest of the block survived")
+        XCTAssertEqual(config.assistant.chat.providerID, "anthropic", "the rest of the block survived")
     }
 
     func testAnUnknownStyleIDIsDroppedAndTheRestStays() throws {

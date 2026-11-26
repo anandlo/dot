@@ -4,12 +4,12 @@ on:
   push:
     tags:
       - "v*"
-  # A tag is still the normal way to cut a release. The manual trigger exists so
-  # a release can be rebuilt from a branch without deleting and re-pushing a tag.
+  # The v* tag push is the only publishing event. The manual trigger runs Verify
+  # on its selected ref without publishing or creating a tag.
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 # Mirrors ci.yml, except that a release in flight is never cancelled: a run that
 # dies between building and uploading leaves a release page with fewer files than
@@ -19,20 +19,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-release:
-    name: Build & Publish Release
-    runs-on: macos-latest
-    timeout-minutes: 30
+  verify:
+    name: Verify
+    # macos-26 is a pinned image rather than the moving macos-latest alias.
+    runs-on: macos-26
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # macos-latest is the macOS 26 arm64 image and carries Xcode 26.x; the
-      # Xcode 15.4 this workflow used to pin lives on the macOS 14 image and
-      # cannot parse `swift-tools-version: 6.0`. The image's default Xcode is
-      # used, and the Swift version that actually ran is asserted, so the
-      # compiler is verified instead of assumed.
+      - name: Run the shared gate
+        uses: ./.github/actions/dot-gate
+
+  publish:
+    name: Build & Publish Release
+    # Only a pushed v* tag may publish; workflow_dispatch runs Verify alone.
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: macos-26
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # build.sh numbers the build by commit count, which a shallow clone
+          # would report as 1.
+          fetch-depth: 0
+
+      # macos-26 is the arm64 image that carries Xcode 26.x, which can parse
+      # `swift-tools-version: 6.0`. The default Xcode is used, and the Swift
+      # version that actually ran is asserted, so the compiler is checked rather
+      # than assumed.
       - name: Select Xcode
         run: |
           sw_vers
@@ -65,20 +89,22 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match VERSION ($version); expected v$version"
             exit 1
           fi
-          # A hyphen marks a prerelease: 0.1.0-beta, 1.0.0-rc1. Marking it on the
+          # A hyphen marks a prerelease: 0.1.0-beta, 0.2.0-beta, 1.0.0-rc.1. Marking it on the
           # release page hides it from /releases/latest, which is correct for a
           # beta and is why scripts/install-remote.sh falls back to the full list.
           case "$version" in
             *-*) prerelease=true ;;
             *) prerelease=false ;;
           esac
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "tag=v$version"
+          } >> "$GITHUB_OUTPUT"
           echo "Version $version, prerelease=$prerelease"
 
-      - name: Run Test Suite
-        run: swift test --parallel
+      - name: Fetch the typeface
+        run: ./scripts/fetch-fonts.sh
 
       # Dot's self-signed identity, when the repository has it. Two secrets hold
       # it, and both have to be present:
@@ -90,10 +116,9 @@ jobs:
       #                                    Export Items). Then `base64 -i file.p12`.
       #   DOT_SIGNING_CERTIFICATE_PASSWORD  that file's passphrase
       #
-      # Without them the release stays ad-hoc, which is a working build but one
-      # whose designated requirement is its own hash: everyone who installs it
-      # grants microphone and Accessibility again on the next update. Nothing here
-      # fails when the secrets are absent, so a fork can still cut a release.
+      # The upstream repository fails closed when either is missing, so its
+      # releases never silently lose the identity that keeps granted permissions
+      # across updates. A fork can still cut an ad-hoc release.
       - name: Import the signing identity
         id: identity
         env:
@@ -102,6 +127,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${DOT_SIGNING_CERTIFICATE_P12:-}" ] || [ -z "${DOT_SIGNING_CERTIFICATE_PASSWORD:-}" ]; then
+            if [ "${{ github.repository }}" = "anandlo/dot" ]; then
+              echo "::error::DOT_SIGNING_CERTIFICATE_P12 and DOT_SIGNING_CERTIFICATE_PASSWORD are required for anandlo/dot releases"
+              exit 1
+            fi
             echo "::notice::DOT_SIGNING_CERTIFICATE_P12 and DOT_SIGNING_CERTIFICATE_PASSWORD are not both set. The release will be ad-hoc signed, so the permissions granted to it will not survive the next update."
             echo "signed=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -130,6 +159,9 @@ jobs:
       - name: Package Release
         run: ./scripts/release.sh
 
+      - name: Verify the rebuilt bundle
+        run: python3 scripts/ci/verify_bundle.py --require-modern-icon build/Dot.app
+
       # The proof that the secrets did what they claim. An ad-hoc build has a
       # cdhash for a requirement, which no release should publish by accident when
       # the identity was meant to be used.
@@ -153,11 +185,19 @@ jobs:
           cat build/release/SHA256SUMS
           ls -l build/release
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Attest the release artifacts
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          # Named explicitly so a manual run creates or updates the same tag the
-          # version implies, instead of one named after the branch.
+          subject-path: |
+            build/release/Dot-*.dmg
+            build/release/Dot-*.zip
+            build/release/SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          # The pushed v* tag was checked against VERSION, so use that exact
+          # version for the release name instead of deriving it from the ref.
           tag_name: ${{ steps.release.outputs.tag }}
           name: Dot ${{ steps.release.outputs.version }}
           files: |

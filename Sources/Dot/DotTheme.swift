@@ -14,8 +14,6 @@ enum DotTheme {
 
     /// The window paper.
     static let paper = adaptive(light: ns(0.973, 0.957, 0.929), dark: ns(0.102, 0.090, 0.082))
-    /// The deeper paper of the sidebar and inset areas.
-    static let paperDeep = adaptive(light: ns(0.918, 0.892, 0.847), dark: ns(0.078, 0.071, 0.063))
     /// The second stop of the paper gradient.
     static let paperTint = adaptive(light: ns(0.945, 0.921, 0.867), dark: ns(0.133, 0.118, 0.106))
 
@@ -40,8 +38,6 @@ enum DotTheme {
     static let accent = adaptive(light: ns(0.169, 0.157, 0.133), dark: ns(0.949, 0.929, 0.898))
     /// A pale accent wash for icon chips.
     static let accentSoft = adaptive(light: white(0.08), dark: white(0.075))
-    /// The label colour on an accent fill.
-    static let onAccent = adaptive(light: white(1), dark: ns(0.090, 0.075, 0.065))
     // MARK: - Surfaces
 
     /// The fill of a raised card.
@@ -209,8 +205,6 @@ enum DotTheme {
     /// app icon, and the icon does not change with the system appearance.
     static let markPlateTop = Color(red: 0x2B / 255, green: 0x28 / 255, blue: 0x22 / 255)
     static let markPlateBottom = Color(red: 0x19 / 255, green: 0x17 / 255, blue: 0x14 / 255)
-    /// The seat under the mark, matching the icon's measured shadow.
-    static let markShadow = Color.black.opacity(0.28)
 
     /// A one-pixel edge around the mark's plate. On dark paper the plate's own
     /// colour is within a few points of the background, so without an edge the
@@ -260,12 +254,6 @@ enum DotTheme {
     static var labelFont: Font { DotType.font(10.5, .semibold) }
     /// The name of a setting.
     static var rowTitleFont: Font { DotType.font(12.5, .semibold) }
-    /// The line under a setting that says what it does. One size everywhere:
-    /// the pages used to mix 10.5 and 11, which read as two ranks of the same
-    /// thing.
-    static var rowDetailFont: Font { DotType.font(11, .medium) }
-    /// The caps label above a field or a card.
-    static var fieldLabelFont: Font { DotType.font(9.5, .semibold) }
 
     // MARK: - Colour helpers
 
@@ -294,22 +282,194 @@ enum DotTheme {
 }
 
 /// The warm paper behind every window.
+///
+/// Renders its three static background gradients once into a backing `CGImage`
+/// layer per `(widthPx, heightPx, colorScheme)` instead of compositing three
+/// full-window gradient layers behind transparent scroll views on every frame.
 struct DotPaper: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
+
     var body: some View {
-        ZStack {
-            DotTheme.paperFill
-            RadialGradient(
-                colors: [DotTheme.paperGlow, .clear],
-                center: .topLeading,
-                startRadius: 20,
-                endRadius: 520
-            )
-            LinearGradient(
-                colors: [.clear, DotTheme.paperShade],
-                startPoint: .center,
-                endPoint: .bottom
+        DotPaperBackingView(isDark: colorScheme == .dark, displayScale: displayScale)
+            .allowsHitTesting(false)
+    }
+}
+
+private struct DotPaperBackingView: NSViewRepresentable {
+    let isDark: Bool
+    let displayScale: CGFloat
+
+    func makeNSView(context: Context) -> DotPaperNSView {
+        let view = DotPaperNSView()
+        view.update(isDark: isDark, preferredScale: displayScale)
+        return view
+    }
+
+    func updateNSView(_ nsView: DotPaperNSView, context: Context) {
+        nsView.update(isDark: isDark, preferredScale: displayScale)
+    }
+}
+
+final class DotPaperNSView: NSView {
+    private struct RenderKey: Equatable {
+        let widthPx: Int
+        let heightPx: Int
+        let isDark: Bool
+    }
+
+    #if DEBUG
+    @MainActor static var debugRenderCount = 0
+    @MainActor static func debugResetRenderCount() {
+        debugRenderCount = 0
+    }
+    #endif
+
+    private var lastKey: RenderKey?
+    private var requestedDark = false
+    private var preferredScale: CGFloat = 2
+
+    override var isOpaque: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.contentsGravity = .resize
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func update(isDark: Bool, preferredScale: CGFloat) {
+        let clampedScale = max(1, preferredScale)
+        if requestedDark != isDark || self.preferredScale != clampedScale {
+            requestedDark = isDark
+            self.preferredScale = clampedScale
+            renderIfNeeded()
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            renderIfNeeded()
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        renderIfNeeded()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        renderIfNeeded()
+    }
+
+    private func renderIfNeeded() {
+        let size = bounds.size
+        guard size.width > 1, size.height > 1 else { return }
+        let scale = max(1, window?.backingScaleFactor ?? preferredScale)
+        let widthPx = max(1, Int((size.width * scale).rounded(.up)))
+        let heightPx = max(1, Int((size.height * scale).rounded(.up)))
+        let key = RenderKey(widthPx: widthPx, heightPx: heightPx, isDark: requestedDark)
+        guard key != lastKey else { return }
+        guard let image = Self.renderImage(size: size, widthPx: widthPx, heightPx: heightPx, scale: scale, isDark: requestedDark) else {
+            return
+        }
+        lastKey = key
+        #if DEBUG
+        Self.debugRenderCount += 1
+        #endif
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.contentsScale = scale
+        layer?.contents = image
+        CATransaction.commit()
+    }
+
+    private static func renderImage(
+        size: CGSize,
+        widthPx: Int,
+        heightPx: Int,
+        scale: CGFloat,
+        isDark: Bool
+    ) -> CGImage? {
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        guard let ctx = CGContext(
+            data: nil,
+            width: widthPx,
+            height: heightPx,
+            bitsPerComponent: 8,
+            bytesPerRow: widthPx * 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else {
+            return nil
+        }
+
+        let targetAppearance = NSAppearance(named: isDark ? .darkAqua : .aqua) ?? NSAppearance.currentDrawing()
+        var paperColor = CGColor.black
+        var tintColor = CGColor.black
+        var glowColor = CGColor.clear
+        var shadeColor = CGColor.clear
+        targetAppearance.performAsCurrentDrawingAppearance {
+            paperColor = NSColor(DotTheme.paper).usingColorSpace(.sRGB)?.cgColor ?? NSColor(DotTheme.paper).cgColor
+            tintColor = NSColor(DotTheme.paperTint).usingColorSpace(.sRGB)?.cgColor ?? NSColor(DotTheme.paperTint).cgColor
+            glowColor = NSColor(DotTheme.paperGlow).usingColorSpace(.sRGB)?.cgColor ?? NSColor(DotTheme.paperGlow).cgColor
+            shadeColor = NSColor(DotTheme.paperShade).usingColorSpace(.sRGB)?.cgColor ?? NSColor(DotTheme.paperShade).cgColor
+        }
+
+        ctx.translateBy(x: 0, y: CGFloat(heightPx))
+        ctx.scaleBy(x: scale, y: -scale)
+
+        if let baseGrad = CGGradient(
+            colorsSpace: colorSpace,
+            colors: [paperColor, tintColor] as CFArray,
+            locations: [0, 1]
+        ) {
+            ctx.drawLinearGradient(
+                baseGrad,
+                start: .zero,
+                end: CGPoint(x: size.width, y: size.height),
+                options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
             )
         }
+
+        let glowClear = glowColor.copy(alpha: 0) ?? CGColor(gray: 0, alpha: 0)
+        if let glowGrad = CGGradient(
+            colorsSpace: colorSpace,
+            colors: [glowColor, glowClear] as CFArray,
+            locations: [0, 1]
+        ) {
+            ctx.drawRadialGradient(
+                glowGrad,
+                startCenter: .zero,
+                startRadius: 20,
+                endCenter: .zero,
+                endRadius: 520,
+                options: [.drawsAfterEndLocation]
+            )
+        }
+
+        let shadeClear = shadeColor.copy(alpha: 0) ?? CGColor(gray: 0, alpha: 0)
+        if let shadeGrad = CGGradient(
+            colorsSpace: colorSpace,
+            colors: [shadeClear, shadeColor] as CFArray,
+            locations: [0, 1]
+        ) {
+            ctx.drawLinearGradient(
+                shadeGrad,
+                start: CGPoint(x: size.width * 0.5, y: size.height * 0.5),
+                end: CGPoint(x: size.width * 0.5, y: size.height),
+                options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
+            )
+        }
+
+        return ctx.makeImage()
     }
 }
 
@@ -461,6 +621,10 @@ private struct DotPrimaryButtonBody: View {
             )
             .animation(.easeOut(duration: 0.16), value: isHovering)
             .onHover { inside in
+                if DotScrollInteraction.isScrolling {
+                    if isHovering { isHovering = false }
+                    return
+                }
                 isHovering = isEnabled && inside
             }
     }
@@ -516,6 +680,10 @@ private struct DotSecondaryButtonBody: View {
             )
             .animation(.easeOut(duration: 0.16), value: isHovering)
             .onHover { inside in
+                if DotScrollInteraction.isScrolling {
+                    if isHovering { isHovering = false }
+                    return
+                }
                 isHovering = isEnabled && inside
             }
     }
@@ -1023,7 +1191,6 @@ private struct DotTextEditorRepresentable: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.setAccessibilityLabel(accessibilityLabel)
         textView.setAccessibilityHelp(accessibilityHelp)
-        textView.toolTip = accessibilityHelp
         textView.string = text
         scrollView.documentView = textView
         scrollView.observeEdgeFade()
@@ -1039,7 +1206,6 @@ private struct DotTextEditorRepresentable: NSViewRepresentable {
         textView.textContainerInset = DotTextEditor.textInset
         textView.setAccessibilityLabel(accessibilityLabel)
         textView.setAccessibilityHelp(accessibilityHelp)
-        textView.toolTip = accessibilityHelp
         if textView.string != text {
             let selection = textView.selectedRange()
             textView.string = text
@@ -1127,6 +1293,10 @@ private struct DotSwitch: View {
             .disabled(!isEnabled)
             .accessibilityValue(configuration.isOn ? "On" : "Off")
             .onHover { inside in
+                if DotScrollInteraction.isScrolling {
+                    if isHovering { isHovering = false }
+                    return
+                }
                 isHovering = inside
             }
         }
@@ -1242,6 +1412,30 @@ private struct DotSwitchTrack: View {
 
 /// The motion answers that are not in the SwiftUI environment.
 enum DotMotion {
+    @MainActor
+    private final class SystemReduceMotionCache {
+        static let shared = SystemReduceMotionCache()
+        private(set) var enabled: Bool
+
+        private init() {
+            enabled = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.enabled = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                }
+            }
+        }
+    }
+
+    @MainActor
+    static var systemReducesMotion: Bool {
+        SystemReduceMotionCache.shared.enabled
+    }
+
     /// Whether the person asked the system to reduce motion.
     ///
     /// SwiftUI carries the same answer in `accessibilityReduceMotion`, but a
@@ -1249,17 +1443,16 @@ enum DotMotion {
     /// render, or a control in a window that does not exist yet - so the
     /// workspace setting is read as well. Either one is enough to still a
     /// spring.
+    @MainActor
     static var reducesMotion: Bool {
         if let override = reducesMotionOverride { return override }
-        return NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        return SystemReduceMotionCache.shared.enabled
     }
 
-    /// The answer a test gives instead of the workspace setting, or `nil` to ask
-    /// the workspace. Reduce Motion cannot be turned on for one test on a Mac that
-    /// has not asked for it, and the open behaves differently when it is on.
-    ///
-    /// It is a seam, not state the app keeps: nothing writes it outside a test,
-    /// and the read below is the only reader.
+    /// An answer that replaces the workspace setting, or `nil` to ask the
+    /// workspace. The app sets it to `true` when Dot's own Reduce motion setting
+    /// is on, and tests use it because Reduce Motion cannot be turned on for one
+    /// test on a Mac that has not asked for it.
     nonisolated(unsafe) static var reducesMotionOverride: Bool?
 }
 
@@ -1288,7 +1481,7 @@ struct DotSignalMark: View {
 
     var body: some View {
         if animated {
-            TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
+            TimelineView(.animation) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let breathing = (sin(t * 2.0) + 1.0) * 0.5
                 markContent(breathing: breathing)
@@ -1305,7 +1498,7 @@ struct DotSignalMark: View {
         let glowOpacity = 0.16 + (breathing * 0.10)
 
         ZStack {
-            if let icon = loadAppIcon() {
+            if let icon = Self.cachedAppIcon {
                 Image(nsImage: icon)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -1321,7 +1514,8 @@ struct DotSignalMark: View {
         .scaleEffect(animated ? (1.0 + (breathing * 0.02)) : 1.0)
     }
 
-    private func loadAppIcon() -> NSImage? {
+    @MainActor
+    private static let cachedAppIcon: NSImage? = {
         if let url = Bundle.main.url(forResource: "AppIcon-1024", withExtension: "png"),
            let img = NSImage(contentsOf: url) {
             return img
@@ -1333,7 +1527,7 @@ struct DotSignalMark: View {
             return appIcon
         }
         return nil
-    }
+    }()
 
     @ViewBuilder
     private func fallbackVectorMark(breathing: Double) -> some View {

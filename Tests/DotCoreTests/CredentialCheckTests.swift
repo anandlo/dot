@@ -223,6 +223,7 @@ final class CredentialCheckTests: XCTestCase {
         )
         XCTAssertEqual(check, .verifiedWithRestriction(CredentialVerifier.elevenLabsRestrictionMessage))
 
+        log.flush()
         let text = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(text.contains("credential.checked"), "the check logged nothing")
         XCTAssertFalse(text.contains("missing_permissions"), "the log carried the refusal body")
@@ -403,6 +404,7 @@ final class CredentialCheckTests: XCTestCase {
             _ = await CredentialVerifier.check(request, session: session, providerID: probe.id, log: log)
         }
 
+        log.flush()
         let text = try String(contentsOf: url, encoding: .utf8)
         XCTAssertFalse(text.isEmpty, "the check logged nothing at all")
         XCTAssertFalse(text.contains(key), "a log line carried the key")

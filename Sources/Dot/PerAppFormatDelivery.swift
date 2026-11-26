@@ -124,3 +124,85 @@ func dispatchTranscript(
         )
     }
 }
+
+/// Asynchronous variant of ``dispatchTranscript`` that captures focus and posts
+/// the paste keystroke without blocking the main thread.
+@MainActor
+func dispatchTranscriptAsync(
+    transcript: String,
+    config: DotConfig,
+    atPress: FrontmostApp?,
+    atDelivery: () -> FrontmostApp?,
+    accessibilityGranted: () -> Bool,
+    ownBundleIdentifier: String,
+    shouldCaptureAnchor: () -> Bool,
+    captureAnchor: (String) async -> InsertionAnchor?,
+    copy: (String) -> Void,
+    pasteCommand: () async -> Bool,
+    restore: (String, String) -> Void
+) async -> DispatchedTranscript {
+    let formatted = perAppFormatDelivery(
+        for: transcript,
+        config: config,
+        frontmostBundleIdentifier: atPress?.bundleIdentifier
+    )
+    let plan = formatted.plan
+    copy(plan.clipboard)
+    let capture = shouldCaptureAnchor()
+    let decision = PasteDecision.decide(
+        atPress: atPress,
+        atDelivery: atDelivery(),
+        accessibilityGranted: accessibilityGranted(),
+        autoPasteEnabled: config.autoPaste,
+        ownBundleIdentifier: ownBundleIdentifier
+    )
+
+    switch decision {
+    case .paste:
+        let rewritten = plan.insertion != plan.clipboard
+        if rewritten {
+            copy(plan.insertion)
+        }
+        let anchor = capture ? await captureAnchor(plan.insertion) : nil
+        guard !Task.isCancelled else {
+            if rewritten {
+                copy(plan.clipboard)
+            }
+            return DispatchedTranscript(
+                grammar: formatted.grammar,
+                plan: plan,
+                decision: decision,
+                delivery: .copied,
+                anchor: nil
+            )
+        }
+        guard await pasteCommand() else {
+            copy(plan.clipboard)
+            return DispatchedTranscript(
+                grammar: formatted.grammar,
+                plan: plan,
+                decision: decision,
+                delivery: .copied,
+                anchor: nil
+            )
+        }
+        if rewritten {
+            restore(plan.clipboard, plan.insertion)
+        }
+        return DispatchedTranscript(
+            grammar: formatted.grammar,
+            plan: plan,
+            decision: decision,
+            delivery: .pasted,
+            anchor: anchor
+        )
+    case .copy:
+        return DispatchedTranscript(
+            grammar: formatted.grammar,
+            plan: plan,
+            decision: decision,
+            delivery: .copied,
+            anchor: nil
+        )
+    }
+}

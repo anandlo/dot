@@ -1,19 +1,30 @@
 import AppKit
 import SwiftUI
 
+@MainActor
+private final class OffscreenDotWindow: NSWindow {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+}
+
 /// The shared light window: transparent title bar, native traffic lights,
 /// paper content, and a short fade-and-settle when it appears.
 @MainActor
 final class DotWindowHost: NSWindowController, NSWindowDelegate {
+    private static let offscreenOrigin = NSPoint(x: -20_000, y: -20_000)
+
     private let windowTitle: String
     private let contentSize: CGSize
+    private let offscreen: Bool
     private let onClose: (() -> Void)?
     private var hosting: NSHostingController<AnyView>?
     private var isDismissing = false
 
-    init(title: String, size: CGSize, onClose: (() -> Void)? = nil) {
+    init(title: String, size: CGSize, offscreen: Bool = false, onClose: (() -> Void)? = nil) {
         self.windowTitle = title
         self.contentSize = size
+        self.offscreen = offscreen
         self.onClose = onClose
         super.init(window: nil)
     }
@@ -35,13 +46,17 @@ final class DotWindowHost: NSWindowController, NSWindowDelegate {
         // is shown. A window that is still reachable keeps the position the
         // user moved it to; only an off-screen one is brought back.
         window.setContentSize(contentSize)
+        window.alphaValue = 1
+        if offscreen {
+            window.setFrameOrigin(Self.offscreenOrigin)
+            window.orderFrontRegardless()
+            return
+        }
         if !isOnScreen(window) {
             center(window)
         }
-        window.alphaValue = 1
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        window.invalidateShadow()
     }
 
     /// Fades the window out and closes it.
@@ -73,8 +88,10 @@ final class DotWindowHost: NSWindowController, NSWindowDelegate {
     }
 
     private func makeWindow() {
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: contentSize),
+        let initialOrigin = offscreen ? Self.offscreenOrigin : .zero
+        let windowType: NSWindow.Type = offscreen ? OffscreenDotWindow.self : NSWindow.self
+        let window = windowType.init(
+            contentRect: NSRect(origin: initialOrigin, size: contentSize),
             styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -83,8 +100,8 @@ final class DotWindowHost: NSWindowController, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.backgroundColor = .clear
-        window.isOpaque = false
+        window.backgroundColor = NSColor(DotTheme.paper)
+        window.isOpaque = true
         window.hasShadow = true
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.fullScreenAuxiliary]
@@ -98,7 +115,6 @@ final class DotWindowHost: NSWindowController, NSWindowDelegate {
         // titlebar's safe area on top of it.
         hosting.safeAreaRegions = []
         hosting.view.wantsLayer = true
-        hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
         window.contentViewController = hosting
         self.hosting = hosting
         self.window = window
@@ -109,7 +125,11 @@ final class DotWindowHost: NSWindowController, NSWindowDelegate {
         // window is centred on the screen's middle, and the real content then
         // grows it to the right from there.
         window.setContentSize(contentSize)
-        center(window)
+        if offscreen {
+            window.setFrameOrigin(Self.offscreenOrigin)
+        } else {
+            center(window)
+        }
     }
 
     private func isOnScreen(_ window: NSWindow) -> Bool {

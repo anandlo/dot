@@ -34,8 +34,15 @@ public struct VisualizerSpectrum {
     public let riseTau: Double
     /// How fast a band follows a quieter measurement here, in seconds.
     public let fallTau: Double
+    /// Circular backing storage and its oldest-slot index.
+    private var storage: [AudioSpectrumFrame]
+    private var head = 0
     /// The ring, oldest first.
-    public private(set) var ring: [AudioSpectrumFrame]
+    public var ring: [AudioSpectrumFrame] {
+        var ordered: [AudioSpectrumFrame] = []
+        copyOrderedRing(into: &ordered)
+        return ordered
+    }
     /// The bands after the filter, which is what the next tick starts from.
     public private(set) var smoothed = AudioSpectrumFrame.zero
     /// The meter's sample number the ring was last written up to.
@@ -58,16 +65,30 @@ public struct VisualizerSpectrum {
     ) {
         self.riseTau = riseTau
         self.fallTau = fallTau
-        ring = [AudioSpectrumFrame](repeating: .zero, count: max(1, length))
+        storage = [AudioSpectrumFrame](repeating: .zero, count: max(1, length))
     }
 
     /// Empties the ring and the filter.
     public mutating func reset() {
-        ring = [AudioSpectrumFrame](repeating: .zero, count: ring.count)
+        for index in storage.indices {
+            storage[index] = .zero
+        }
+        head = 0
         smoothed = .zero
         written = 0
         scale.reset()
         stamped = false
+    }
+
+    /// Copies the ring's frames oldest-first into `destination` without extra array shifting.
+    public func copyOrderedRing(into destination: inout [AudioSpectrumFrame]) {
+        let count = storage.count
+        destination.removeAll(keepingCapacity: true)
+        destination.reserveCapacity(count)
+        destination.append(contentsOf: storage[head..<count])
+        if head > 0 {
+            destination.append(contentsOf: storage[0..<head])
+        }
     }
 
     /// Puts one measurement through the filter and into the ring.
@@ -103,6 +124,7 @@ public struct VisualizerSpectrum {
 
         let pending = writtenSamples - written
         guard pending > 0 else { return }
+        let count = storage.count
         // The samples this call stands for are the meter's newest `pending`, in
         // order; they all carry the bands the filter has now.
         let newest = writtenSamples - 1
@@ -112,16 +134,16 @@ public struct VisualizerSpectrum {
             // from it gives the grid a floor to rest on at the start of a take
             // instead of a hole that fills in from the right.
             stamped = true
-            let oldest = newest - pending + 1 - ring.count
-            for index in ring.indices {
-                ring[index].sample = oldest + index
+            let oldest = newest - pending + 1 - count
+            for index in 0..<count {
+                storage[(head + index) % count].sample = oldest + index
             }
         }
         var next = newest - pending + 1
-        if let last = ring.last?.sample, next <= last { next = last + 1 }
+        if let last = storage[(head + count - 1) % count].sample, next <= last { next = last + 1 }
         for index in 0..<pending {
-            ring.removeFirst()
-            ring.append(AudioSpectrumFrame(bands: smoothed.bands, sample: next + index))
+            storage[head] = AudioSpectrumFrame(bands: smoothed.bands, sample: next + index)
+            head = (head + 1) % count
         }
         written = writtenSamples
     }

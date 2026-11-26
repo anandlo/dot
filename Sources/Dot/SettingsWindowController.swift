@@ -13,6 +13,16 @@ import SwiftUI
 @MainActor
 final class SettingsWindowController {
     private var host: DotWindowHost?
+    private var onClose: (() -> Void)?
+    private let offscreen: Bool
+
+    init(offscreen: Bool = false) {
+        self.offscreen = offscreen
+    }
+
+    var isVisible: Bool {
+        host?.window?.isVisible ?? false
+    }
 
     /// Shows the settings.
     func show(
@@ -20,15 +30,16 @@ final class SettingsWindowController {
         providers: [MenuProvider],
         tab: Int = 0,
         onChange: @escaping () -> Void,
-        onSetAPIKey: @escaping (String, String) -> String?,
-        onDeleteAPIKey: @escaping (String) -> String? = { _ in nil },
-        onDeleteAllAPIKeys: @escaping () -> String? = { nil },
+        onSetAPIKey: @escaping (String, String) async -> String?,
+        onDeleteAPIKey: @escaping (String) async -> String? = { _ in nil },
+        onDeleteAllAPIKeys: @escaping () async -> String? = { nil },
         onChangeShortcut: @escaping () -> Void,
         onChangePasteShortcut: @escaping () -> Void = {},
         onChangePaletteShortcut: @escaping () -> Void = {},
-        onChangeAssistantShortcut: @escaping () -> Void = {},
-        onOpenWelcome: @escaping () -> Void = {}
+        onOpenWelcome: @escaping () -> Void = {},
+        onClose: @escaping () -> Void = {}
     ) {
+        self.onClose = onClose
         let host = existingHost()
         host.present {
             SettingsView(
@@ -42,9 +53,9 @@ final class SettingsWindowController {
                 onChangeShortcut: onChangeShortcut,
                 onChangePasteShortcut: onChangePasteShortcut,
                 onChangePaletteShortcut: onChangePaletteShortcut,
-                onChangeAssistantShortcut: onChangeAssistantShortcut,
                 onOpenWelcome: onOpenWelcome
             )
+            .environment(\.settingsHeadless, offscreen)
         }
     }
 
@@ -62,7 +73,11 @@ final class SettingsWindowController {
         }
         let host = DotWindowHost(
             title: "Dot Settings",
-            size: CGSize(width: 820, height: 600)
+            size: CGSize(width: 820, height: 600),
+            offscreen: offscreen,
+            onClose: { [weak self] in
+                self?.onClose?()
+            }
         )
         self.host = host
         return host

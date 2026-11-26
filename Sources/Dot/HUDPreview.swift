@@ -18,16 +18,6 @@ enum HUDPreview {
         case transcriptLong
         case message
         case ready
-        case assistantRecording
-        case assistantThinking
-        case assistantTool
-        case assistantAnswerStreaming
-        case assistantAnswerPasted
-        case assistantAnswerCopied
-        case assistantAnswerSpeaking
-        case assistantAnswerSpoken
-        case assistantConfirm
-        case assistantConfirmDestructive
         case rewriteOffered
         case rewriteRunning
         case rewriteOriginal
@@ -43,33 +33,6 @@ enum HUDPreview {
         case rewriteBlocked
         case rewriteCopied
     }
-
-    /// The question the assistant renders show.
-    static let assistantQuestion = "What is on my calendar tomorrow?"
-
-    /// The connector the tool render names.
-    static let assistantConnector = "Calendar"
-
-    /// The answer the assistant renders show.
-    static let assistantAnswerText = """
-    You have two things tomorrow: a design review at ten, and lunch with Sam at half past twelve. \
-    The review is in the small room, and nothing else is booked after three.
-    """
-
-    /// The request the confirmation render shows.
-    ///
-    /// It is longer than 120 characters on purpose: the card has to hold three
-    /// lines of it, and a render of a short request would not prove that.
-    static let assistantConfirmSummary = """
-    Add a reminder to call the dentist on Thursday at nine in the morning, and set it to repeat \
-    every month until the end of the year.
-    """
-
-    /// The request a destructive confirmation render shows.
-    static let assistantDeleteSummary = """
-    Delete the note called Meeting notes from last Tuesday, including everything filed under it \
-    and its attachments, from Notes on this Mac.
-    """
 
     /// The argument that renders the card and exits.
     static let argument = "--render-hud"
@@ -351,44 +314,6 @@ enum HUDPreview {
             // render that leaves those empty cannot show whether it still does.
             model.activeService = ProviderPreset.host(of: ProviderPreset.xiaomi.baseURL) ?? "this Mac"
             model.activeKeyHint = "a1b2…9f3c"
-        case .assistantRecording:
-            model.cardSize = HUDState.recordingCard.size
-            model.mode = .assistantRecording(elapsed: "0:04")
-        case .assistantThinking:
-            model.cardSize = HUDState.assistantCard.size
-            model.mode = .assistantThinking(question: assistantQuestion)
-        case .assistantTool:
-            model.cardSize = HUDState.assistantCard.size
-            model.mode = .assistantTool(connectorName: assistantConnector)
-        case .assistantAnswerStreaming, .assistantAnswerPasted, .assistantAnswerCopied,
-             .assistantAnswerSpeaking, .assistantAnswerSpoken:
-            let answerState: AssistantAnswerState = switch state {
-            case .assistantAnswerPasted: .pasted("Mail")
-            case .assistantAnswerCopied: .copied
-            case .assistantAnswerSpeaking: .speaking
-            case .assistantAnswerSpoken: .spoken
-            default: .streaming
-            }
-            model.cardSize = HUD.assistantAnswerSize(text: assistantAnswerText)
-            model.mode = .assistantAnswer(text: assistantAnswerText, state: answerState)
-        case .assistantConfirm, .assistantConfirmDestructive:
-            let destructive = state == .assistantConfirmDestructive
-            let request = ConfirmationRequest(
-                callID: "call-1",
-                toolName: destructive ? "notes_delete" : "reminders_create",
-                connectorID: destructive ? .notes : .reminders,
-                connectorName: destructive ? "Notes" : "Reminders",
-                risk: destructive ? .destructive : .write,
-                summary: destructive ? assistantDeleteSummary : assistantConfirmSummary
-            )
-            let lines = HUD.assistantSummaryLines(request.summary)
-            model.cardSize = CGSize(
-                width: HUDConfirmLayout.width,
-                height: HUDConfirmLayout.height(summaryLines: lines)
-            )
-            model.mode = .assistantConfirm(request)
-            model.assistantAllow = {}
-            model.assistantCancel = {}
         case .rewriteOffered, .rewriteRunning, .rewriteOriginal,
              .rewriteTwoVersions, .rewriteThreeVersions, .rewriteLongTranscript,
              .rewriteLongLabels, .rewriteFailure, .rewriteReducedMotion,
@@ -504,7 +429,7 @@ enum HUDPreview {
         promptRewrite
     }
 
-    /// Three seconds of the demonstration voice, through the product's own meter.
+    /// Five seconds of the demonstration voice, through the product's own meter.
     ///
     /// The signal is ``DictationScript``'s: the same dictation the island's
     /// preview draws and the same five bands, so a still of the card is a still
@@ -529,11 +454,10 @@ enum HUDPreview {
         let meter = VoiceMeter()
         var scale = SpectrumScale()
         var spectrum: [AudioSpectrumFrame] = []
-        // Three seconds before the moment as well as up to it, so the history
-        // is full: the visualisers that scroll draw the whole three seconds, and
-        // a still whose history began at zero draws a dead left half. Before the
-        // voice starts there is room, which is what a recording opens with.
-        var time: TimeInterval = moment - 3
+        // Fill the full history window before the moment so expanded canvases
+        // draw an active wave across their entire width instead of a flat left edge.
+        let historySeconds = Double(Waveform.historyLength) / Waveform.sampleRate
+        var time: TimeInterval = moment - historySeconds
         while time <= moment {
             meter.push(decibels: -58 + DictationScript.level(at: time) * 50, now: time)
             spectrum.append(scale.normalise(DictationScript.bands(at: time), dt: 1.0 / 60.0))

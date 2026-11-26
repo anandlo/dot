@@ -100,6 +100,23 @@ enum Paste {
         up.post(tap: .cghidEventTap)
         return true
     }
+
+    /// Sends a ⌘V to the frontmost application without blocking the calling thread,
+    /// guaranteeing key-up even if the task is cancelled during the key hold.
+    @discardableResult
+    static func pasteCommandAsync() async -> Bool {
+        guard accessibilityGranted else { return false }
+        guard let source = CGEventSource(stateID: .combinedSessionState) else { return false }
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false)
+        else { return false }
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        down.post(tap: .cghidEventTap)
+        defer { up.post(tap: .cghidEventTap) }
+        try? await Task.sleep(for: .milliseconds(15))
+        return true
+    }
 }
 
 /// The system places Dot sends the user to.

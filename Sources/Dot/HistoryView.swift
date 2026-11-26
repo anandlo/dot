@@ -27,13 +27,13 @@ struct HistoryView: View {
 
     @State private var query: String
     @State private var appeared = false
-    @State private var hoveredID: Int?
     @State private var copiedID: Int?
     @State private var copyToken = 0
     @FocusState private var searchFocused: Bool
     @FocusState private var searchClearFocused: Bool
-    @FocusState private var focusedID: Int?
     @FocusState private var clearFocused: Bool
+    @State private var focusRequest = 0
+    @State private var tabTarget = 0
 
     /// Creates the view.
     ///
@@ -92,12 +92,11 @@ struct HistoryView: View {
             query = ""
             copiedID = nil
         }
-        .onExitCommand {
-            if query.isEmpty {
-                onClose()
-            } else {
-                withAnimation(filterAnimation) { query = "" }
-            }
+        .onExitCommand { handleExit() }
+        .onChange(of: tabTarget) { _, target in
+            guard target != 0 else { return }
+            searchFocused = true
+            tabTarget = 0
         }
         .task(id: copyToken) {
             guard copiedID != nil else { return }
@@ -125,6 +124,16 @@ struct HistoryView: View {
                 .disabled(history.isEmpty)
                 .accessibilityLabel("Search transcripts")
                 .accessibilityHint("Filters the history as you type.")
+                .onKeyPress(.tab, phases: [.down]) { _ in
+                    guard !filtered.isEmpty else { return .ignored }
+                    focusRequest += 1
+                    return .handled
+                }
+                .onKeyPress(.downArrow, phases: [.down]) { _ in
+                    guard !filtered.isEmpty else { return .ignored }
+                    focusRequest += 1
+                    return .handled
+                }
 
             if !query.isEmpty {
                 Button {
@@ -149,7 +158,6 @@ struct HistoryView: View {
                 .buttonStyle(DotPressStyle())
                 .focused($searchClearFocused)
                 .accessibilityLabel("Clear search")
-                .help("Clear search")
             }
         }
         .padding(.leading, 10)
@@ -181,142 +189,42 @@ struct HistoryView: View {
 
     // MARK: - Content
 
+    @ViewBuilder
     private var content: some View {
-        ZStack {
-            if history.isEmpty {
-                emptyHistory
-                    .transition(.opacity)
-            } else if filtered.isEmpty {
-                noMatches
-                    .transition(.opacity)
-            } else {
-                transcriptList
-                    .transition(.opacity)
-            }
+        if history.isEmpty {
+            emptyHistory
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if filtered.isEmpty {
+            noMatches
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            transcriptList
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(filterAnimation, value: query)
     }
 
     private var transcriptList: some View {
-        ScrollView(.vertical) {
-            VStack(spacing: 8) {
-                ForEach(filtered) { entry in
-                    row(entry)
+        HistoryTranscriptList(
+            entries: filtered,
+            copiedID: copiedID,
+            rowVisible: rowVisible,
+            reduceMotion: reduceMotion,
+            headless: headless,
+            onCopy: copy,
+            onExit: handleExit,
+            onTabForward: {
+                // Buttons take keyboard focus only under Full Keyboard Access;
+                // otherwise Tab wraps to the search field, as AppKit does.
+                if NSApplication.shared.isFullKeyboardAccessEnabled {
+                    clearFocused = true
+                } else {
+                    searchFocused = true
                 }
-            }
-            .padding(.horizontal, DotTheme.windowPadding)
-            .padding(.top, 8)
-            .padding(.bottom, 18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .scrollIndicators(.never)
+            },
+            onTabBackward: { tabTarget = 2 },
+            focusRequest: focusRequest
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityLabel("Transcripts, newest first")
-    }
-
-    private func row(_ entry: Entry) -> some View {
-        let isHovered = hoveredID == entry.id
-        let isCopied = copiedID == entry.id
-        let isFocused = focusedID == entry.id
-
-        return Button {
-            copy(entry)
-        } label: {
-            HStack(alignment: .center, spacing: 12) {
-                Text(entry.text)
-                    .font(DotTheme.bodyFont)
-                    .lineSpacing(2)
-                    .foregroundStyle(DotTheme.ink)
-                    .lineLimit(3)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                copyAffordance(copied: isCopied, hovered: isHovered)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(isHovered ? DotTheme.cardHoverFill : DotTheme.cardFill)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(
-                        borderColor(isFocused: isFocused, isCopied: isCopied),
-                        lineWidth: isFocused ? 1.5 : 1
-                    )
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-        }
-        .buttonStyle(DotPressStyle())
-        .focused($focusedID, equals: entry.id)
-        .onHover { hovering in
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
-                if hovering {
-                    hoveredID = entry.id
-                } else if hoveredID == entry.id {
-                    hoveredID = nil
-                }
-            }
-        }
-        .scaleEffect(isHovered && !reduceMotion ? 1.004 : 1)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: isHovered)
-        .opacity(rowVisible ? 1 : 0)
-        .offset(y: rowVisible || reduceMotion ? 0 : 10)
-        .animation(entrance(entry.id), value: appeared)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Transcript, \(entry.text)")
-        .accessibilityValue(isCopied ? "Copied" : "")
-        .accessibilityHint("Copies this transcript to the clipboard.")
-        .help("Copy transcript")
-        .transition(rowTransition)
-    }
-
-    private func borderColor(isFocused: Bool, isCopied: Bool) -> Color {
-        if isFocused {
-            return DotTheme.cardBorderSelected
-        }
-        if isCopied {
-            return DotTheme.mint.opacity(0.70)
-        }
-        return DotTheme.cardBorder
-    }
-
-    private func copyAffordance(copied: Bool, hovered: Bool) -> some View {
-        Group {
-            if copied {
-                HStack(spacing: 4) {
-                    Image(systemName: "checkmark")
-                        .font(DotType.font(8.5, .bold))
-                    Text("Copied")
-                        .font(DotType.font(10, .semibold))
-                }
-                .foregroundStyle(DotTheme.ink)
-                .padding(.horizontal, 9)
-                .frame(height: 26)
-                .background(Capsule().fill(DotTheme.mint.opacity(0.38)))
-                .overlay(Capsule().strokeBorder(DotTheme.mint.opacity(0.75), lineWidth: 1))
-                .transition(.opacity)
-            } else {
-                Image(systemName: "doc.on.doc")
-                    .font(DotType.font(11, .semibold))
-                    .foregroundStyle(hovered ? DotTheme.accent : DotTheme.ink3)
-                    .frame(width: 27, height: 27)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(DotTheme.keycapFill)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(DotTheme.keycapBorder, lineWidth: 1)
-                    )
-                    .transition(.opacity)
-            }
-        }
-        .frame(width: 70, alignment: .trailing)
-        .accessibilityHidden(true)
     }
 
     // MARK: - Empty states
@@ -417,7 +325,12 @@ struct HistoryView: View {
                 .disabled(history.isEmpty)
                 .accessibilityLabel("Clear history")
                 .accessibilityHint("Removes every transcript after a confirmation.")
-                .help("Clear every transcript")
+                .onKeyPress(.tab, phases: [.down]) { press in
+                    guard press.modifiers.contains(.shift), !filtered.isEmpty else { return .ignored }
+                    clearFocused = false
+                    focusRequest += 1
+                    return .handled
+                }
 
                 Spacer(minLength: 12)
 
@@ -486,23 +399,12 @@ struct HistoryView: View {
         return .spring(response: 0.28, dampingFraction: 0.80)
     }
 
-    private var rowTransition: AnyTransition {
-        if reduceMotion {
-            return .opacity
+    private func handleExit() {
+        if query.isEmpty {
+            onClose()
+        } else {
+            withAnimation(filterAnimation) { query = "" }
         }
-        return .asymmetric(
-            insertion: .opacity.combined(with: .scale(scale: 0.985, anchor: .top)),
-            removal: .opacity
-        )
-    }
-
-    private func entrance(_ index: Int) -> Animation? {
-        guard !headless else { return nil }
-        let delay = Double(min(index, 7)) * 0.04
-        if reduceMotion {
-            return .easeOut(duration: 0.18).delay(delay)
-        }
-        return .spring(response: 0.42, dampingFraction: 0.84).delay(delay)
     }
 
     private func copy(_ entry: Entry) {
@@ -512,9 +414,121 @@ struct HistoryView: View {
         AccessibilityNotification.Announcement("Copied").post()
     }
 
-    private struct Entry: Identifiable {
+    struct Entry: Identifiable {
         let id: Int
         let text: String
+    }
+}
+
+struct HistoryRowView: View {
+    let entry: HistoryView.Entry
+    let isCopied: Bool
+    let isHovered: Bool
+    let isFocused: Bool
+    let rowVisible: Bool
+    let reduceMotion: Bool
+    let headless: Bool
+    let animatesCopy: Bool
+    let onCopy: () -> Void
+
+    var body: some View {
+        Button(action: onCopy) {
+            HStack(alignment: .center, spacing: 12) {
+                Text(entry.text)
+                    .font(DotTheme.bodyFont)
+                    .lineSpacing(2)
+                    .foregroundStyle(DotTheme.ink)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                copyAffordance(copied: isCopied, hovered: isHovered)
+                    .animation(
+                        animatesCopy
+                            ? (reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.28, dampingFraction: 0.80))
+                            : nil,
+                        value: isCopied
+                    )
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(isHovered ? DotTheme.cardHoverFill : DotTheme.cardFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .strokeBorder(
+                        borderColor(isFocused: isFocused, isCopied: isCopied),
+                        lineWidth: isFocused ? 1.5 : 1
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        }
+        .buttonStyle(DotPressStyle())
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isHovered)
+        .opacity(rowVisible ? 1 : 0)
+        .offset(y: rowVisible || reduceMotion ? 0 : 10)
+        .animation(entrance, value: rowVisible)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Transcript, \(entry.text)")
+        .accessibilityValue(isCopied ? "Copied" : "")
+        .accessibilityHint("Copies this transcript to the clipboard.")
+    }
+
+    private func borderColor(isFocused: Bool, isCopied: Bool) -> Color {
+        if isFocused {
+            return DotTheme.cardBorderSelected
+        }
+        if isCopied {
+            return DotTheme.mint.opacity(0.70)
+        }
+        return DotTheme.cardBorder
+    }
+
+    private func copyAffordance(copied: Bool, hovered: Bool) -> some View {
+        Group {
+            if copied {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark")
+                        .font(DotType.font(8.5, .bold))
+                    Text("Copied")
+                        .font(DotType.font(10, .semibold))
+                }
+                .foregroundStyle(DotTheme.ink)
+                .padding(.horizontal, 9)
+                .frame(height: 26)
+                .background(Capsule().fill(DotTheme.mint.opacity(0.38)))
+                .overlay(Capsule().strokeBorder(DotTheme.mint.opacity(0.75), lineWidth: 1))
+                .transition(.opacity)
+            } else {
+                Image(systemName: "doc.on.doc")
+                    .font(DotType.font(11, .semibold))
+                    .foregroundStyle(hovered ? DotTheme.accent : DotTheme.ink3)
+                    .frame(width: 27, height: 27)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(DotTheme.keycapFill)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(DotTheme.keycapBorder, lineWidth: 1)
+                    )
+                    .transition(.opacity)
+            }
+        }
+        .frame(width: 70, alignment: .trailing)
+        .accessibilityHidden(true)
+    }
+
+    private var entrance: Animation? {
+        guard !headless else { return nil }
+        let delay = Double(min(entry.id, 7)) * 0.04
+        if reduceMotion {
+            return .easeOut(duration: 0.18).delay(delay)
+        }
+        return .spring(response: 0.42, dampingFraction: 0.84).delay(delay)
     }
 }
 

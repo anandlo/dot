@@ -1,0 +1,8 @@
+Test Suite 'DotTests.xctest' started at 2026-11-20 00:00:00.000.
+Test Case '-[DotTests.AbsoluteLevelRenderTests testTheMatrixFrames]' started.
+Test Case '-[DotTests.AbsoluteLevelRenderTests testTheMatrixFrames]' skipped (0.003 seconds).
+Test Suite 'DotTests.xctest' failed at 2026-11-20 00:00:01.000.
+	 Executed 1 test, with 1 test skipped and 1 failure (0 unexpected) in 1.000 (1.000) seconds
+Test Suite 'DotCoreTests.xctest' started at 2026-11-20 00:00:02.000.
+Test Suite 'DotCoreTests.xctest' passed at 2026-11-20 00:00:03.000.
+	 Executed 1300 tests, with 0 failures (0 unexpected) in 1.000 (1.000) seconds

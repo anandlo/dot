@@ -31,12 +31,28 @@ final class VisualizerFeed {
     let meter: VoiceMeter
     /// The spectrum the feed has measured, filter and ring together.
     private(set) var spectrum: VisualizerSpectrum
-    /// The moment the feed has advanced to, in seconds.
+    /// The moment the feed stands at, in seconds (continuous sub-tick).
     private(set) var time: Double
+    /// Exact origin from which integer sample ticks are stepped to avoid FP drift.
+    private var origin: Double
+    private var steppedSamples = 0
+    private var sampleTime: Double
     /// The level of the demonstration at a moment of its own timeline.
     private let level: (Double) -> Double
     /// The bands of the demonstration at a moment of its own timeline.
     private let bands: (Double) -> AudioSpectrumFrame
+
+    private var cachedHistory: [Double] = []
+    private var cachedRing: [AudioSpectrumFrame] = []
+    private var cachedWrittenSamples = -1
+
+    /// Creates a feed pre-seeded to `moment` with prior history.
+    static func seeded(at moment: Double, leadSeconds: Double = 2) -> VisualizerFeed {
+        let lead = max(0, leadSeconds)
+        let feed = VisualizerFeed(from: moment - lead)
+        feed.step(to: moment)
+        return feed
+    }
 
     /// Creates a feed standing at a moment, holding silence.
     ///
@@ -56,10 +72,13 @@ final class VisualizerFeed {
     ) {
         self.meter = meter
         self.spectrum = spectrum
+        self.origin = start
+        self.sampleTime = start
         self.time = start
         self.level = level
         self.bands = bands
         meter.setCalibration(nil)
+        refreshBuffers()
     }
 
     /// Empties the feed and stands it at a moment.
@@ -69,37 +88,71 @@ final class VisualizerFeed {
         meter.reset()
         meter.setCalibration(nil)
         spectrum.reset()
+        origin = start
+        steppedSamples = 0
+        sampleTime = start
         time = start
+        cachedWrittenSamples = -1
+        refreshBuffers()
     }
 
-    /// Advances the feed to a moment, one sixtieth of a second at a time.
+    /// Advances the feed to a moment, one sixtieth of a second per sample step,
+    /// while preserving continuous sub-tick `phase` for smooth 120 Hz motion.
     ///
     /// A moment close to the one the feed stands at is walked to; one that is not,
-    /// which is the first frame of a preview or the loop of the script running
-    /// round, restarts the feed two seconds earlier so the styles that draw a
-    /// history open on a full one.
+    /// which is the first frame of a preview or a jump > 1 s, restarts the feed two
+    /// seconds earlier so styles drawing history open on a full one.
     ///
     /// - Parameter moment: the moment to advance to, in seconds.
     func advance(to moment: Double) {
         guard moment.isFinite else { return }
-        if moment < time || moment - time > 1 {
+        if moment < sampleTime - 1e-9 || moment - sampleTime > 1 {
             reset(from: moment - 2)
         }
-        while time + Self.step <= moment {
-            time += Self.step
-            meter.push(decibels: Self.decibels(for: level(time)), now: time)
-            spectrum.advance(target: bands(time), writtenSamples: meter.writtenSamples, dt: Self.step)
+        step(to: moment)
+    }
+
+    /// Steps the feed from its current `origin` to `moment` without truncating the
+    /// lead-in window, used when pre-seeding a full history ring.
+    func seed(to moment: Double) {
+        guard moment.isFinite else { return }
+        step(to: moment)
+    }
+
+    private func step(to moment: Double) {
+        var stepped = false
+        while origin + Double(steppedSamples + 1) * Self.step <= moment + 1e-9 {
+            steppedSamples += 1
+            sampleTime = origin + Double(steppedSamples) * Self.step
+            meter.push(decibels: Self.decibels(for: level(sampleTime)), now: sampleTime)
+            spectrum.advance(target: bands(sampleTime), writtenSamples: meter.writtenSamples, dt: Self.step)
+            stepped = true
+        }
+        time = moment
+        if stepped {
+            refreshBuffers()
         }
     }
 
+    private func refreshBuffers() {
+        let written = meter.writtenSamples
+        guard written != cachedWrittenSamples || cachedHistory.isEmpty || cachedRing.isEmpty else { return }
+        cachedWrittenSamples = written
+        meter.copyOrderedHistory(into: &cachedHistory)
+        spectrum.copyOrderedRing(into: &cachedRing)
+    }
+
     /// The envelope of the demonstration, oldest first, at sixty a second.
-    var history: [Double] { meter.orderedHistory }
+    var history: [Double] { cachedHistory }
 
     /// The spectrum of the demonstration, oldest first, stamped by tick.
-    var ring: [AudioSpectrumFrame] { spectrum.ring }
+    var ring: [AudioSpectrumFrame] { cachedRing }
 
-    /// Where inside the newest sample the feed stands, from `0` to `1`.
-    var phase: Double { meter.phase }
+    /// Where inside the newest sample the feed stands, from `0` to `< 1`.
+    var phase: Double {
+        let remainder = (time - sampleTime) / Self.step
+        return min(max(remainder, 0), 1 - 1e-9)
+    }
 
     /// The decibels a level of the demonstration is pushed at.
     ///

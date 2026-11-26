@@ -425,6 +425,43 @@ final class PerAppFormatDeliveryTests: XCTestCase {
         XCTAssertTrue(recorder.anchorCaptures.isEmpty)
         XCTAssertFalse(recorder.events.contains { $0.hasPrefix("captureAnchor:") })
     }
+
+    @MainActor
+    func testDispatchTranscriptAsyncCancelledDuringAnchorCaptureSkipsPasteAndRestoresClipboard() async throws {
+        let config = try loadedConfig(enabled: true)
+        let recorder = PasteboardRecorder()
+        let pressed = app("com.tinyspeck.slackmacgap")
+        var result: DispatchedTranscript?
+        var deliveryTask: Task<Void, Never>?
+
+        deliveryTask = Task { @MainActor in
+            result = await dispatchTranscriptAsync(
+                transcript: transcript,
+                config: config,
+                atPress: pressed,
+                atDelivery: { pressed },
+                accessibilityGranted: { true },
+                ownBundleIdentifier: "com.example.dot",
+                shouldCaptureAnchor: { true },
+                captureAnchor: { text in
+                    recorder.anchorCaptures.append(text)
+                    deliveryTask?.cancel()
+                    return nil
+                },
+                copy: { text in recorder.pasteboard.copy(text) },
+                pasteCommand: { recorder.pasteboard.pasteCommand() },
+                restore: { text, insertion in recorder.pasteboard.restore(text, insertion) }
+            )
+        }
+
+        await deliveryTask?.value
+        let dispatched = try XCTUnwrap(result)
+        XCTAssertEqual(dispatched.delivery, .copied)
+        XCTAssertNil(dispatched.anchor)
+        XCTAssertEqual(recorder.pasteCommands, 0, "cancelled delivery must not post Cmd+V")
+        XCTAssertEqual(recorder.finalClipboard, transcript, "rewritten clipboard must restore raw transcript on cancel")
+        XCTAssertEqual(recorder.anchorCaptures, [chatInsertion])
+    }
 }
 
 private final class PasteboardRecorder {

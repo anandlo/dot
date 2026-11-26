@@ -73,6 +73,17 @@ final class AudioSampleStore: @unchecked Sendable {
         return true
     }
 
+    /// Adds samples produced by a gated start after its identity was verified.
+    ///
+    /// The append happens on the audio control queue, before the gate starts
+    /// feeding the accepted processor, so no converter can interleave with it.
+    func append(contentsOf chunk: [Int16]) {
+        guard !chunk.isEmpty else { return }
+        lock.lock()
+        samples.append(contentsOf: chunk)
+        lock.unlock()
+    }
+
     /// Every sample collected so far.
     func all() -> [Int16] {
         lock.lock()

@@ -25,14 +25,20 @@ import DotCore
 /// `HOTKEY BLOCKED` instead of looking dead.
 @MainActor
 final class KeyWatcher {
-    /// How often the keyboard state is read.
-    static let pollInterval: TimeInterval = 1.0 / 60.0
+    /// How often the keyboard state is read during active key presses.
+    static let activePollInterval: TimeInterval = 1.0 / 60.0
+    /// How often the keyboard state is checked while idle.
+    static let idlePollInterval: TimeInterval = 0.10
+    /// Kept for callers expecting the active rate name.
+    static var pollInterval: TimeInterval { activePollInterval }
     /// How long the key has to be down before Dot gives up on the hot key.
     static let blockedAfter: TimeInterval = 0.45
 
     /// The key that is watched.
     private var keyCode: CGKeyCode = 0
     private var timer: Timer?
+    private var isWatching = false
+    private var currentPollInterval: TimeInterval = idlePollInterval
     /// The keyboard state said the key was down during this press.
     private var pressStateSeen = false
     /// The keyboard state is currently down.
@@ -68,14 +74,16 @@ final class KeyWatcher {
     func watch(keyCode: Int, reportsUnannouncedPresses: Bool = false) {
         self.keyCode = CGKeyCode(keyCode)
         self.reportsUnannouncedPresses = reportsUnannouncedPresses
+        isWatching = true
         wasDown = false
         downSince = nil
         didReportBlocked = false
-        startPolling()
+        updatePollCadence()
     }
 
     /// Stops watching the key.
     func stop() {
+        isWatching = false
         timer?.invalidate()
         timer = nil
     }
@@ -86,7 +94,7 @@ final class KeyWatcher {
         pressStartedAt = Date()
         pressStateSeen = false
         didReportBlocked = false
-        startPolling()
+        updatePollCadence()
     }
 
     /// Whether a press is still going on.
@@ -100,22 +108,36 @@ final class KeyWatcher {
         Self.keyIsDown(keyCode)
     }
 
-    private func startPolling() {
-        guard timer == nil else { return }
+    private var desiredPollInterval: TimeInterval {
+        (isPressActive || wasDown || reportsUnannouncedPresses)
+            ? Self.activePollInterval
+            : Self.idlePollInterval
+    }
+
+    private func updatePollCadence() {
+        guard isWatching else { return }
+        let interval = desiredPollInterval
+        if timer != nil, abs(currentPollInterval - interval) < 0.0001 {
+            return
+        }
+        timer?.invalidate()
+        timer = nil
+        currentPollInterval = interval
         // The timer is added to the main run loop, so the tick is already on
         // the main thread: it runs in place instead of allocating a task sixty
         // times a second.
-        let timer = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             MainThreadTick.run {
                 self?.poll()
             }
         }
-        timer.tolerance = Self.pollInterval / 4
+        timer.tolerance = interval / 4
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
 
     private func poll() {
+        guard isWatching else { return }
         let down = Self.keyIsDown(keyCode)
         let now = Date()
 
@@ -124,6 +146,7 @@ final class KeyWatcher {
             if !wasDown {
                 downSince = now
             }
+            wasDown = true
         } else if wasDown {
             wasDown = false
             downSince = nil
@@ -137,7 +160,8 @@ final class KeyWatcher {
                 onRelease?()
             }
         }
-        wasDown = down
+        guard isWatching else { return }
+        updatePollCadence()
 
         // The key is down but the hot key never arrived: secure input is
         // swallowing it.

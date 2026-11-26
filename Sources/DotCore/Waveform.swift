@@ -8,16 +8,16 @@ import Foundation
 /// exists to make one promise: **the shape is smooth and symmetric**. No
 /// spikes, no diamonds, no seams.
 ///
-/// The model is deliberately simple. The meter keeps three seconds of the
+/// The model is deliberately simple. The meter keeps five seconds of the
 /// envelope in a ring buffer, written at a fixed rate; the phase says where
 /// inside the current sample the display is; and a column of the shape is
 /// the linear interpolation of the buffer at the position that column shows.
 public enum Waveform {
     /// How many samples of history the waveform keeps.
-    public static let historyLength = 180
+    public static let historyLength = 300
     /// How many samples a second the history is written at.
     ///
-    /// 180 samples at 60 Hz is three seconds of audio.
+    /// 300 samples at 60 Hz is five seconds of audio, covering the expanded live HUD card.
     public static let sampleRate: Double = 60.0
     /// How many columns the shape is drawn with.
     public static let columnCount = 96

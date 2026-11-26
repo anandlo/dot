@@ -1162,6 +1162,7 @@ final class DotSelectScrollReportingView: NSView {
             return
         }
         roundTheScrollView()
+        holdTheEdges()
         observe()
         publish()
         updateMask()
@@ -1174,7 +1175,17 @@ final class DotSelectScrollReportingView: NSView {
 
     override func layout() {
         super.layout()
+        holdTheEdges()
         publish()
+    }
+
+    /// Stops the list at its first and last row; SwiftUI may reset elasticity
+    /// when it rebuilds the scroll view, so this runs on every layout and as
+    /// each scroll gesture starts.
+    private func holdTheEdges() {
+        guard let scroll = enclosingScrollView else { return }
+        if scroll.verticalScrollElasticity != .none { scroll.verticalScrollElasticity = .none }
+        if scroll.horizontalScrollElasticity != .none { scroll.horizontalScrollElasticity = .none }
     }
 
     private func observe() {
@@ -1196,6 +1207,14 @@ final class DotSelectScrollReportingView: NSView {
                 MainActor.assumeIsolated { self?.publish() }
             })
         }
+        // Held again as a gesture starts, before its first event moves the list.
+        tokens.append(NotificationCenter.default.addObserver(
+            forName: NSScrollView.willStartLiveScrollNotification,
+            object: scroll,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.holdTheEdges() }
+        })
     }
 
     /// Rounds the scroll view's own layer.

@@ -437,11 +437,6 @@ public struct DotConfig: Codable, Sendable, Equatable {
     public var pasteHotkey: Hotkey
     /// The shortcut that opens the dictation palette.
     public var paletteHotkey: Hotkey
-    /// The shortcut that asks the assistant.
-    ///
-    /// It is the same key in both directions: a press starts the question, the
-    /// next one sends it, and a press while the answer is arriving stops it.
-    public var assistantHotkey: Hotkey
     /// Whether the transcript is pasted into the frontmost application.
     public var autoPaste: Bool
     /// Whether single-clicking the menu bar icon starts or stops recording.
@@ -485,6 +480,10 @@ public struct DotConfig: Codable, Sendable, Equatable {
     public var hudVisualizer: HUDVisualizer
     /// How the record shortcut starts and ends a recording.
     public var recordingMode: RecordingMode
+    /// Whether the HUD island appears without the notch emergence animation.
+    public var reduceMotion: Bool
+    /// Which mouse button, if any, is held to record.
+    public var mouseTriggerButton: MouseTriggerButton
     /// Whether a transcript is rewritten for the app it is going into.
     ///
     /// Off by default. A rewrite changes the words that are inserted, so it is
@@ -532,10 +531,11 @@ public struct DotConfig: Codable, Sendable, Equatable {
         appearance: .dark,
         hudVisualizer: .stretch,
         recordingMode: .toggle,
+        reduceMotion: false,
+        mouseTriggerButton: .off,
         outputGrammarEnabled: false,
         outputGrammarTargets: [:],
         microphoneCalibration: [:],
-        assistantHotkey: .defaultAssistant,
         assistant: .default,
         transcriptArchive: .default
     )
@@ -596,10 +596,11 @@ public struct DotConfig: Codable, Sendable, Equatable {
         appearance: AppearanceMode = .dark,
         hudVisualizer: HUDVisualizer = .stretch,
         recordingMode: RecordingMode = .toggle,
+        reduceMotion: Bool = false,
+        mouseTriggerButton: MouseTriggerButton = .off,
         outputGrammarEnabled: Bool = false,
         outputGrammarTargets: [String: DictationTarget] = [:],
         microphoneCalibration: [String: MicrophoneCalibration] = [:],
-        assistantHotkey: Hotkey = .defaultAssistant,
         assistant: AssistantConfiguration = .default,
         transcriptArchive: TranscriptArchiveSettings = .default
     ) {
@@ -620,10 +621,11 @@ public struct DotConfig: Codable, Sendable, Equatable {
         self.appearance = appearance
         self.hudVisualizer = hudVisualizer
         self.recordingMode = recordingMode
+        self.reduceMotion = reduceMotion
+        self.mouseTriggerButton = mouseTriggerButton
         self.outputGrammarEnabled = outputGrammarEnabled
         self.outputGrammarTargets = outputGrammarTargets
         self.microphoneCalibration = microphoneCalibration
-        self.assistantHotkey = assistantHotkey
         self.assistant = assistant
         self.transcriptArchive = transcriptArchive
     }
@@ -773,6 +775,15 @@ extension DotConfig {
             forKey: .recordingMode
         )) ?? nil
         self.recordingMode = storedMode ?? fallback.recordingMode
+        self.reduceMotion = ((try? container.decodeIfPresent(Bool.self, forKey: .reduceMotion)) ?? nil)
+            ?? fallback.reduceMotion
+        // A file written before the mouse trigger existed has no field, and a
+        // hand-edited one may name a button no build knows: both load as off.
+        let storedMouseButton = (try? container.decodeIfPresent(
+            MouseTriggerButton.self,
+            forKey: .mouseTriggerButton
+        )) ?? nil
+        self.mouseTriggerButton = storedMouseButton ?? fallback.mouseTriggerButton
         self.outputGrammarEnabled = try container.decodeIfPresent(
             Bool.self,
             forKey: .outputGrammarEnabled
@@ -792,12 +803,10 @@ extension DotConfig {
             forKey: .microphoneCalibration
         )
         self.microphoneCalibration = MicrophoneCalibrationBook.sanitized(storedBook ?? nil ?? [:])
-        // The assistant's block and its shortcut are read the tolerant way too:
-        // a file written before the assistant existed has neither, and one
-        // edited by hand may carry a block no build can decode. Either way the
-        // rest of the file, the dictation provider above all, stays as it was.
-        self.assistantHotkey = ((try? container.decodeIfPresent(Hotkey.self, forKey: .assistantHotkey)) ?? nil)
-            ?? fallback.assistantHotkey
+        // The assistant's block is read the tolerant way too: a file written
+        // before it existed has none, and one edited by hand may carry a block
+        // no build can decode. Either way the rest of the file, the dictation
+        // provider above all, stays as it was.
         self.assistant = ((try? container.decodeIfPresent(
             AssistantConfiguration.self,
             forKey: .assistant
