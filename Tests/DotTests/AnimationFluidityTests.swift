@@ -225,7 +225,7 @@ final class AnimationFluidityTests: XCTestCase {
             XCTAssertFalse(hud.isVisible)
 
             // Wait for the smooth 0.22 s exit fade / escape handler to complete cleanly.
-            pumpRunLoop(seconds: 0.40)
+            pumpRunLoop(seconds: FrameTiming.observationSeconds(0.40))
             XCTAssertFalse(hud.debugRenderLoop.isRunning, "\(visualizer.rawValue) preview render loop stayed active after exit")
             XCTAssertFalse(hud.debugPanelVisible, "\(visualizer.rawValue) panel stayed visible after preview exit")
 
@@ -244,7 +244,7 @@ final class AnimationFluidityTests: XCTestCase {
         XCTAssertFalse(hud.isPreviewing)
         XCTAssertFalse(hud.isVisible)
 
-        pumpRunLoop(seconds: 0.40)
+        pumpRunLoop(seconds: FrameTiming.observationSeconds(0.40))
         XCTAssertFalse(hud.debugRenderLoop.isRunning, "material preview render loop stayed active after exit")
         XCTAssertFalse(hud.debugPanelVisible, "material panel stayed visible after preview exit")
 
@@ -852,7 +852,7 @@ final class AnimationFluidityTests: XCTestCase {
             XCTAssertTrue(DotScrollInteraction.isLiveScrolling, "live scroll did not engage")
         }
         XCTAssertNil(released, "scroll view leaked")
-        pumpRunLoop(seconds: 0.2)
+        pumpRunLoop(seconds: FrameTiming.observationSeconds(0.2))
         XCTAssertFalse(DotScrollInteraction.isLiveScrolling, "released scroll view left a live scroll open")
         XCTAssertFalse(DotScrollInteraction.isScrolling, "scroll gate did not settle after release")
     }
