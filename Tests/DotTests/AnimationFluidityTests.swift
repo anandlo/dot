@@ -722,8 +722,13 @@ final class AnimationFluidityTests: XCTestCase {
 
         DotScrollInteraction.endLiveScroll()
         collector.reset()
-        pumpRunLoop(seconds: 0.18)
-        XCTAssertGreaterThan(collector.snapshot().count, 3, "swatch stopped after the scroll ended")
+        let resumedFrom = CACurrentMediaTime()
+        pumpRunLoop(seconds: FrameTiming.observationSeconds(0.18))
+        let resumedTo = CACurrentMediaTime()
+        let afterScroll = collector.snapshot()
+        XCTAssertGreaterThanOrEqual(afterScroll.count, FrameTiming.minimumCount(4), "swatch stopped after the scroll ended")
+        let gapAfterScroll = FrameTiming.longestGapMS(draws: afterScroll.map(\.timestamp), start: resumedFrom, end: resumedTo)
+        XCTAssertLessThanOrEqual(gapAfterScroll, FrameTiming.maximumGapMS, "swatch went \(gapAfterScroll) ms without drawing after the scroll ended")
     }
 
     /// The stall check counts the stretch after the last draw, so an
