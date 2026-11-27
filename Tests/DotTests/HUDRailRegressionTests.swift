@@ -121,6 +121,17 @@ final class HUDRailRegressionTests: XCTestCase {
         hud.setRewrite(card)
         hud.debugPointer(inside: true)
         settle(hud)
+        // The rail's clip drifts by up to two points while the card opens, and a
+        // slow host can still be opening after a fixed pause.
+        if !waitForTheRailToSettle(hud) {
+            let atRest = hud.debugAppearanceAtRest
+            let decided = hud.debugRailPositionRestored
+            hud.hide()
+            throw FixtureNotReady(
+                "the fixture card's opening never came to rest "
+                    + "(at rest: \(atRest), correction decided: \(decided))"
+            )
+        }
 
         let size = HUD.transcriptSize(text: card.original, rewrite: card)
         let cardFrame = HUDPlacement.cardFrame(
@@ -134,7 +145,37 @@ final class HUDRailRegressionTests: XCTestCase {
         rail.contentView.scroll(to: .zero)
         rail.reflectScrolledClipView(rail.contentView)
         settle(hud)
+        if abs(rail.contentView.bounds.origin.x) > 0.05 {
+            let origin = rail.contentView.bounds.origin.x
+            hud.hide()
+            throw FixtureNotReady("the fixture rail moved off its start after setup (x: \(origin))")
+        }
         return Fixture(hud: hud, card: card, band: band, rail: rail)
+    }
+
+    private struct FixtureNotReady: Error, CustomStringConvertible {
+        let description: String
+        init(_ description: String) { self.description = description }
+    }
+
+    /// Waits, bounded, for the appearance to rest and the opening correction to be decided.
+    private func waitForTheRailToSettle(_ hud: HUD, within seconds: TimeInterval = 8) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        var settled = 0
+        while Date() < deadline {
+            hud.debugRootView.layoutSubtreeIfNeeded()
+            if hud.debugAppearanceAtRest, hud.debugRailPositionRestored {
+                settled += 1
+                if settled >= 2 { return true }
+            } else {
+                settled = 0
+            }
+            RunLoop.main.run(
+                mode: .default,
+                before: min(deadline, Date().addingTimeInterval(0.02))
+            )
+        }
+        return false
     }
 
     private func railOffset(_ fixture: Fixture) -> CGFloat {

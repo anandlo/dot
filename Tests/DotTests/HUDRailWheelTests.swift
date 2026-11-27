@@ -271,10 +271,9 @@ final class HUDRailWheelTests: XCTestCase {
         let fixture = try makeFixture()
         defer { close(fixture) }
         fixture.rail.horizontalLineScroll = 12
-        // The rail is placed at its first style so the travel below is read
-        // from a known position: while the opening correction has not been
-        // decided the card applies a wheel to the intended origin, so the
-        // record is placed with the clip.
+        // The rail is placed at its first style, with the intended origin
+        // recorded alongside the clip, so the travel below is read from a
+        // known position.
         injectResidue(0, into: fixture)
         fixture.hud.debugSetRailIntendedOrigin(.zero)
         let before = railOffset(fixture)
@@ -1331,6 +1330,18 @@ final class HUDRailWheelTests: XCTestCase {
         hud.setRewrite(card)
         hud.debugPointer(inside: true)
         settle(hud)
+        // The rail's clip drifts by up to two points while the card opens, and a
+        // slow host can still be opening after a fixed pause.
+        let waitsForTheOpening = !holdTheEntrance && !holdTheOpeningCorrection
+        if waitsForTheOpening, !waitForTheRailToSettle(hud, within: 8) {
+            let atRest = hud.debugAppearanceAtRest
+            let decided = hud.debugRailPositionRestored
+            hud.hide()
+            throw FixtureNotReady(
+                "the fixture card's opening never came to rest "
+                    + "(at rest: \(atRest), correction decided: \(decided))"
+            )
+        }
 
         let size = HUD.transcriptSize(text: card.original, rewrite: card)
         let cardFrame = HUDPlacement.cardFrame(
@@ -1351,7 +1362,17 @@ final class HUDRailWheelTests: XCTestCase {
         rail.contentView.scroll(to: .zero)
         rail.reflectScrolledClipView(rail.contentView)
         settle(hud)
+        if waitsForTheOpening, abs(rail.contentView.bounds.origin.x) > 0.05 {
+            let origin = rail.contentView.bounds.origin.x
+            hud.hide()
+            throw FixtureNotReady("the fixture rail moved off its start after setup (x: \(origin))")
+        }
         return Fixture(hud: hud, card: card, band: band, rail: rail, body: body)
+    }
+
+    private struct FixtureNotReady: Error, CustomStringConvertible {
+        let description: String
+        init(_ description: String) { self.description = description }
     }
 
     /// The longest row the catalogue allows: every shipped style and six custom
