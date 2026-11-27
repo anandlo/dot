@@ -46,9 +46,20 @@ final class VisualizerFrameSink {
 /// directly during CoreAnimation commit with zero per-frame allocations.
 final class LiveVisualizerLayer: CALayer {
     private let frameLock = OSAllocatedUnfairLock<VisualizerFrame?>(initialState: nil)
-    private let onDrawLock = OSAllocatedUnfairLock<(@Sendable (CFTimeInterval, Double) -> Void)?>(
-        initialState: nil
-    )
+    // The callback lives in a class box. A closure kept directly in the lock's
+    // generic state is re-wrapped in reabstraction thunks each time optimized
+    // code reads it out and stores it again, and Core Animation makes copies of
+    // copies of this layer, so the chain grew every frame until releasing it
+    // overflowed the stack.
+    private final class DrawCallback: Sendable {
+        let call: @Sendable (CFTimeInterval, Double) -> Void
+
+        init(_ call: @escaping @Sendable (CFTimeInterval, Double) -> Void) {
+            self.call = call
+        }
+    }
+
+    private let onDrawLock = OSAllocatedUnfairLock<DrawCallback?>(initialState: nil)
     private let scratch = VisualizerRenderScratch()
 
     override init() {
@@ -71,9 +82,15 @@ final class LiveVisualizerLayer: CALayer {
         frameLock.withLock { $0 }
     }
 
-    private func copyOnDraw() -> (@Sendable (CFTimeInterval, Double) -> Void)? {
+    private func copyOnDraw() -> DrawCallback? {
         onDrawLock.withLock { $0 }
     }
+
+    #if DEBUG
+    var debugDrawCallbackIdentity: ObjectIdentifier? {
+        copyOnDraw().map(ObjectIdentifier.init)
+    }
+    #endif
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
@@ -93,7 +110,13 @@ final class LiveVisualizerLayer: CALayer {
     }
 
     func setOnDraw(_ callback: (@Sendable (CFTimeInterval, Double) -> Void)?) {
-        onDrawLock.withLock { $0 = callback }
+        let box: DrawCallback?
+        if let callback {
+            box = DrawCallback(callback)
+        } else {
+            box = nil
+        }
+        onDrawLock.withLock { $0 = box }
     }
 
     func enqueue(_ frame: VisualizerFrame) {
@@ -110,7 +133,7 @@ final class LiveVisualizerLayer: CALayer {
         VisualizerCGRenderer.draw(frame, in: ctx, size: size, scratch: scratch)
         if let callback {
             let drawEnded = CACurrentMediaTime()
-            callback(drawEnded, (drawEnded - drawStarted) * 1000)
+            callback.call(drawEnded, (drawEnded - drawStarted) * 1000)
         }
     }
 }
