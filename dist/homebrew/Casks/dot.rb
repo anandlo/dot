@@ -14,13 +14,19 @@
 # System Settings → Privacy & Security → Open Anyway. That is documented in
 # README.md, which is the only supported route.
 cask "dot" do
-  version "0.1.0-beta"
+  version "0.2.0-beta"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
   url "https://github.com/anandlo/dot/releases/download/v#{version}/Dot-#{version}-arm64.dmg"
   name "Dot"
   desc "Speech-to-text dictation at the cursor in any app"
   homepage "https://dot.anandlo.com/"
+
+  livecheck do
+    url :url
+    strategy :git
+    regex(/^v?(\d+(?:\.\d+)+(?:-beta)?)$/i)
+  end
 
   depends_on arch: :arm64
   depends_on macos: :sonoma

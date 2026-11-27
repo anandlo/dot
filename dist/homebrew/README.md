@@ -136,9 +136,6 @@ prerelease flag only changes what `releases/latest` returns.
   attribute is a Gatekeeper signal, and the Homebrew maintainers reject casks
   that clear it. Letting the app in is the user's decision, made on the Security
   settings pane, and `README.md` says so.
-- **No `livecheck` block.** Not needed: `version` is written by
-  `scripts/release.sh` from `VERSION` at release time, which is more accurate
-  than guessing from the release page.
 - **No `verified:` on the `url`.** Homebrew 7 deprecates the parameter and warns
   on every load ("Use the default URL verification behaviour instead"); the URL
   verification it replaced is now the default.
