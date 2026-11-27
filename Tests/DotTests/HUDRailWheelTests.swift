@@ -1331,6 +1331,14 @@ final class HUDRailWheelTests: XCTestCase {
         hud.setRewrite(card)
         hud.debugPointer(inside: true)
         settle(hud)
+        // The rail's clip drifts by up to two points while the card opens, and a
+        // slow host can still be opening after a fixed pause.
+        if !holdTheEntrance, !holdTheOpeningCorrection {
+            XCTAssertTrue(
+                waitForTheRailToSettle(hud, within: 8),
+                "the fixture card's opening never came to rest"
+            )
+        }
 
         let size = HUD.transcriptSize(text: card.original, rewrite: card)
         let cardFrame = HUDPlacement.cardFrame(
