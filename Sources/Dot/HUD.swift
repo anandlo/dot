@@ -272,8 +272,14 @@ final class HUD {
     private weak var railScrollView: NSScrollView?
     /// Whether the card itself is writing the rail, which is not the person.
     private var isCorrectingRailOrigin = false
-    /// The rail's frame on the previous tick, while its position is restored.
-    private var lastRailFrame: CGRect?
+    /// The rail's frame and clip origin on the previous tick, while its position is restored.
+    private var lastRailLayout: (clip: ObjectIdentifier, frame: CGRect, origin: CGPoint)?
+    /// The tick time the correction first waited for the rail to hold still.
+    private var railCorrectionWaitStartedAt: CFTimeInterval?
+    /// How many ticks in a row have read the rail's frame and clip origin unchanged.
+    private var railLayoutStillFrames = 0
+    /// The tick time the rail's frame or clip origin last changed.
+    private var railLayoutMovedAt: CFTimeInterval = 0
     /// How settled the content of the card is.
     private var contentSpring = Spring(value: 0, target: 0, duration: 0.34, bounce: 0.10)
     var reducesMotionPreference: Bool = false {
@@ -1391,6 +1397,8 @@ final class HUD {
         railIntendedOrigin = .zero
         railOriginTracks = false
         railTrackedOrigin = nil
+        lastRailLayout = nil
+        railCorrectionWaitStartedAt = nil
         hasReadPointerSinceArrival = false
         startRendering()
         scheduleRenderFallback()
@@ -2727,13 +2735,43 @@ final class HUD {
         guard !railPositionRestored, !debugHoldTheOpeningCorrection, debugAppearanceAtRest else { return }
         // The rail's frame changes while the card's own size springs to the
         // layer's height, and a correction made during that would be answered by
-        // the transform that is still arriving. One quiet frame decides it.
-        guard rail.frame == lastRailFrame else {
-            lastRailFrame = rail.frame
+        // the transform that is still arriving. On a loaded machine two ticks can
+        // land between two of that spring's frames, so the frame and the clip
+        // origin have to hold still by frames and by time before it decides.
+        // A rail that never holds still is left where it is after two seconds, so
+        // the render loop can sleep once the card is otherwise at rest. The
+        // budget is per presentation, shared by any clip that replaces the
+        // rail's, and only a moving rail spends it: one that holds still is
+        // still corrected after it. Giving up accepts the rail's position, and
+        // the next wheel gesture starts from there.
+        let waitStarted = railCorrectionWaitStartedAt ?? now
+        railCorrectionWaitStartedAt = waitStarted
+        let layout = (
+            clip: ObjectIdentifier(rail.contentView),
+            frame: rail.frame,
+            origin: rail.contentView.bounds.origin
+        )
+        if let last = lastRailLayout,
+           last.clip == layout.clip,
+           last.frame == layout.frame,
+           last.origin == layout.origin {
+            railLayoutStillFrames += 1
+        } else {
+            lastRailLayout = layout
+            railLayoutStillFrames = 0
+            railLayoutMovedAt = now
+            if now - waitStarted > Self.railCorrectionWaitLimit {
+                railPositionRestored = true
+                lastRailLayout = nil
+            }
             return
         }
+        guard Self.railOpeningCorrectionDecides(
+            stillFrames: railLayoutStillFrames,
+            stillFor: now - railLayoutMovedAt
+        ) else { return }
         railPositionRestored = true
-        lastRailFrame = nil
+        lastRailLayout = nil
         let clip = rail.contentView
         let document = rail.documentView?.frame.size ?? .zero
         let scrollRange = CGSize(
@@ -2751,6 +2789,26 @@ final class HUD {
         rail.reflectScrolledClipView(clip)
         isCorrectingRailOrigin = false
     }
+
+    /// Whether the rail has held still long enough for the opening correction to decide.
+    ///
+    /// The same limits as ``railFollowEnds(stillFrames:stillFor:)``, for the same
+    /// reason: one tick that reads the rail unchanged can be a late tick after a
+    /// stall or one of a burst the timer fires back to back, while the card's
+    /// size spring still has a frame to deliver. A correction decided then is
+    /// answered by that frame's transform, which leaves a new residue nothing
+    /// corrects.
+    ///
+    /// - Parameters:
+    ///   - stillFrames: consecutive ticks that read the rail's frame and clip origin unchanged.
+    ///   - stillFor: seconds since the tick that last saw either change.
+    /// - Returns: whether the correction decides now.
+    static func railOpeningCorrectionDecides(stillFrames: Int, stillFor: TimeInterval) -> Bool {
+        stillFrames >= 3 && stillFor >= 0.05
+    }
+
+    /// The longest the opening correction waits for the rail to hold still, in seconds.
+    static let railCorrectionWaitLimit: CFTimeInterval = 2.0
 
     /// The card's style rail, as the appearance correction reads it.
     ///

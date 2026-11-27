@@ -1394,9 +1394,9 @@ final class HUDRailWheelTests: XCTestCase {
 
     /// Waits, bounded, for the appearance to rest and the opening correction to be decided.
     ///
-    /// The correction decides on the second frame on which the springs are at
-    /// rest and the rail's frame is unchanged, so a rail that has come to rest
-    /// has not necessarily been corrected yet.
+    /// The correction decides once the springs are at rest and the rail's frame
+    /// and clip origin have held still for three ticks and fifty milliseconds,
+    /// so a rail that has come to rest has not necessarily been corrected yet.
     ///
     /// - Parameters:
     ///   - hud: the card.

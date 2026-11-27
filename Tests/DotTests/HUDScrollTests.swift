@@ -564,6 +564,30 @@ final class HUDScrollTests: XCTestCase {
         )
     }
 
+    /// The opening correction decides only after the rail holds still for three ticks and fifty milliseconds.
+    ///
+    /// A single unchanged tick can fall between two frames of the card's size
+    /// spring on a loaded machine, and a correction decided then is undone by
+    /// the next frame's transform.
+    func testTheOpeningCorrectionOutlastsALateTickAndABurstOfTicks() {
+        XCTAssertFalse(
+            HUD.railOpeningCorrectionDecides(stillFrames: 1, stillFor: 0.2),
+            "one late tick after a stall decided the correction"
+        )
+        XCTAssertFalse(
+            HUD.railOpeningCorrectionDecides(stillFrames: 2, stillFor: 0.2),
+            "two still ticks decided the correction"
+        )
+        XCTAssertFalse(
+            HUD.railOpeningCorrectionDecides(stillFrames: 5, stillFor: 0.012),
+            "ticks fired back to back decided the correction"
+        )
+        XCTAssertTrue(
+            HUD.railOpeningCorrectionDecides(stillFrames: 3, stillFor: 0.05),
+            "a rail that held still for three ticks at 60 Hz was never corrected"
+        )
+    }
+
     /// A write to the rail is the person's when it carries the rail further than the residue can.
     ///
     /// The rail scrolls sideways only and its clip's height never moves, so a
@@ -1586,9 +1610,10 @@ final class HUDScrollTests: XCTestCase {
     /// Waits, bounded, for the card's opening correction to be decided.
     ///
     /// A rail that has come to rest has not necessarily been corrected yet.
-    /// The correction decides on the second frame on which the appearance's
-    /// springs are at rest and the rail's frame is unchanged, and a starved
-    /// frame clock can put that frame after a rest wait returns. A test that
+    /// The correction decides once the appearance's springs are at rest and the
+    /// rail's frame and clip origin have held still for three ticks and fifty
+    /// milliseconds, and a starved frame clock can put that after a rest wait
+    /// returns. A test that
     /// reads a rested position waits for the decision too, so what it reads is
     /// the position the correction left rather than the residue the appearance
     /// left on top of it.
