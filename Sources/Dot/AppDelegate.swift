@@ -1741,14 +1741,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.hud.recordLiveTranscriptionMainActor(ms: (afterCommit - textReceived) * 1000)
                 } catch {
                     guard !Task.isCancelled, self.state == .recording, !self.quitPending else { return }
-                    if Self.isIgnoredLiveError(error) {
+                    switch LiveFailureOutcome(error: error) {
+                    case .noText:
                         failures = 0
-                    } else {
+                        if isCommit {
+                            Log.shared.info("live.no_text", [
+                                "stage": .string("commit"),
+                                "range_start": .int(reqRange.lowerBound),
+                                "samples": .int(reqRange.count),
+                            ])
+                        }
+                    case .count:
                         failures += 1
                         Log.shared.warn("live.failed", [
                             "error": .string(Self.shortDescription(of: error)),
                             "attempt": .int(failures),
                             "stage": .string(isCommit ? "commit" : "provisional"),
+                            "range_start": .int(reqRange.lowerBound),
+                            "samples": .int(reqRange.count),
+                            "wav_bytes": .int(wav.count),
                         ])
                         if failures >= Live.failureLimit || Self.stopsLiveImmediately(error) {
                             return
@@ -1764,15 +1775,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func stopLiveTranscription() {
         liveTask?.cancel()
         liveTask = nil
-    }
-
-    /// Whether a failed partial should not count against the provider.
-    ///
-    /// A silent second is not an error: the provider simply heard nothing yet.
-    private nonisolated static func isIgnoredLiveError(_ error: Error) -> Bool {
-        guard let error = error as? ProviderError else { return false }
-        if case .noSpeech = error { return true }
-        return false
     }
 
     /// Whether the provider cannot serve partials at all.

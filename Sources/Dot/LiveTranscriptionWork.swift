@@ -80,6 +80,26 @@ struct LiveTranscriptionWork: Sendable {
     }
 }
 
+/// What a failed live attempt does to the take.
+///
+/// An empty answer is not proof of silence: providers report `noSpeech` for
+/// any empty parse, and Xiaomi also after stripping text in English mode. The
+/// range therefore stays open, so the stop can still transcribe it.
+enum LiveFailureOutcome: Equatable {
+    /// The provider returned no text. Nothing changes and nothing is counted.
+    case noText
+    /// A real failure, counted against the provider.
+    case count
+
+    init(error: Error) {
+        guard let error = error as? ProviderError, case .noSpeech = error else {
+            self = .count
+            return
+        }
+        self = .noText
+    }
+}
+
 /// The executor that does one live attempt's CPU work.
 ///
 /// One actor serialises the attempts, so a slow analysis cannot overlap another

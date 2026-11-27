@@ -124,7 +124,8 @@ public struct TranscriptLedger: Equatable, Sendable {
     ///
     /// - A commit needs either a paragraph pause (``commitSilenceSeconds``)
     ///   after ``minimumSpeechBeforeCommitSeconds`` of speech, or
-    ///   ``commitSamples`` of open audio.
+    ///   ``commitSamples`` of open audio. A commit never carries more than
+    ///   ``commitSamples``: it is one provider request.
     /// - A preview is sent on a breath pause (``breathSeconds``) once
     ///   ``previewGrowthSeconds`` is new, or after ``previewIntervalSeconds`` of
     ///   new speech, cut at the quietest recent dip.
@@ -194,7 +195,9 @@ public struct TranscriptLedger: Equatable, Sendable {
                    sumPositiveSeconds >= minSpeechBeforeCommitSeconds,
                    openSamples.count >= Int(rate * 15.0) {
                     let silenceDuration = Double(f - silStart + 1) * hopSeconds
-                    if silenceDuration >= commitSilenceSeconds {
+                    // A pause past the limit would make the commit longer
+                    // than one request may carry; the cut below takes over.
+                    if silenceDuration >= commitSilenceSeconds, (f + 1) * hopSize <= commitSamples {
                         let endFrame = f + 1
                         let segStart = committedSamples
                         let segEnd = committedSamples + min(openSamples.count, endFrame * hopSize)
@@ -231,7 +234,7 @@ public struct TranscriptLedger: Equatable, Sendable {
                 }
             }
             let segStart = committedSamples
-            let segEnd = committedSamples + min(openSamples.count, max(hopSize, cutFrame * hopSize))
+            let segEnd = committedSamples + min(openSamples.count, commitSamples, max(hopSize, cutFrame * hopSize))
             return .sendSegment(range: segStart..<segEnd, commitUpTo: segEnd)
         }
 
